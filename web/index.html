@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LiveVerkeersinfo</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="layer-panel" class="panel">
+    <button class="panel-btn" id="panel-toggle">Layers ▾</button>
+    <div id="panel-body"></div>
+  </div>
+
+  <div id="status-panel" class="panel">
+    <button class="panel-btn" id="status-toggle">Feed Status ▸</button>
+    <div id="status-body" class="hidden"></div>
+  </div>
+
+  <div id="zoom-hint" class="hint hidden">Zoom in further to see traffic signs (zoom 13+)</div>
+
+  <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
