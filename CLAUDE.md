@@ -81,7 +81,8 @@ Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
 
 - [x] Explore & document all NDW files (`docs/`)
 - [x] Decide stack, scope, history model, area model
-- [ ] Postgres + PostGIS schema (all feeds, upsert/latest)
-- [ ] Poller (conditional GET on cadence) + parsers (DATEX v2/v3, GeoJSON, OCPI, CSV, shapefile)
-- [ ] Spatial API (FastAPI, bbox filter)
-- [ ] Web UI (MapLibre, layer per feed, bbox = current viewport)
+- [x] Postgres + PostGIS schema (all feeds, upsert/latest) — `src/ndwinfo/models.py` + alembic migrations
+- [x] Poller (conditional GET on cadence) + parsers (DATEX v2/v3, GeoJSON, OCPI, CSV, shapefile)
+- [x] Spatial API (FastAPI, bbox filter) — `src/ndwinfo/api/`
+- [x] Web UI (MapLibre, layer per feed, bbox = current viewport) — `web/`
+- [x] Containerization (Docker Compose: db + app + poller)
