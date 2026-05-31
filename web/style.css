@@ -309,3 +309,159 @@ input[type="checkbox"] {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #2a2a40; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #3a3a58; }
+
+/* ── Floating Map Controls ────────────────────────────────────────────────── */
+
+#map-controls {
+  top: 10px;
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+}
+
+.control-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #8888aa;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 6px;
+}
+
+.control-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.control-btn:active {
+  transform: scale(0.9);
+}
+
+/* GPS Button States */
+#gps-btn.state-off {
+  color: #8888aa;
+}
+
+#gps-btn.state-follow {
+  color: #3897ff;
+  filter: drop-shadow(0 0 6px rgba(56, 151, 255, 0.6));
+}
+
+#gps-btn.state-navigation {
+  color: #34c759;
+  filter: drop-shadow(0 0 6px rgba(52, 199, 89, 0.6));
+}
+
+/* Compass needle rotation */
+#compass-needle {
+  transform: rotate(var(--bearing, 0deg));
+  transform-origin: center center;
+  transition: transform 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+
+/* Re-center Pill Button */
+#recenter-btn {
+  position: absolute !important;
+  top: 15px !important;
+  bottom: auto !important;
+  height: auto !important;
+  pointer-events: auto !important;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  background: rgba(12, 12, 22, 0.95);
+  color: #3897ff;
+  border: 1px solid #2a2a40;
+  border-radius: 20px;
+  padding: 8px 16px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#recenter-btn:hover {
+  background: rgba(56, 151, 255, 0.12);
+  border-color: #3897ff;
+  box-shadow: 0 4px 20px rgba(56, 151, 255, 0.25);
+  transform: translateX(-50%) translateY(-1px);
+}
+
+#recenter-btn:active {
+  transform: translateX(-50%) scale(0.96);
+}
+
+/* ── Pulse GPS User Marker ────────────────────────────────────────────────── */
+
+.user-marker-container {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.user-dot {
+  width: 14px;
+  height: 14px;
+  background: #3897ff;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  z-index: 2;
+}
+
+.user-pulse {
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(56, 151, 255, 0.2);
+  border: 1px solid rgba(56, 151, 255, 0.4);
+  animation: gps-pulse 2.2s infinite cubic-bezier(0.1, 0.8, 0.3, 1);
+  z-index: 1;
+  pointer-events: none;
+}
+
+@keyframes gps-pulse {
+  0% {
+    transform: scale(0.5);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(2.0);
+    opacity: 0;
+  }
+}
+
+/* Directional heading cone */
+.user-heading-cone {
+  position: absolute;
+  width: 90px;
+  height: 90px;
+  background: conic-gradient(from 330deg, transparent 0deg, rgba(56, 151, 255, 0.35) 30deg, transparent 60deg);
+  transform: rotate(var(--heading, 0deg));
+  transform-origin: center center;
+  border-radius: 50%;
+  z-index: 0;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.user-heading-cone.visible {
+  opacity: 1;
+}

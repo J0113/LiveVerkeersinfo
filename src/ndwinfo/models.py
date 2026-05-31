@@ -105,9 +105,7 @@ class VildLine(Base):
     __table_args__ = (Index("ix_vild_line_geom", "geom", postgresql_using="gist"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    geom: Mapped[Optional[Any]] = mapped_column(
-        Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True
-    )
+    geom: Mapped[Optional[Any]] = mapped_column(Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -117,7 +115,7 @@ class VildArea(Base):
     __table_args__ = (Index("ix_vild_area_geom", "geom", postgresql_using="gist"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("POLYGON", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 

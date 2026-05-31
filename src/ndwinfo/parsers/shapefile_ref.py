@@ -66,6 +66,53 @@ def parse_meetlocaties(zip_path: Path) -> Iterator[tuple[str, dict]]:
                 yield kind, {"id": id_val, "geom": geom, "raw": raw}
 
 
+def _extract_shp_wgs84(zip_path: Path, shp_name: str, tmpdir: str) -> Path:
+    """Extract shapefile from WGS84/ subfolder in zip."""
+    stem = shp_name.removesuffix(".shp")
+    with zipfile.ZipFile(zip_path) as zf:
+        for member in zf.namelist():
+            parts = member.replace("\\", "/").split("/")
+            if "WGS84" not in parts:
+                continue
+            basename = parts[-1]
+            if any(basename == f"{stem}{ext}" for ext in (".shp", ".dbf", ".shx", ".prj", ".fix")):
+                zf.extract(member, tmpdir)
+    found = [p for p in Path(tmpdir).rglob(shp_name) if "WGS84" in str(p)]
+    if not found:
+        raise FileNotFoundError(f"{shp_name} not found in WGS84/ of {zip_path}")
+    return found[0]
+
+
+def parse_vild(zip_path: Path) -> Iterator[tuple[str, dict]]:
+    """Parse VILD6.x.A.zip — yields ('point'|'line'|'area', dict) from WGS84/ subfolder."""
+    for shp_name, kind in [
+        ("vild_point.shp", "point"),
+        ("vild_line.shp", "line"),
+        ("vild_area.shp", "area"),
+    ]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                shp_path = _extract_shp_wgs84(zip_path, shp_name, tmpdir)
+            except FileNotFoundError:
+                continue
+
+            gdf = pyogrio.read_dataframe(str(shp_path))
+            data_cols = [c for c in gdf.columns if c != "geometry"]
+
+            for _, row_data in gdf.iterrows():
+                geom_obj = row_data.get("geometry")
+                geom = geom_obj.wkt if geom_obj is not None else None
+                raw = _row_to_dict(row_data, data_cols)
+
+                id_val: str | None = None
+                for id_col in ("LOC_NR", "ID", "id", "VILD_ID", "OBJECTID", "FID"):
+                    if id_col in raw:
+                        id_val = str(raw[id_col])
+                        break
+
+                yield kind, {"id": id_val, "geom": geom, "raw": raw}
+
+
 def parse_msi_shapefile(zip_path: Path) -> Iterator[dict]:
     """Parse ndw_msi_shapefiles_latest.zip → MSI sign geometry.
 

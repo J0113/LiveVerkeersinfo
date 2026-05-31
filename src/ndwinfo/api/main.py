@@ -11,6 +11,7 @@ from ndwinfo.api.routers import (
     traffic,
     truckparking,
     verkeersborden,
+    vild,
 )
 
 app = FastAPI(title="LiveVerkeersinfo", version="0.1.0")
@@ -30,6 +31,7 @@ app.include_router(truckparking.router, prefix="/api")
 app.include_router(verkeersborden.router, prefix="/api")
 app.include_router(emission.router, prefix="/api")
 app.include_router(feeds.router, prefix="/api")
+app.include_router(vild.router, prefix="/api")
 
 import os
 if os.path.isdir("web") and any(os.scandir("web")):

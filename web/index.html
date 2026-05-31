@@ -20,6 +20,33 @@
     <div id="status-body" class="hidden"></div>
   </div>
 
+  <!-- Sleek glassmorphic floating controls -->
+  <div id="map-controls" class="panel">
+    <button id="compass-btn" class="control-btn" title="Reset Compass">
+      <svg id="compass-needle" viewBox="0 0 24 24" width="20" height="20">
+        <path d="M12 2L15 12H9L12 2Z" fill="#ff3b30"/>
+        <path d="M12 22L9 12H15L12 22Z" fill="#ffffff"/>
+      </svg>
+    </button>
+    <button id="gps-btn" class="control-btn" title="Follow & Rotate Map">
+      <svg viewBox="0 0 24 24" width="20" height="20">
+        <circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="2" fill="none"/>
+        <circle cx="12" cy="12" r="3" fill="currentColor" id="gps-center-dot"/>
+        <line x1="12" y1="2" x2="12" y2="4" stroke="currentColor" stroke-width="2"/>
+        <line x1="12" y1="20" x2="12" y2="22" stroke="currentColor" stroke-width="2"/>
+        <line x1="2" y1="12" x2="4" y2="12" stroke="currentColor" stroke-width="2"/>
+        <line x1="20" y1="12" x2="22" y2="12" stroke="currentColor" stroke-width="2"/>
+      </svg>
+    </button>
+  </div>
+
+  <button id="recenter-btn" class="hidden" title="Re-center Map">
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="margin-right: 6px; vertical-align: middle;">
+      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+    </svg>
+    <span>Re-center</span>
+  </button>
+
   <div id="zoom-hint" class="hint hidden">Zoom in further to see traffic signs (zoom 13+)</div>
 
   <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>

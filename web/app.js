@@ -102,6 +102,26 @@ const LAYERS = [
       'circle-stroke-width': 1.5,
       'circle-stroke-color': '#444444'
     }
+  },
+
+  // ── VILD reference geometry ────────────────────────────────────────────────
+  {
+    key: 'vild_point', label: 'VILD Points', group: 'reference',
+    endpoint: '/vild/points', geomType: 'point', legendColor: '#aabbff',
+    paint: { 'circle-radius': 4, 'circle-color': '#aabbff', 'circle-stroke-width': 1, 'circle-stroke-color': '#fff' }
+  },
+  {
+    key: 'vild_line', label: 'VILD Road Segments', group: 'reference',
+    endpoint: '/vild/lines', geomType: 'line', legendColor: '#6699ff',
+    paint: { 'line-color': '#6699ff', 'line-width': 1.5, 'line-opacity': 0.8 }
+  },
+  {
+    key: 'vild_area', label: 'VILD Areas', group: 'reference',
+    endpoint: '/vild/areas', geomType: 'polygon', legendColor: '#3366cc',
+    paint: {
+      fill: { 'fill-color': '#3366cc', 'fill-opacity': 0.12 },
+      line: { 'line-color': '#3366cc', 'line-width': 1.5, 'line-opacity': 0.8 }
+    }
   }
 ]
 
@@ -112,10 +132,11 @@ const GROUPS = [
   { key: 'signs',        label: 'Signs & VMS' },
   { key: 'charging',     label: 'EV Charging' },
   { key: 'truckparking', label: 'Truck Parking' },
-  { key: 'other',        label: 'Zones & Signs' }
+  { key: 'other',        label: 'Zones & Signs' },
+  { key: 'reference',    label: 'Reference' }
 ]
 
-const DEFAULT_ENABLED = new Set(['speed', 'sit_incident', 'sit_roadworks', 'sit_closure', 'charging'])
+const DEFAULT_ENABLED = new Set(['speed', 'matrix', 'drips'])
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
 
@@ -127,6 +148,22 @@ let debounceTimer = null
 let activePopup = null
 let msiMarkers = []    // maplibregl.Marker instances for MSI gantries
 let speedMarkers = []  // maplibregl.Marker instances for traffic speed sites
+
+// ─── GPS & Geolocation state ──────────────────────────────────────────────────
+const GPS_STATES = {
+  OFF: 0,
+  FOLLOW: 1,
+  NAVIGATION: 2
+}
+
+let gpsState = GPS_STATES.OFF
+let isTrackingSuspended = false
+let geolocationWatchId = null
+let userCoords = null      // [lng, lat]
+let prevCoords = null      // [lng, lat]
+let userAccuracy = 0      // in meters
+let userHeading = null     // in degrees (0-360)
+let userMarker = null      // maplibregl.Marker
 
 // ─── Map ──────────────────────────────────────────────────────────────────────
 
@@ -166,6 +203,9 @@ map.on('load', () => {
       map.addLayer({ id: `${layer.key}-fill`, type: 'fill', source: layer.key, paint: layer.paint.fill, layout: { visibility: vis } })
       map.addLayer({ id: `${layer.key}-line`, type: 'line', source: layer.key, paint: layer.paint.line, layout: { visibility: vis } })
       setupClickPopup(`${layer.key}-fill`)
+    } else if (layer.geomType === 'line') {
+      map.addLayer({ id: layer.key, type: 'line', source: layer.key, paint: layer.paint, layout: { visibility: vis } })
+      setupClickPopup(layer.key)
     } else {
       map.addLayer({ id: layer.key, type: 'circle', source: layer.key, paint: layer.paint, layout: { visibility: vis } })
       setupClickPopup(layer.key)
@@ -176,6 +216,31 @@ map.on('load', () => {
   setupPanelToggles()
   fetchAll()
   fetchFeedStatus()
+
+  // ─── Geolocation Source & Layers ───────────────────────────────────────────
+  map.addSource('user-accuracy', { type: 'geojson', data: EMPTY_FC })
+  map.addLayer({
+    id: 'user-accuracy-fill',
+    type: 'fill',
+    source: 'user-accuracy',
+    paint: {
+      'fill-color': '#3897ff',
+      'fill-opacity': 0.12
+    }
+  })
+  map.addLayer({
+    id: 'user-accuracy-line',
+    type: 'line',
+    source: 'user-accuracy',
+    paint: {
+      'line-color': '#3897ff',
+      'line-width': 1.5,
+      'line-opacity': 0.35,
+      'line-dasharray': [2, 2]
+    }
+  })
+
+  initGPS()
 
   setInterval(fetchAll, 60_000)
   setInterval(fetchFeedStatus, 60_000)
@@ -615,6 +680,10 @@ function setLayerVisibility (layer, visible) {
     return
   }
   const vis = visible ? 'visible' : 'none'
+  if (layer.geomType === 'line') {
+    if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
+    return
+  }
   if (layer.geomType === 'polygon') {
     if (map.getLayer(`${layer.key}-fill`)) map.setLayoutProperty(`${layer.key}-fill`, 'visibility', vis)
     if (map.getLayer(`${layer.key}-line`)) map.setLayoutProperty(`${layer.key}-line`, 'visibility', vis)
@@ -679,4 +748,307 @@ function updateZoomHint () {
   } else {
     hint.classList.add('hidden')
   }
+}
+
+// ─── GPS & Geolocation Logic ──────────────────────────────────────────────────
+
+function initGPS() {
+  const gpsBtn = document.getElementById('gps-btn')
+  const recenterBtn = document.getElementById('recenter-btn')
+  const compassBtn = document.getElementById('compass-btn')
+
+  // Click handler to toggle GPS state machine
+  gpsBtn.addEventListener('click', () => {
+    let nextState
+    if (gpsState === GPS_STATES.OFF) {
+      nextState = GPS_STATES.FOLLOW
+    } else if (gpsState === GPS_STATES.FOLLOW) {
+      nextState = GPS_STATES.NAVIGATION
+    } else {
+      nextState = GPS_STATES.OFF
+    }
+    
+    isTrackingSuspended = false
+    recenterBtn.classList.add('hidden')
+    setGPSState(nextState)
+  })
+
+  // Re-center button click handler
+  recenterBtn.addEventListener('click', () => {
+    isTrackingSuspended = false
+    recenterBtn.classList.add('hidden')
+    updateCameraToUser()
+  })
+
+  // Compass button resets bearing and pitch
+  compassBtn.addEventListener('click', () => {
+    map.easeTo({
+      bearing: 0,
+      pitch: 0,
+      duration: 800
+    })
+
+    if (gpsState === GPS_STATES.NAVIGATION) {
+      setGPSState(GPS_STATES.FOLLOW)
+    }
+  })
+
+  // Rotate map event updates compass needle
+  map.on('rotate', () => {
+    const bearing = map.getBearing()
+    document.getElementById('compass-needle').style.setProperty('--bearing', `${-bearing}deg`)
+  })
+
+  // Map interaction events to detect user manual manipulation
+  map.on('dragstart', () => {
+    if (gpsState !== GPS_STATES.OFF) {
+      isTrackingSuspended = true
+      recenterBtn.classList.remove('hidden')
+    }
+  })
+
+  map.on('rotatestart', () => {
+    // If manually rotating while in dynamic Navigation mode, suspend dynamic auto-rotation
+    // but keep following user's center position.
+    if (gpsState === GPS_STATES.NAVIGATION) {
+      setGPSState(GPS_STATES.FOLLOW)
+    }
+  })
+}
+
+function setGPSState(state) {
+  gpsState = state
+  const gpsBtn = document.getElementById('gps-btn')
+  const recenterBtn = document.getElementById('recenter-btn')
+
+  gpsBtn.classList.remove('state-off', 'state-follow', 'state-navigation')
+
+  if (state === GPS_STATES.OFF) {
+    gpsBtn.classList.add('state-off')
+    recenterBtn.classList.add('hidden')
+    isTrackingSuspended = false
+    stopGPSWatcher()
+  } else if (state === GPS_STATES.FOLLOW) {
+    gpsBtn.classList.add('state-follow')
+    if (isTrackingSuspended) recenterBtn.classList.remove('hidden')
+    startGPSWatcher()
+    
+    if (userCoords) {
+      map.easeTo({
+        center: userCoords,
+        bearing: 0,
+        pitch: 0,
+        zoom: Math.max(map.getZoom(), 15),
+        duration: 1000
+      })
+    }
+  } else if (state === GPS_STATES.NAVIGATION) {
+    gpsBtn.classList.add('state-navigation')
+    if (isTrackingSuspended) recenterBtn.classList.remove('hidden')
+    startGPSWatcher()
+    
+    if (userCoords) {
+      map.easeTo({
+        center: userCoords,
+        bearing: userHeading !== null ? userHeading : 0,
+        pitch: 55,
+        zoom: Math.max(map.getZoom(), 16),
+        duration: 1000
+      })
+    }
+  }
+}
+
+function startGPSWatcher() {
+  if (geolocationWatchId !== null) return
+
+  if (!navigator.geolocation) {
+    console.warn('Geolocation is not supported by this browser.')
+    return
+  }
+
+  geolocationWatchId = navigator.geolocation.watchPosition(
+    onGeolocationUpdate,
+    onGeolocationError,
+    {
+      enableHighAccuracy: true,
+      timeout: 12000,
+      maximumAge: 0
+    }
+  )
+}
+
+function stopGPSWatcher() {
+  if (geolocationWatchId !== null) {
+    navigator.geolocation.clearWatch(geolocationWatchId)
+    geolocationWatchId = null
+  }
+  
+  if (userMarker) {
+    userMarker.remove()
+    userMarker = null
+  }
+  
+  const source = map.getSource('user-accuracy')
+  if (source) source.setData(EMPTY_FC)
+}
+
+function onGeolocationUpdate(position) {
+  const { latitude, longitude, accuracy, heading } = position.coords
+  
+  prevCoords = userCoords
+  userCoords = [longitude, latitude]
+  userAccuracy = accuracy || 0
+  
+  if (heading !== null && !isNaN(heading)) {
+    userHeading = heading
+  } else if (prevCoords) {
+    const dist = calculateDistance(prevCoords, userCoords)
+    // Suppress jitter by only calculating direction when moving > 2 meters
+    if (dist > 2) {
+      userHeading = calculateBearing(prevCoords, userCoords)
+    }
+  }
+
+  updateUserMarker()
+  updateAccuracyCircle()
+  updateCameraToUser()
+}
+
+function onGeolocationError(err) {
+  console.warn('[geolocation]', err.message)
+}
+
+function updateUserMarker() {
+  if (!userCoords) return
+
+  if (!userMarker) {
+    const el = document.createElement('div')
+    el.className = 'user-marker-container'
+    
+    const cone = document.createElement('div')
+    cone.className = 'user-heading-cone'
+    cone.id = 'user-heading-cone-el'
+    
+    const pulse = document.createElement('div')
+    pulse.className = 'user-pulse'
+    
+    const dot = document.createElement('div')
+    dot.className = 'user-dot'
+    
+    el.appendChild(cone)
+    el.appendChild(pulse)
+    el.appendChild(dot)
+    
+    userMarker = new maplibregl.Marker({ element: el, anchor: 'center' })
+      .setLngLat(userCoords)
+      .addTo(map)
+  } else {
+    userMarker.setLngLat(userCoords)
+  }
+
+  const coneEl = document.getElementById('user-heading-cone-el')
+  if (coneEl) {
+    if (userHeading !== null && userHeading !== undefined) {
+      coneEl.style.setProperty('--heading', `${userHeading}deg`)
+      coneEl.classList.add('visible')
+    } else {
+      coneEl.classList.remove('visible')
+    }
+  }
+}
+
+function updateAccuracyCircle() {
+  const source = map.getSource('user-accuracy')
+  if (!userCoords || !source) return
+  
+  if (userAccuracy > 5) {
+    source.setData(makeCirclePolygon(userCoords[0], userCoords[1], userAccuracy))
+  } else {
+    source.setData(EMPTY_FC)
+  }
+}
+
+function updateCameraToUser() {
+  if (!userCoords || gpsState === GPS_STATES.OFF || isTrackingSuspended) return
+
+  const targetBearing = gpsState === GPS_STATES.NAVIGATION && userHeading !== null ? userHeading : map.getBearing()
+  const targetPitch = gpsState === GPS_STATES.NAVIGATION ? 55 : map.getPitch()
+  const targetZoom = gpsState === GPS_STATES.NAVIGATION ? Math.max(map.getZoom(), 16) : Math.max(map.getZoom(), 15)
+
+  map.easeTo({
+    center: userCoords,
+    zoom: targetZoom,
+    bearing: targetBearing,
+    pitch: targetPitch,
+    duration: 1200,
+    essential: true
+  })
+}
+
+// ─── Mathematical Geolocation Helpers ────────────────────────────────────────
+
+function makeCirclePolygon(lng, lat, radiusMeters) {
+  const steps = 64
+  const coordinates = []
+  const km = radiusMeters / 1000
+  const R = 6378.1 // Earth's radius in km
+  const latRad = (lat * Math.PI) / 180
+  const lngRad = (lng * Math.PI) / 180
+  
+  for (let i = 0; i < steps; i++) {
+    const theta = (i / steps) * 2 * Math.PI
+    const rRad = km / R
+    const cLat = Math.asin(
+      Math.sin(latRad) * Math.cos(rRad) +
+        Math.cos(latRad) * Math.sin(rRad) * Math.cos(theta)
+    )
+    const cLng =
+      lngRad +
+      Math.atan2(
+        Math.sin(theta) * Math.sin(rRad) * Math.cos(latRad),
+        Math.cos(rRad) - Math.sin(latRad) * Math.sin(cLat)
+      )
+    coordinates.push([(cLng * 180) / Math.PI, (cLat * 180) / Math.PI])
+  }
+  coordinates.push(coordinates[0])
+  return {
+    type: 'Feature',
+    geometry: {
+      type: 'Polygon',
+      coordinates: [coordinates]
+    },
+    properties: {}
+  }
+}
+
+function calculateDistance(coord1, coord2) {
+  const [lng1, lat1] = coord1
+  const [lng2, lat2] = coord2
+  const R = 6371000 // in meters
+  const phi1 = (lat1 * Math.PI) / 180
+  const phi2 = (lat2 * Math.PI) / 180
+  const dPhi = ((lat2 - lat1) * Math.PI) / 180
+  const dLam = ((lng2 - lng1) * Math.PI) / 180
+
+  const a =
+    Math.sin(dPhi / 2) * Math.sin(dPhi / 2) +
+    Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLam / 2) * Math.sin(dLam / 2)
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  return R * c
+}
+
+function calculateBearing(coord1, coord2) {
+  const [lng1, lat1] = coord1
+  const [lng2, lat2] = coord2
+  const dLon = ((lng2 - lng1) * Math.PI) / 180
+  const lat1Rad = (lat1 * Math.PI) / 180
+  const lat2Rad = (lat2 * Math.PI) / 180
+
+  const y = Math.sin(dLon) * Math.cos(lat2Rad)
+  const x =
+    Math.cos(lat1Rad) * Math.sin(lat2Rad) -
+    Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon)
+  const brng = (Math.atan2(y, x) * 180) / Math.PI
+  return (brng + 360) % 360
 }

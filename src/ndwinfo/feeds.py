@@ -28,6 +28,13 @@ FEEDS: list[FeedDef] = [
         "parser_fn": None,
         "ingester_cls": None,
     },
+    {
+        "name": "vild_shapefile",
+        "filename": "VILD6.13.A.zip",
+        "cadence_s": 604800,
+        "parser_fn": None,
+        "ingester_cls": None,
+    },
     # --- Real-time measurement ---
     {
         "name": "trafficspeed",
