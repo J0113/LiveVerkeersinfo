@@ -218,6 +218,63 @@ input[type="checkbox"] {
   padding-right: 10px;
 }
 
+/* ── MSI matrix sign gantry markers ─────────────────────────────────────── */
+
+.msi-gantry {
+  display: flex;
+  gap: 2px;
+  background: #111;
+  padding: 3px;
+  border-radius: 3px;
+  border: 1px solid #555;
+  cursor: pointer;
+}
+.msi-gantry:hover { border-color: #888; }
+
+.msi-lane {
+  width: 26px;
+  height: 26px;
+  background: #000;
+  border: 1px solid #333;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: bold;
+  color: #fff;
+  border-radius: 2px;
+  user-select: none;
+}
+.msi-lane.cross  { color: #ff3333; font-size: 14px; }
+.msi-lane.eor    { color: #ff9900; font-size: 13px; }
+.msi-lane.arrow  { color: #44ff88; font-size: 14px; }
+.msi-lane.blank  { opacity: 0.35; }
+
+/* ── Traffic speed site markers ─────────────────────────────────────────── */
+
+.speed-site {
+  display: flex;
+  gap: 2px;
+  background: rgba(0,0,0,0.7);
+  padding: 2px;
+  border-radius: 3px;
+  border: 1px solid #555;
+  cursor: pointer;
+}
+.speed-site:hover { border-color: #aaa; }
+
+.speed-lane {
+  width: 24px;
+  height: 24px;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: bold;
+  user-select: none;
+}
+
 /* ── Scrollbar (dark theme) ──────────────────────────────────────────────── */
 
 ::-webkit-scrollbar { width: 5px; }

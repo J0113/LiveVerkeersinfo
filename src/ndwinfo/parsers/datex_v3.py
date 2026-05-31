@@ -167,22 +167,48 @@ def parse_situations(fileobj, category: str) -> Iterator[dict]:
 def parse_drip(fileobj) -> Iterator[dict]:
     """Parse DATEX v3 VmsTablePublication (dynamic route information panels).
 
-    Yields one dict per VMS.
+    Yields one dict per VMS. File is ~5MB decompressed so we parse the full
+    tree to allow two-pass extraction (locations + live images).
     """
     VMS_T = _t(VMS)
     LOC_T = _t(LOC)
     COM_T = _t(COM)
 
-    for _, ctrl in etree.iterparse(fileobj, events=("end",), tag=f"{VMS_T}vmsController"):
-        ctrl_id = ctrl.get("id")
+    root = etree.parse(fileobj).getroot()
 
+    # Pass 1: collect live status (image + working state) keyed by (ctrl_id, vms_index)
+    status_map: dict[tuple[str, int], dict] = {}
+    for cstat in root.findall(f".//{VMS_T}vmsControllerStatus"):
+        ctrl_ref = cstat.find(f"{VMS_T}vmsControllerReference")
+        ctrl_id = ctrl_ref.get("id") if ctrl_ref is not None else None
+        if not ctrl_id:
+            continue
+        for vstatus_outer in cstat.findall(f"{VMS_T}vmsStatus"):
+            vidx_str = vstatus_outer.get("vmsIndex")
+            _vs = vstatus_outer.find(f"{VMS_T}vmsStatus")
+            vstatus = _vs if _vs is not None else vstatus_outer
+            working_status = _text_e(vstatus, f"{VMS_T}workingStatus")
+            image_data = image_format = None
+            msg_inner = vstatus.find(f"{VMS_T}vmsMessage/{VMS_T}vmsMessage")
+            if msg_inner is not None:
+                img_e = msg_inner.find(f"{VMS_T}image")
+                if img_e is not None:
+                    image_data = _text_e(img_e, f"{VMS_T}imageData")
+                    image_format = _text_e(img_e, f"{VMS_T}imageFormat") or "png"
+            key = (ctrl_id, int(vidx_str) if vidx_str else 0)
+            status_map[key] = {
+                "working_status": working_status,
+                "image_data": image_data,
+                "image_format": image_format,
+            }
+
+    # Pass 2: yield sign rows merged with status
+    for ctrl in root.findall(f".//{VMS_T}vmsController"):
+        ctrl_id = ctrl.get("id")
         for vms_outer in ctrl.findall(f"{VMS_T}vms"):
             vms_index_str = vms_outer.get("vmsIndex")
-
-            # Inner nested vms element contains the actual content
-            vms = vms_outer.find(f"{VMS_T}vms")
-            if vms is None:
-                vms = vms_outer
+            _vms = vms_outer.find(f"{VMS_T}vms")
+            vms = _vms if _vms is not None else vms_outer
 
             desc_val = vms.find(f".//{COM_T}value")
             description = (
@@ -209,21 +235,21 @@ def parse_drip(fileobj) -> Iterator[dict]:
                         pass
 
             geom = f"POINT({lon} {lat})" if lat is not None and lon is not None else None
+            vms_index = int(vms_index_str) if vms_index_str else 0
+            status = status_map.get((ctrl_id, vms_index))
 
             row = {
                 "controller_id": ctrl_id,
-                "vms_index": int(vms_index_str) if vms_index_str else 0,
+                "vms_index": vms_index,
                 "description": description,
                 "vms_type": _text_e(vms, f"{VMS_T}vmsType"),
                 "physical_support": _text_e(vms, f"{VMS_T}physicalSupport"),
                 "bearing": bearing,
                 "geom": geom,
-                "message": None,
+                "message": status,
             }
             row["raw"] = {k: v for k, v in row.items() if k != "raw"}
             yield row
-
-        _clear(ctrl)
 
 
 # ---------------------------------------------------------------------------

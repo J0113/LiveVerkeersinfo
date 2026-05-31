@@ -81,6 +81,7 @@ def get_drips(
     ).all()
 
     def props(r):
+        msg = r.message or {}
         return {
             "controller_id": r.controller_id,
             "vms_index": r.vms_index,
@@ -88,7 +89,9 @@ def get_drips(
             "vms_type": r.vms_type,
             "physical_support": r.physical_support,
             "bearing": r.bearing,
-            "message": r.message,
+            "working_status": msg.get("working_status"),
+            "image_format": msg.get("image_format"),
+            "image_b64": msg.get("image_data"),
         }
 
     return geo_response(make_fc(rows, "geom_json", props))

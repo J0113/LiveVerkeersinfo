@@ -86,3 +86,125 @@ Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
 - [x] Spatial API (FastAPI, bbox filter) — `src/ndwinfo/api/`
 - [x] Web UI (MapLibre, layer per feed, bbox = current viewport) — `web/`
 - [x] Containerization (Docker Compose: db + app + poller)
+
+## Directory structure & key files
+
+```
+src/ndwinfo/
+├── models.py              # SQLAlchemy ORM for all feed tables (MeasurementSite, TrafficMeasurement, Situation, etc.)
+├── feeds.py               # Feed registry: feed name → URL filename, cadence, parser, ingester
+├── config.py              # Pydantic settings (DATABASE_URL, NDW_BASE_URL, DATA_DIR, API limits)
+├── db.py                  # SQLAlchemy engine and session setup
+├── download.py            # HTTP download with Last-Modified caching (conditional GET)
+├── poller.py              # Main loop: iterate feeds.FEEDS, download, parse, ingest
+├── api/
+│   ├── main.py            # FastAPI app init, CORS, static file mount, router includes
+│   ├── deps.py            # Dependency injection (BBoxDep, DbDep) + validation
+│   ├── geo.py             # ST_AsGeoJSON formatting, make_fc helper
+│   └── routers/           # One per feed family:
+│       ├── traffic.py     # GET /api/traffic/speed, /api/traffic/traveltime (TrafficMeasurement join MeasurementSite)
+│       ├── situations.py  # GET /api/situations (Situation with geometry)
+│       ├── signs.py       # GET /api/signs (Sign, SignMessage tables)
+│       ├── charging.py    # GET /api/charging (ChargingStation, Tariff tables)
+│       ├── truckparking.py # GET /api/truckparking (TruckParkingArea, TruckParkingStatus)
+│       ├── verkeersborden.py # GET /api/verkeersborden (Verkeersbord — large CSV)
+│       ├── emission.py    # GET /api/emission (EmissionZone)
+│       └── feeds.py       # GET /api/feeds (metadata on ingest cadence, last_run, row counts)
+├── parsers/               # Feed-format parsers, called by ingesters:
+│   ├── datex_v2.py        # DATEX II v2 (SOAP-wrapped) → list of dicts
+│   ├── datex_v3.py        # DATEX III (mc:messageContainer) → list of dicts
+│   ├── geojson_ocpi.py    # GeoJSON + OCPI JSON (charging)
+│   ├── csv_signs.py       # CSV (Verkeersborden large dataset)
+│   ├── shapefile_ref.py   # Shapefiles (meetlocaties)
+│   └── ndw_vms.py         # NDW XML matrix signs
+└── ingest/                # Feed-specific ingesters (called by poller, use parsers):
+    ├── base.py            # BaseIngester abstract class (upsert logic)
+    ├── measurement.py     # MeasurementSite + TrafficMeasurement (traffic speed/traveltime)
+    ├── situations.py      # Situation (all DATEX v3 situation types: roadworks, closures, etc.)
+    ├── signs.py           # Sign + SignMessage (matrix + DRIP)
+    ├── charging.py        # ChargingStation + Tariff (GeoJSON + OCPI)
+    ├── truckparking.py    # TruckParkingArea + TruckParkingStatus
+    ├── verkeersborden.py  # Verkeersbord (streaming CSV insert)
+    ├── reference.py       # MeetlocatiePunt, MeetlocatieVak, VildPoint (reference geometry)
+    └── emission.py        # EmissionZone
+
+migrations/              # Alembic schema migrations (SQLAlchemy tracked)
+web/                    # Static frontend:
+├── index.html          # MapLibre GL JS canvas
+├── app.js              # Layer toggles, bbox picker, API fetch + render
+└── style.css           # Map styling
+data/                   # Downloaded snapshots (gitignored)
+├── .meta/              # Feed metadata JSON (last_modified, etag, download time)
+└── samples/            # (Optional) sample files for testing
+
+docs/                   # Feed documentation:
+├── README.md           # Catalog & links to feed families
+├── 01-traffic-realtime.md
+├── 02-signs-vms.md
+├── 03-roadworks-measures.md
+├── 04-charging.md
+├── 05-truckparking.md
+├── 06-verkeersborden.md
+└── 07-static-reference.md
+```
+
+## Core flow
+
+**Poller** (`poller.py`):
+1. For each feed in `feeds.FEEDS`:
+   - Download from NDW (skip if `Last-Modified` unchanged)
+   - Route to appropriate parser (DATEX v2/v3, GeoJSON, CSV, shapefile)
+   - Pass parsed records to ingester
+2. Ingester upserts records into its table (latest snapshot only)
+3. Repeat on cadence (real-time feeds ~60s, reference ~hourly, large files ~daily)
+
+**API** (FastAPI):
+- All endpoints require `bbox` query param (min_lon, min_lat, max_lon, max_lat)
+- Build `ST_MakeEnvelope(…, 4326)`, query with `ST_Intersects` on geometry index
+- Return GeoFeatureCollection (features + properties)
+- Limits enforced via `settings.api_default_limit`, `api_max_limit`
+
+**Web UI** (MapLibre GL JS):
+- Draw base map layer
+- Fetch each feed endpoint via API with current viewport bbox
+- Toggle layers on/off
+- Render as GeoJSON source → symbol layer
+
+## Configuration
+
+Environment variables (`.env` or docker-compose):
+- `DATABASE_URL`: PostgreSQL connection string (default in compose: `postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo`)
+- `NDW_BASE_URL`: Base URL for downloads (default: `https://opendata.ndw.nu`)
+- `DATA_DIR`: Local snapshot directory (default: `/app/data`)
+
+Python settings (`config.py`):
+- `api_default_limit`: Default rows per list endpoint (e.g. 500)
+- `api_max_limit`: Max rows allowed (e.g. 5000)
+- `db_pool_size`: Connection pool size
+
+## How to extend
+
+**Add a new feed**:
+1. Define entry in `feeds.FEEDS` (name, filename, cadence, parser_fn, ingester_cls)
+2. Create parser in `src/ndwinfo/parsers/` (return `list[dict]`)
+3. Create ingester in `src/ndwinfo/ingest/` (extend `BaseIngester`, implement `ingest(records, db_session)`)
+4. Add ORM model(s) in `models.py` with geometry index
+5. Create API router in `src/ndwinfo/api/routers/`
+6. Import router in `api/main.py`
+7. Document in `docs/`
+
+**Run locally**:
+```bash
+docker-compose up -d
+# API: http://localhost:3500
+# Web UI: http://localhost:3500
+# Schema migrations auto-run on app startup
+```
+
+## Notes
+
+- Stream-parse large feeds (XML iterparse, ijson for JSON, CSV reader) — don't load DOM
+- Always join reference tables (measurement_site, measurement_characteristics) before ingesting values
+- All geometry stored as WGS84 (EPSG:4326) with GiST spatial index
+- API never returns unfiltered national dataset — bbox required on all list endpoints
+- Latest-snapshot upsert model — no time-series history in v1

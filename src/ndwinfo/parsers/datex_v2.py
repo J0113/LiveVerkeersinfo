@@ -79,26 +79,54 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
         site["raw"] = {k: v for k, v in site.items() if k != "raw"}
 
         chars: list[dict] = []
-        for char in elem.findall(f"{T}measurementSpecificCharacteristics"):
-            index = char.get("index")
+        for char_outer in elem.findall(f"{T}measurementSpecificCharacteristics"):
+            index = char_outer.get("index")
+            # Actual content is in a nested element with the same tag name
+            char = char_outer.find(f"{T}measurementSpecificCharacteristics")
+            if char is None:
+                char = char_outer
 
+            # "lane1" → 1, "lane2" → 2, etc.
+            lane_str = _text(char, "specificLane")
+            lane: int | None = None
+            if lane_str and lane_str.startswith("lane"):
+                try:
+                    lane = int(lane_str[4:])
+                except ValueError:
+                    pass
+
+            # "trafficFlow" → "TrafficFlow", "trafficSpeed" → "TrafficSpeed"
+            raw_vtype = _text(char, "specificMeasurementValueType")
+            value_type: str | None = (
+                raw_vtype[0].upper() + raw_vtype[1:] if raw_vtype else None
+            )
+
+            # Vehicle length bounds from lengthCharacteristic elements.
+            # anyVehicle has neither bound → both stay None, used later to
+            # identify the all-vehicles aggregate measurement.
             veh_min = veh_max = None
             vc = char.find(f"{T}specificVehicleCharacteristics")
             if vc is not None:
-                vl = vc.find(f"{T}vehicleLengthCharacteristics")
-                if vl is not None:
-                    lt = vl.find(f"{T}vehicleLengthLessThan")
-                    gte = vl.find(f"{T}vehicleLengthGreaterThanOrEqualTo")
-                    veh_max = float(lt.text) if lt is not None and lt.text else None
-                    veh_min = float(gte.text) if gte is not None and gte.text else None
+                for lc in vc.findall(f"{T}lengthCharacteristic"):
+                    op = lc.findtext(f"{T}comparisonOperator")
+                    vl_text = lc.findtext(f"{T}vehicleLength")
+                    if op and vl_text:
+                        try:
+                            vl = float(vl_text)
+                            if op in ("lessThan", "lessThanOrEqualTo"):
+                                veh_max = vl
+                            elif op in ("greaterThan", "greaterThanOrEqualTo"):
+                                veh_min = vl
+                        except ValueError:
+                            pass
 
             chars.append(
                 {
                     "site_id": site_id,
                     "index": int(index) if index else None,
-                    "lane": _text(char, "specificLane"),
+                    "lane": lane,
                     "period_s": _int(char, "period"),
-                    "value_type": _text(char, "specificMeasurementValueType"),
+                    "value_type": value_type,
                     "veh_length_min": veh_min,
                     "veh_length_max": veh_max,
                 }

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from ndwinfo.download import DownloadResult, open_feed
@@ -14,6 +15,32 @@ from ndwinfo.parsers.datex_v3 import parse_drip
 from ndwinfo.parsers.ndw_vms import parse_matrix_signs
 
 UTC = timezone.utc
+
+
+def _upsert_signs_preserve_geom(session, rows: list[dict]) -> int:
+    """Upsert msi_sign rows without overwriting non-NULL geom from shapefile."""
+    if not rows:
+        return 0
+    now = datetime.now(UTC)
+    for r in rows:
+        r["ingested_at"] = now
+    table = MsiSign.__table__
+    stmt = pg_insert(table).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["uuid"],
+        set_={
+            "road": stmt.excluded.road,
+            "carriageway": stmt.excluded.carriageway,
+            "lane": stmt.excluded.lane,
+            "km": stmt.excluded.km,
+            # Keep existing geom (from shapefile) if already set; NULL from parser won't clobber it
+            "geom": func.coalesce(table.c.geom, stmt.excluded.geom),
+            "raw": stmt.excluded.raw,
+            "ingested_at": stmt.excluded.ingested_at,
+        },
+    )
+    session.execute(stmt)
+    return len(rows)
 
 
 class MatrixSignIngester(Ingester):
@@ -37,7 +64,7 @@ class MatrixSignIngester(Ingester):
                     state_batch.append(dict(state_dict))
 
                 if len(sign_batch) >= BATCH_SIZE:
-                    total += bulk_upsert(session, MsiSign, sign_batch, ["uuid"])
+                    total += _upsert_signs_preserve_geom(session, sign_batch)
                     if state_batch:
                         bulk_upsert(session, MsiState, state_batch, ["uuid"])
                     session.flush()
@@ -45,7 +72,7 @@ class MatrixSignIngester(Ingester):
                     state_batch.clear()
 
         if sign_batch:
-            total += bulk_upsert(session, MsiSign, sign_batch, ["uuid"])
+            total += _upsert_signs_preserve_geom(session, sign_batch)
             if state_batch:
                 bulk_upsert(session, MsiState, state_batch, ["uuid"])
             session.flush()

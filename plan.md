@@ -316,7 +316,7 @@ refetches the new bbox.
 2. `docker-compose.yml` services: `db` (postgis), `app` (uvicorn API + serve
    `web/` static), `poller`. Healthchecks; `app` depends_on `db`.
 3. `README.md` (root): quickstart — `cp .env.example .env`, `docker compose up`,
-   `alembic upgrade head`, open `http://localhost:8000`.
+   `alembic upgrade head`, open `http://localhost:3500`.
 4. Update [CLAUDE.md](CLAUDE.md) status checkboxes as phases complete.
 
 **Check**: fresh `docker compose up` brings up DB+API+poller; UI loads; after a

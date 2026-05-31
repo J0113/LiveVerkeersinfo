@@ -11,7 +11,7 @@ from ndwinfo.models import FeedRun
 router = APIRouter(prefix="/feeds", tags=["feeds"])
 
 
-@router.get("/status")
+@router.get("")
 def get_feed_status(db: DbDep):
     # Latest run per feed (by MAX id — runs are sequential)
     subq = (

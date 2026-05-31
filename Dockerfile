@@ -14,4 +14,4 @@ COPY web/ web/
 COPY migrations/ migrations/
 COPY alembic.ini .
 
-CMD ["uvicorn", "ndwinfo.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "ndwinfo.api.main:app", "--host", "0.0.0.0", "--port", "3500"]

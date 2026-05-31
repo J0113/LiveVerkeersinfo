@@ -9,7 +9,7 @@ cp .env.example .env          # optional — defaults work out of the box
 docker compose up --build -d
 ```
 
-Open **http://localhost:8000** — the map loads live data for whatever area you're viewing.
+Open **http://localhost:3500** — the map loads live data for whatever area you're viewing.
 
 The `app` container runs `alembic upgrade head` automatically before starting. The `poller` container starts ingesting all feeds immediately.
 
@@ -29,7 +29,7 @@ NDW open data (opendata.ndw.nu)
 | Service | Description |
 |---------|-------------|
 | `db`     | PostgreSQL 16 + PostGIS 3.4 |
-| `app`    | FastAPI + uvicorn on port 8000; also serves `web/` as static files |
+| `app`    | FastAPI + uvicorn on port 3500; also serves `web/` as static files |
 | `poller` | Background ingest loop — runs each feed on its cadence |
 
 ## API endpoints

@@ -12,7 +12,7 @@ from ndwinfo.api.geo import geo_response, make_fc
 from ndwinfo.config import settings
 from ndwinfo.models import EmissionZone
 
-router = APIRouter(prefix="/emission-zones", tags=["emission-zones"])
+router = APIRouter(prefix="/emission", tags=["emission"])
 
 
 @router.get("")
