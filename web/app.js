@@ -294,28 +294,27 @@ function renderMatrixMarkers (fc) {
       const aspect = lane.aspect_type || ''
       const val = lane.value
 
-      if (aspect === 'speedlimit' && val) {
-        box.className = 'msi-lane speed'
-        box.textContent = val
-      } else if (aspect === 'lane_open') {
-        box.className = 'msi-lane arrow'
-        box.textContent = '↑'
-      } else if (aspect === 'lane_closed_ahead') {
-        box.className = 'msi-lane cross'
+      if ((aspect === 'speedlimit' || (!aspect && val)) && val) {
+        box.className = 'msi-lane'
+        const disc = document.createElement('div')
+        disc.className = 'msi-speed-disc'
+        disc.textContent = val
+        box.appendChild(disc)
+      } else if (aspect === 'lane_open' || aspect.includes('arrow')) {
+        box.className = 'msi-lane lane-open'
+        box.textContent = '▼'
+      } else if (aspect === 'lane_closed') {
+        box.className = 'msi-lane lane-closed'
         box.textContent = '✕'
-      } else if (aspect === 'end_of_restriction') {
-        box.className = 'msi-lane eor'
-        box.textContent = '⊘'
-      } else if (aspect.includes('arrow')) {
-        box.className = 'msi-lane arrow'
-        box.textContent = msiArrow(aspect)
-      } else if (val) {
-        box.className = 'msi-lane speed'
-        box.textContent = val
+      } else if (aspect === 'lane_closed_ahead') {
+        box.className = 'msi-lane lane-closed-ahead'
+        box.textContent = '✕'
+      } else if (aspect === 'restriction_end' || aspect === 'end_of_restriction') {
+        box.className = 'msi-lane restriction-end'
+        box.textContent = '╱'
       } else {
         box.className = 'msi-lane blank'
       }
-      if (lane.red_ring) box.style.border = '1px solid #ff4444'
 
       box.title = [lane.road, lane.carriageway, `lane ${lane.lane ?? '?'}`, aspect || val].filter(Boolean).join(' · ')
       el.appendChild(box)

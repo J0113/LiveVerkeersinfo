@@ -218,37 +218,65 @@ input[type="checkbox"] {
   padding-right: 10px;
 }
 
-/* ── MSI matrix sign gantry markers ─────────────────────────────────────── */
+/* ── MSI matrix sign gantry markers (RWS rijstrooksignalering style) ────── */
 
 .msi-gantry {
   display: flex;
-  gap: 2px;
-  background: #111;
-  padding: 3px;
-  border-radius: 3px;
-  border: 1px solid #555;
+  gap: 3px;
+  background: #0d0d0d;
+  padding: 4px;
+  border-radius: 4px;
+  border: 2px solid #3a3a3a;
   cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.6);
 }
-.msi-gantry:hover { border-color: #888; }
+.msi-gantry:hover { border-color: #777; }
 
 .msi-lane {
-  width: 26px;
-  height: 26px;
-  background: #000;
-  border: 1px solid #333;
+  width: 40px;
+  height: 40px;
+  background: #0d0d0d;
+  border: 1px solid #1c1c1c;
+  border-radius: 2px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
-  font-weight: bold;
-  color: #fff;
-  border-radius: 2px;
   user-select: none;
+  position: relative;
+  overflow: hidden;
 }
-.msi-lane.cross  { color: #ff3333; font-size: 14px; }
-.msi-lane.eor    { color: #ff9900; font-size: 13px; }
-.msi-lane.arrow  { color: #44ff88; font-size: 14px; }
-.msi-lane.blank  { opacity: 0.35; }
+
+/* Speed limit: white disc with red ring */
+.msi-speed-disc {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid #cc0000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 900;
+  color: #111;
+  line-height: 1;
+  font-family: Arial, sans-serif;
+}
+
+/* Lane open: green downward arrow */
+.msi-lane.lane-open  { color: #00cc00; font-size: 26px; line-height: 1; }
+
+/* Lane closed: solid red X */
+.msi-lane.lane-closed { color: #ff1111; font-size: 26px; font-weight: 900; line-height: 1; }
+
+/* Lane closes ahead: amber X */
+.msi-lane.lane-closed-ahead { color: #ff8800; font-size: 26px; font-weight: 900; line-height: 1; }
+
+/* End of restriction: white diagonal bar */
+.msi-lane.restriction-end { color: #fff; font-size: 30px; line-height: 1; }
+
+/* Blank / sign off: nearly invisible dark square */
+.msi-lane.blank { background: #080808; border-color: #111; }
 
 /* ── Traffic speed site markers ─────────────────────────────────────────── */
 
