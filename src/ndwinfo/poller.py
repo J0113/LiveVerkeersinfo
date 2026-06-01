@@ -9,10 +9,11 @@ from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 
+from ndwinfo.config import settings
 from ndwinfo.db import SessionLocal
 from ndwinfo.feeds import FEEDS
 from ndwinfo.ingest import INGESTERS
-from ndwinfo.models import FeedRun
+from ndwinfo.models import FeedRun, SystemState
 
 TICK_S = 10
 UTC = timezone.utc
@@ -27,9 +28,24 @@ def _last_finished_per_feed(session) -> dict[str, datetime]:
     return {feed: ts for feed, ts in rows if ts}
 
 
+def _api_idle(session) -> bool:
+    state = session.get(SystemState, 1)
+    if state is None or state.last_api_request_at is None:
+        return False  # no record yet → treat as active (fresh install)
+    elapsed = (datetime.now(UTC) - state.last_api_request_at).total_seconds()
+    return elapsed > settings.poller_idle_timeout_s
+
+
 def run_once() -> None:
     with SessionLocal() as session:
         last = _last_finished_per_feed(session)
+        idle = _api_idle(session)
+
+    if idle:
+        logger.info(
+            "API idle for > %ds, pausing poll pass", settings.poller_idle_timeout_s
+        )
+        return
 
     now = datetime.now(UTC)
 

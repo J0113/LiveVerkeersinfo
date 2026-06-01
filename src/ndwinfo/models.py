@@ -410,3 +410,10 @@ class FeedRun(Base):
     last_modified: Mapped[Optional[str]] = mapped_column(String)
     rows_upserted: Mapped[Optional[int]] = mapped_column(Integer)
     error: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class SystemState(Base):
+    __tablename__ = "system_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)  # always 1
+    last_api_request_at: Mapped[Optional[datetime]] = mapped_column(_tz, nullable=True)

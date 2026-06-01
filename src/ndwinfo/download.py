@@ -72,6 +72,7 @@ def fetch(
                 error=None,
             )
     except Exception as exc:
+        path.unlink(missing_ok=True)  # partial write → remove so 304 can't reuse it
         return DownloadResult(
             status="error",
             path=None,

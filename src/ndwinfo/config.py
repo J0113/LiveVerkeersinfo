@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     max_bbox_area: float = 25.0
     api_default_limit: int = 500
     api_max_limit: int = 2000
+    poller_idle_timeout_s: int = 300
 
 
 settings = Settings()
