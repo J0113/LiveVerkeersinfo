@@ -43,6 +43,32 @@ def _latlon(elem) -> str | None:
     return None
 
 
+def _linear_geom(elem) -> str | None:
+    """Build a WKT LINESTRING from a Linear location's start/end coordinates.
+
+    Travel-time segments carry linearByCoordinatesExtension/linearCoordinates
+    StartPoint + EndPoint. Returns None when either endpoint is missing.
+    """
+    def _pt(tag: str) -> tuple[float, float] | None:
+        node = elem.find(f".//{T}{tag}/{T}pointCoordinates")
+        if node is None:
+            return None
+        lat_e = node.find(f"{T}latitude")
+        lon_e = node.find(f"{T}longitude")
+        if lat_e is not None and lon_e is not None and lat_e.text and lon_e.text:
+            try:
+                return float(lon_e.text), float(lat_e.text)
+            except ValueError:
+                return None
+        return None
+
+    start = _pt("linearCoordinatesStartPoint")
+    end = _pt("linearCoordinatesEndPoint")
+    if start and end and start != end:
+        return f"LINESTRING({start[0]} {start[1]}, {end[0]} {end[1]})"
+    return None
+
+
 def _multilang(elem, tag: str) -> str | None:
     """Extract text from <tag><values><value lang="nl">…</value></values></tag>."""
     child = elem.find(f"{T}{tag}")
@@ -135,6 +161,7 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
 
         loc = elem.find(f"{T}measurementSiteLocation")
         geom = _latlon(loc) if loc is not None else None
+        line_geom = _linear_geom(loc) if loc is not None else None
 
         name = _multilang(elem, "measurementSiteName")
 
@@ -161,6 +188,7 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
             "km": location_info["km"],
             "openlr_bearing": openlr_bearing,
             "geom": geom,
+            "line_geom": line_geom,
         }
         site["raw"] = {k: v for k, v in site.items() if k != "raw"}
 

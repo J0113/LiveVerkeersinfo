@@ -268,7 +268,9 @@ def get_traveltime(
             TravelTime.accuracy,
             TravelTime.n_inputs,
             TravelTime.quality,
-            func.ST_AsGeoJSON(MeasurementSite.geom, 6).label("geom_json"),
+            func.ST_AsGeoJSON(
+                func.coalesce(MeasurementSite.line_geom, MeasurementSite.geom), 6
+            ).label("geom_json"),
         )
         .join(MeasurementSite, TravelTime.segment_id == MeasurementSite.id)
         .where(func.ST_Intersects(MeasurementSite.geom, bbox_geom))

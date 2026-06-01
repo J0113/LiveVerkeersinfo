@@ -12,6 +12,30 @@ const LAYERS = [
     key: 'speed', label: 'Traffic Speed', group: 'traffic',
     endpoint: '/traffic/speed', geomType: 'speed', legendColor: '#00cc44',
   },
+  {
+    // Segment line (start→end), coloured by delay = duration_s / ref_duration_s
+    // (free-flow green → congested red). Segments lacking linear coordinates fall
+    // back to a point in the API and won't draw on this line layer.
+    key: 'traveltime', label: 'Travel Time', group: 'traffic',
+    endpoint: '/traffic/traveltime', geomType: 'line', legendColor: '#cc66ff',
+    arrows: true,  // direction arrows along the segment line (start→end)
+    paint: {
+      'line-width': 4,
+      'line-opacity': 0.85,
+      'line-color': ['case',
+        ['any',
+          ['==', ['get', 'ref_duration_s'], null],
+          ['==', ['get', 'duration_s'], null],
+          ['<=', ['coalesce', ['get', 'ref_duration_s'], 0], 0]
+        ],
+        '#888888',
+        ['interpolate', ['linear'],
+          ['/', ['get', 'duration_s'], ['get', 'ref_duration_s']],
+          1.0, '#00cc44', 1.3, '#ffdd00', 1.6, '#ff8800', 2.0, '#ff3333'
+        ]
+      ]
+    }
+  },
 
   // ── Situations ─────────────────────────────────────────────────────────────
   {
@@ -198,6 +222,8 @@ const map = new maplibregl.Map({
 // ─── Map load: wire up sources, layers, and UI ────────────────────────────────
 
 map.on('load', () => {
+  addArrowImage()
+
   for (const layer of LAYERS) {
     if (layer.geomType === 'msi') continue  // rendered as HTML markers, not MapLibre layers
 
@@ -209,7 +235,24 @@ map.on('load', () => {
       map.addLayer({ id: `${layer.key}-line`, type: 'line', source: layer.key, paint: layer.paint.line, layout: { visibility: vis } })
       setupClickPopup(`${layer.key}-fill`)
     } else if (layer.geomType === 'line') {
-      map.addLayer({ id: layer.key, type: 'line', source: layer.key, paint: layer.paint, layout: { visibility: vis } })
+      map.addLayer({ id: layer.key, type: 'line', source: layer.key, paint: layer.paint, layout: { visibility: vis, 'line-cap': 'round' } })
+      if (layer.arrows) {
+        map.addLayer({
+          id: `${layer.key}-arrows`,
+          type: 'symbol',
+          source: layer.key,
+          layout: {
+            'symbol-placement': 'line',
+            'symbol-spacing': 70,
+            'icon-image': 'tt-arrow',
+            'icon-size': 0.55,
+            'icon-rotation-alignment': 'map',
+            'icon-allow-overlap': true,
+            'icon-ignore-placement': true,
+            visibility: vis
+          }
+        })
+      }
       setupClickPopup(layer.key)
     } else {
       map.addLayer({ id: layer.key, type: 'circle', source: layer.key, paint: layer.paint, layout: { visibility: vis } })
@@ -721,6 +764,7 @@ function setLayerVisibility (layer, visible) {
   const vis = visible ? 'visible' : 'none'
   if (layer.geomType === 'line') {
     if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
+    if (map.getLayer(`${layer.key}-arrows`)) map.setLayoutProperty(`${layer.key}-arrows`, 'visibility', vis)
     return
   }
   if (layer.geomType === 'polygon') {
@@ -1026,6 +1070,30 @@ function updateCameraToUser() {
 }
 
 // ─── Mathematical Geolocation Helpers ────────────────────────────────────────
+
+// Generate a small right-pointing arrow sprite for line symbol layers (travel
+// time direction). Drawn to a canvas so we need no glyphs/sprite URL in the
+// raster style. Points +x (along line digitisation start→end).
+function addArrowImage() {
+  if (map.hasImage('tt-arrow')) return
+  const s = 24
+  const c = document.createElement('canvas')
+  c.width = c.height = s
+  const x = c.getContext('2d')
+  x.beginPath()
+  x.moveTo(s * 0.25, s * 0.18)
+  x.lineTo(s * 0.85, s * 0.5)
+  x.lineTo(s * 0.25, s * 0.82)
+  x.closePath()
+  x.fillStyle = '#1a1a2a'
+  x.strokeStyle = '#ffffff'
+  x.lineWidth = 2.5
+  x.lineJoin = 'round'
+  x.fill()
+  x.stroke()
+  const img = x.getImageData(0, 0, s, s)
+  map.addImage('tt-arrow', img, { pixelRatio: 2 })
+}
 
 function makeCirclePolygon(lng, lat, radiusMeters) {
   const steps = 64

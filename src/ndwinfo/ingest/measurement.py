@@ -33,6 +33,7 @@ class MeasurementSiteIngester(Ingester):
             for site_dict, char_dicts in parse_measurement_site_table(f):
                 row = dict(site_dict)
                 row["geom"] = wkt_geom(row.get("geom"))
+                row["line_geom"] = wkt_geom(row.get("line_geom"))
                 site_batch.append(row)
 
                 for c in char_dicts:

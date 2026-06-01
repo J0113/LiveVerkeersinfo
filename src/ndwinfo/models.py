@@ -47,6 +47,8 @@ class MeasurementSite(Base):
     km: Mapped[Optional[Any]] = mapped_column(Numeric)
     openlr_bearing: Mapped[Optional[int]] = mapped_column(Integer)
     geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
+    # Straight start→end segment line for travel-time sites (Linear locations).
+    line_geom: Mapped[Optional[Any]] = mapped_column(Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
