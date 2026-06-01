@@ -136,4 +136,16 @@ def parse_msi_shapefile(zip_path: Path) -> Iterator[dict]:
                     uuid = str(raw[col])
                     break
 
-            yield {"uuid": uuid, "geom": geom, "raw": raw}
+            # Road heading at sign (deg). Column varies; "bearing" in current shapefile.
+            bearing = None
+            for col in ("bearing", "BEARING", "hoek", "angle"):
+                if col in raw and raw[col] is not None:
+                    try:
+                        bearing = float(raw[col])
+                        if bearing != bearing:  # NaN
+                            bearing = None
+                    except (TypeError, ValueError):
+                        bearing = None
+                    break
+
+            yield {"uuid": uuid, "geom": geom, "bearing": bearing, "raw": raw}

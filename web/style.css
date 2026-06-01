@@ -229,6 +229,7 @@ input[type="checkbox"] {
   border: 2px solid #3a3a3a;
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+  transform-origin: center center;  /* zoom-scaling pivots on the marker point */
 }
 .msi-gantry:hover { border-color: #777; }
 
@@ -246,22 +247,24 @@ input[type="checkbox"] {
   overflow: hidden;
 }
 
-/* Speed limit: white disc with red ring */
+/* Speed limit: lit digits on the black sign (no fill). Red ring only when
+   mandatory (red_ring=true). */
 .msi-speed-disc {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: #fff;
-  border: 3px solid #cc0000;
+  background: transparent;
+  border: 3px solid transparent;  /* reserve space; ring shown via .ringed */
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 900;
-  color: #111;
+  color: #fff;
   line-height: 1;
   font-family: Arial, sans-serif;
 }
+.msi-speed-disc.ringed { border-color: #cc0000; }
 
 /* Lane open: green downward arrow */
 .msi-lane.lane-open  { color: #00cc00; font-size: 26px; line-height: 1; }
@@ -269,11 +272,58 @@ input[type="checkbox"] {
 /* Lane closed: solid red X */
 .msi-lane.lane-closed { color: #ff1111; font-size: 26px; font-weight: 900; line-height: 1; }
 
-/* Lane closes ahead: amber X */
-.msi-lane.lane-closed-ahead { color: #ff8800; font-size: 26px; font-weight: 900; line-height: 1; }
+/* Merge / lane-closing: white diagonal arrow toward the open lane */
+.msi-lane.lane-merge { color: #fff; font-size: 26px; font-weight: 900; line-height: 1; }
 
-/* End of restriction: white diagonal bar */
-.msi-lane.restriction-end { color: #fff; font-size: 30px; line-height: 1; }
+/* Flashing lamps: 4 amber corner dots. Top pair → off → bottom pair → off.
+   The lit symbol underneath stays steady; only the lamps cycle. */
+.msi-lamp {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ffd24d;
+  box-shadow: 0 0 4px #ffb300;
+  opacity: 0;
+  pointer-events: none;
+}
+.msi-lamp.tl { top: 2px; left: 2px; }
+.msi-lamp.tr { top: 2px; right: 2px; }
+.msi-lamp.bl { bottom: 2px; left: 2px; }
+.msi-lamp.br { bottom: 2px; right: 2px; }
+.msi-lamp.top    { animation: msi-lamp-top 1.2s linear infinite; }
+.msi-lamp.bottom { animation: msi-lamp-bottom 1.2s linear infinite; }
+
+@keyframes msi-lamp-top {
+  0%, 24.9%  { opacity: 1; }
+  25%, 100%  { opacity: 0; }
+}
+@keyframes msi-lamp-bottom {
+  0%, 49.9%  { opacity: 0; }
+  50%, 74.9% { opacity: 1; }
+  75%, 100%  { opacity: 0; }
+}
+
+/* End of restriction: light-grey ring with a diagonal slash (no fill) */
+.msi-end-disc {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: transparent;
+  border: 2px solid #cfcfcf;
+  position: relative;
+  overflow: hidden;
+}
+.msi-end-disc::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -10%;
+  width: 3px;
+  height: 120%;
+  background: #cfcfcf;
+  transform: translateX(-50%) rotate(-45deg);  /* lower-left → upper-right slash */
+}
 
 /* Blank / sign off: nearly invisible dark square */
 .msi-lane.blank { background: #080808; border-color: #111; }
@@ -288,6 +338,7 @@ input[type="checkbox"] {
   border-radius: 3px;
   border: 1px solid #555;
   cursor: pointer;
+  transform-origin: center center;
 }
 .speed-site:hover { border-color: #aaa; }
 

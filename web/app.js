@@ -146,8 +146,11 @@ const enabled = new Set(DEFAULT_ENABLED)
 const controllers = {}  // key → AbortController
 let debounceTimer = null
 let activePopup = null
-let msiMarkers = []    // maplibregl.Marker instances for MSI gantries
+let msiMarkers = []    // { marker, el, bearing } for MSI gantries
 let speedMarkers = []  // maplibregl.Marker instances for traffic speed sites
+
+// MSI gantries are dense; below this zoom they overlap into noise — skip rendering.
+const MATRIX_MIN_ZOOM = 11
 
 // ─── GPS & Geolocation state ──────────────────────────────────────────────────
 const GPS_STATES = {
@@ -187,7 +190,9 @@ const map = new maplibregl.Map({
     layers: [{ id: 'basemap', type: 'raster', source: 'carto' }]
   },
   center: [5.3, 52.1],
-  zoom: 7
+  zoom: 7,
+  // Sync view (zoom/lat/lng/bearing/pitch) to the URL hash so a refresh restores it.
+  hash: true
 })
 
 // ─── Map load: wire up sources, layers, and UI ────────────────────────────────
@@ -254,10 +259,15 @@ map.on('moveend', () => {
 // Re-evaluate verkeersborden hint + re-fetch on zoom change
 map.on('zoom', () => {
   updateZoomHint()
+  updateMatrixLayout()
+  updateSpeedLayout()
   // If verkeersborden just crossed zoom 13, trigger a fetch
   const layer = LAYERS.find(l => l.key === 'verkeersborden')
   if (layer && enabled.has('verkeersborden')) fetchLayer(layer)
 })
+
+// Keep roadside offsets correct while the map rotates (e.g. navigation mode).
+map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout() })
 
 // ─── Fetch ────────────────────────────────────────────────────────────────────
 
@@ -307,6 +317,12 @@ function fetchLayer (layer) {
 // ─── Matrix sign HTML markers ─────────────────────────────────────────────────
 
 function fetchMatrixSigns () {
+  if (map.getZoom() < MATRIX_MIN_ZOOM) {
+    for (const m of msiMarkers) m.marker.remove()
+    msiMarkers = []
+    return
+  }
+
   controllers['matrix']?.abort()
   const ctrl = new AbortController()
   controllers['matrix'] = ctrl
@@ -333,7 +349,7 @@ function fetchMatrixSigns () {
 }
 
 function renderMatrixMarkers (fc) {
-  for (const m of msiMarkers) m.remove()
+  for (const m of msiMarkers) m.marker.remove()
   msiMarkers = []
 
   if (!enabled.has('matrix')) return
@@ -344,45 +360,24 @@ function renderMatrixMarkers (fc) {
     if (!f.geometry) continue
     const p = f.properties
     const key = `${p.road ?? ''}|${p.km ?? ''}|${p.carriageway ?? ''}`
-    if (!gantries.has(key)) gantries.set(key, { coords: f.geometry.coordinates, lanes: [] })
+    if (!gantries.has(key)) {
+      gantries.set(key, { coords: f.geometry.coordinates, bearing: p.bearing, lanes: [] })
+    }
     gantries.get(key).lanes.push(p)
   }
 
   for (const [, gantry] of gantries) {
     gantry.lanes.sort((a, b) => (a.lane ?? 0) - (b.lane ?? 0))
 
+    // Outer wrapper: maplibre owns its transform for positioning.
+    // Inner gantry: we apply scale + bearing rotation (won't be clobbered).
+    const wrapper = document.createElement('div')
     const el = document.createElement('div')
     el.className = 'msi-gantry'
+    wrapper.appendChild(el)
 
     for (const lane of gantry.lanes) {
-      const box = document.createElement('div')
-      const aspect = lane.aspect_type || ''
-      const val = lane.value
-
-      if ((aspect === 'speedlimit' || (!aspect && val)) && val) {
-        box.className = 'msi-lane'
-        const disc = document.createElement('div')
-        disc.className = 'msi-speed-disc'
-        disc.textContent = val
-        box.appendChild(disc)
-      } else if (aspect === 'lane_open' || aspect.includes('arrow')) {
-        box.className = 'msi-lane lane-open'
-        box.textContent = '▼'
-      } else if (aspect === 'lane_closed') {
-        box.className = 'msi-lane lane-closed'
-        box.textContent = '✕'
-      } else if (aspect === 'lane_closed_ahead') {
-        box.className = 'msi-lane lane-closed-ahead'
-        box.textContent = '✕'
-      } else if (aspect === 'restriction_end' || aspect === 'end_of_restriction') {
-        box.className = 'msi-lane restriction-end'
-        box.textContent = '╱'
-      } else {
-        box.className = 'msi-lane blank'
-      }
-
-      box.title = [lane.road, lane.carriageway, `lane ${lane.lane ?? '?'}`, aspect || val].filter(Boolean).join(' · ')
-      el.appendChild(box)
+      el.appendChild(buildMsiLane(lane))
     }
 
     el.addEventListener('click', e => {
@@ -397,18 +392,92 @@ function renderMatrixMarkers (fc) {
         .addTo(map)
     })
 
-    msiMarkers.push(
-      new maplibregl.Marker({ element: el, anchor: 'center' })
-        .setLngLat(gantry.coords)
-        .addTo(map)
-    )
+    const marker = new maplibregl.Marker({ element: wrapper, anchor: 'center' })
+      .setLngLat(gantry.coords)
+      .addTo(map)
+    msiMarkers.push({ marker, el, bearing: gantry.bearing })
+  }
+
+  updateMatrixLayout()
+}
+
+// Build one lane cell for an MSI gantry from its aspect_type.
+function buildMsiLane (lane) {
+  const box = document.createElement('div')
+  const aspect = lane.aspect_type || ''
+  const val = lane.value
+
+  if ((aspect === 'speedlimit' || (!aspect && val)) && val) {
+    box.className = 'msi-lane'
+    const disc = document.createElement('div')
+    // Red ring only when red_ring=true (mandatory); otherwise plain disc.
+    disc.className = 'msi-speed-disc' + (lane.red_ring ? ' ringed' : '')
+    disc.textContent = val
+    box.appendChild(disc)
+  } else if (aspect === 'lane_open') {
+    box.className = 'msi-lane lane-open'
+    box.textContent = '↓'
+  } else if (aspect === 'merge_left' || aspect === 'lane_closed_ahead') {
+    // Lane closes ahead → white diagonal "move over" arrow (default left).
+    box.className = 'msi-lane lane-merge'
+    box.textContent = '↙'
+  } else if (aspect === 'merge_right') {
+    box.className = 'msi-lane lane-merge'
+    box.textContent = '↘'
+  } else if (aspect === 'lane_closed') {
+    box.className = 'msi-lane lane-closed'
+    box.textContent = '✕'
+  } else if (aspect === 'restriction_end' || aspect === 'end_of_restriction') {
+    box.className = 'msi-lane'
+    const disc = document.createElement('div')
+    disc.className = 'msi-end-disc'  // white disc with diagonal slash
+    box.appendChild(disc)
+  } else {
+    box.className = 'msi-lane blank'
+  }
+
+  if (lane.flashing) addFlashingLamps(box)
+  box.title = [lane.road, lane.carriageway, `lane ${lane.lane ?? '?'}`, aspect || val].filter(Boolean).join(' · ')
+  return box
+}
+
+// RWS flashing lamps: 4 corner dots cycling top pair → off → bottom pair → off.
+function addFlashingLamps (box) {
+  for (const [pos, phase] of [['tl', 'top'], ['tr', 'top'], ['bl', 'bottom'], ['br', 'bottom']]) {
+    const dot = document.createElement('span')
+    dot.className = `msi-lamp ${pos} ${phase}`
+    box.appendChild(dot)
   }
 }
 
-function msiArrow (aspect) {
-  if (aspect.includes('RIGHT')) return '→'
-  if (aspect.includes('LEFT'))  return '←'
-  return '↑'
+// Scale gantries with zoom and offset them to the roadside (perpendicular to the
+// road bearing) so the signs sit beside the carriageway instead of on top of it.
+// Recomputed on zoom and rotate; needs no refetch.
+function updateMatrixLayout () {
+  if (!msiMarkers.length) return
+  const z = map.getZoom()
+  // ~0.45 at z11 → 1.0 at z15+; keeps signs readable without swamping the map.
+  const scale = Math.max(0.45, Math.min(1, 0.45 + (z - 11) * 0.1375))
+  const mapBearing = map.getBearing()
+
+  for (const m of msiMarkers) {
+    if (m.bearing === null || m.bearing === undefined) {
+      m.el.style.transform = `scale(${scale})`
+      m.marker.setOffset([0, 0])
+      continue
+    }
+    // Rotate the lane row to the road bearing so it spans across the carriageway.
+    // Subtract map bearing so it stays road-aligned when the map rotates.
+    m.el.style.transform = `rotate(${m.bearing - mapBearing}deg) scale(${scale})`
+    // Shift outward (right of travel = roadside shoulder, NL drives on the right)
+    // by half the sign width so the inner edge meets the road centerline and the
+    // body extends to the outside. Opposite carriageways flip automatically.
+    const screenAngle = ((m.bearing + 90 - mapBearing) * Math.PI) / 180
+    const dist = (m.el.offsetWidth * scale) / 2 + 4
+    const dx = Math.sin(screenAngle) * dist
+    const dy = -Math.cos(screenAngle) * dist
+    m.marker.setOffset([dx, dy])
+  }
 }
 
 // ─── Traffic speed HTML markers ───────────────────────────────────────────────
@@ -440,7 +509,7 @@ function fetchSpeedMarkers () {
 }
 
 function renderSpeedMarkers (fc) {
-  for (const m of speedMarkers) m.remove()
+  for (const m of speedMarkers) m.marker.remove()
   speedMarkers = []
 
   if (!enabled.has('speed')) return
@@ -451,8 +520,11 @@ function renderSpeedMarkers (fc) {
     const lanes = p.lanes || []
     if (!lanes.length) continue
 
+    // Outer wrapper for maplibre positioning; inner row gets our rotate+scale.
+    const wrapper = document.createElement('div')
     const el = document.createElement('div')
     el.className = 'speed-site'
+    wrapper.appendChild(el)
 
     for (const lane of lanes) {
       const box = document.createElement('div')
@@ -479,11 +551,33 @@ function renderSpeedMarkers (fc) {
         .addTo(map)
     })
 
-    speedMarkers.push(
-      new maplibregl.Marker({ element: el, anchor: 'center' })
-        .setLngLat(f.geometry.coordinates)
-        .addTo(map)
-    )
+    const marker = new maplibregl.Marker({ element: wrapper, anchor: 'center' })
+      .setLngLat(f.geometry.coordinates)
+      .addTo(map)
+    speedMarkers.push({ marker, el, bearing: p.bearing })
+  }
+
+  updateSpeedLayout()
+}
+
+// Rotate speed-site rows to the road bearing and offset them roadside, scaled by
+// zoom — same treatment as MSI gantries. Recomputed on zoom/rotate, no refetch.
+function updateSpeedLayout () {
+  if (!speedMarkers.length) return
+  const z = map.getZoom()
+  const scale = Math.max(0.5, Math.min(1, 0.5 + (z - 11) * 0.125))
+  const mapBearing = map.getBearing()
+
+  for (const m of speedMarkers) {
+    if (m.bearing === null || m.bearing === undefined) {
+      m.el.style.transform = `scale(${scale})`
+      m.marker.setOffset([0, 0])
+      continue
+    }
+    m.el.style.transform = `rotate(${m.bearing - mapBearing}deg) scale(${scale})`
+    const screenAngle = ((m.bearing + 90 - mapBearing) * Math.PI) / 180
+    const dist = (m.el.offsetWidth * scale) / 2 + 3
+    m.marker.setOffset([Math.sin(screenAngle) * dist, -Math.cos(screenAngle) * dist])
   }
 }
 
@@ -672,11 +766,11 @@ function syncGroupCb (cb, groupLayers) {
 
 function setLayerVisibility (layer, visible) {
   if (layer.geomType === 'msi') {
-    if (!visible) { for (const m of msiMarkers) m.remove(); msiMarkers = [] }
+    if (!visible) { for (const m of msiMarkers) m.marker.remove(); msiMarkers = [] }
     return
   }
   if (layer.geomType === 'speed') {
-    if (!visible) { for (const m of speedMarkers) m.remove(); speedMarkers = [] }
+    if (!visible) { for (const m of speedMarkers) m.marker.remove(); speedMarkers = [] }
     return
   }
   const vis = visible ? 'visible' : 'none'

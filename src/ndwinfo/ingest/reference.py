@@ -59,6 +59,7 @@ class MsiShapefileIngester(Ingester):
             batch.append({
                 "uuid": row["uuid"],
                 "geom": wkt_geom(row.get("geom")),
+                "bearing": row.get("bearing"),
                 "raw": json_safe(row.get("raw")),
             })
             if len(batch) >= BATCH_SIZE:
@@ -77,7 +78,7 @@ class MsiShapefileIngester(Ingester):
                 session.execute(
                     update(MsiSign)
                     .where(MsiSign.uuid == r["uuid"])
-                    .values(geom=r["geom"], raw=r["raw"])
+                    .values(geom=r["geom"], bearing=r["bearing"], raw=r["raw"])
                 )
             total += len(batch)
             session.flush()

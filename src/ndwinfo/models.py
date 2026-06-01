@@ -201,6 +201,9 @@ class MsiSign(Base):
     carriageway: Mapped[Optional[str]] = mapped_column(String)
     lane: Mapped[Optional[int]] = mapped_column(Integer)
     km: Mapped[Optional[Any]] = mapped_column(Numeric)
+    # Road heading at the sign (degrees, clockwise from north); from MSI shapefile.
+    # Used by the UI to offset the sign perpendicular to the road (draw it roadside).
+    bearing: Mapped[Optional[float]] = mapped_column(Numeric)
     geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
