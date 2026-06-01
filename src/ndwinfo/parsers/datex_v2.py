@@ -173,6 +173,21 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
         dir_e = elem.find(f".//{T}alertCDirectionCoded")
         alc_dir = dir_e.text if dir_e is not None else None
 
+        # AlertC/TMC primary+secondary location codes (travel-time linear segments)
+        def _loc_code(method: str) -> int | None:
+            e = elem.find(
+                f".//{T}alertCMethod4{method}PointLocation/{T}alertCLocation/{T}specificLocation"
+            )
+            if e is not None and e.text:
+                try:
+                    return int(e.text)
+                except ValueError:
+                    return None
+            return None
+
+        tmc_primary = _loc_code("Primary")
+        tmc_secondary = _loc_code("Secondary")
+
         location_info = _parse_site_location(site_id, name, alc_dir)
 
         site: dict = {
@@ -189,6 +204,9 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
             "openlr_bearing": openlr_bearing,
             "geom": geom,
             "line_geom": line_geom,
+            "tmc_primary": tmc_primary,
+            "tmc_secondary": tmc_secondary,
+            "tmc_direction": alc_dir,
         }
         site["raw"] = {k: v for k, v in site.items() if k != "raw"}
 

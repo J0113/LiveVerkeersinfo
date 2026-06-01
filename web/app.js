@@ -24,6 +24,8 @@ const LAYERS = [
       // Selected segment overrides to bright cyan + thicker; otherwise delay colour.
       'line-width': ['case', ['boolean', ['feature-state', 'selected'], false], 7, 4],
       'line-opacity': 0.9,
+      // Offset to the right of travel direction so A→B and B→A don't overlap.
+      'line-offset': 4,
       'line-color': ['case',
         ['boolean', ['feature-state', 'selected'], false], '#00e5ff',
         ['any',
@@ -249,10 +251,13 @@ map.on('load', () => {
           source: layer.key,
           layout: {
             'symbol-placement': 'line',
-            'symbol-spacing': 70,
+            'symbol-spacing': 80,
             'icon-image': 'tt-arrow',
-            'icon-size': 0.55,
+            'icon-size': 0.9,
             'icon-rotation-alignment': 'map',
+            // Push arrows onto the offset line (perpendicular, matches line-offset
+            // side). icon-offset rotates with the symbol on a line placement.
+            'icon-offset': [0, 9],
             'icon-allow-overlap': true,
             'icon-ignore-placement': true,
             visibility: vis

@@ -7,8 +7,22 @@ from sqlalchemy.orm import Session
 
 from ndwinfo.download import DownloadResult
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, json_safe, wkt_geom
-from ndwinfo.models import MeetlocatiePunt, MeetlocatieVak, MsiSign, VildArea, VildLine, VildPoint
-from ndwinfo.parsers.shapefile_ref import parse_meetlocaties, parse_msi_shapefile, parse_vild
+from ndwinfo.ingest.traveltime_geometry import rebuild_traveltime_geometry
+from ndwinfo.models import (
+    MeetlocatiePunt,
+    MeetlocatieVak,
+    MsiSign,
+    VildArea,
+    VildLine,
+    VildPoint,
+    VildTmc,
+)
+from ndwinfo.parsers.shapefile_ref import (
+    parse_meetlocaties,
+    parse_msi_shapefile,
+    parse_vild,
+    parse_vild_tmc,
+)
 
 
 class MeetlocatiesIngester(Ingester):
@@ -108,5 +122,20 @@ class VildIngester(Ingester):
             if batch:
                 total += bulk_upsert(session, models[kind], batch, ["id"])
                 session.flush()
+
+        # TMC location table (chain topology for road-following travel-time lines)
+        tmc_batch: list[dict] = []
+        for row in parse_vild_tmc(result.path):
+            tmc_batch.append(row)
+            if len(tmc_batch) >= BATCH_SIZE:
+                total += bulk_upsert(session, VildTmc, tmc_batch, ["loc_nr"])
+                session.flush()
+                tmc_batch.clear()
+        if tmc_batch:
+            total += bulk_upsert(session, VildTmc, tmc_batch, ["loc_nr"])
+            session.flush()
+
+        # VILD just refreshed → rebuild road-following travel-time geometry.
+        rebuild_traveltime_geometry(session)
 
         return total

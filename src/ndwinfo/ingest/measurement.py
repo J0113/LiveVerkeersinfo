@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ndwinfo.download import DownloadResult, open_feed
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, wkt_geom
+from ndwinfo.ingest.traveltime_geometry import rebuild_traveltime_geometry
 from ndwinfo.models import MeasurementCharacteristic, MeasurementSite, TrafficMeasurement, TravelTime
 from ndwinfo.parsers.datex_v2 import (
     parse_measurement_site_table,
@@ -51,6 +52,10 @@ class MeasurementSiteIngester(Ingester):
             site_batch.clear()
         if char_batch:
             _flush_chars()
+
+        # Sites refreshed → recompute road-following travel-time geometry from
+        # the VILD TMC chain (no-op until the VILD table is present).
+        rebuild_traveltime_geometry(session)
 
         return total
 

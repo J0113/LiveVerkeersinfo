@@ -113,6 +113,62 @@ def parse_vild(zip_path: Path) -> Iterator[tuple[str, dict]]:
                 yield kind, {"id": id_val, "geom": geom, "raw": raw}
 
 
+def parse_vild_tmc(zip_path: Path) -> Iterator[dict]:
+    """Parse the VILD TMC location table (VILD6.x.A.dbf at the zip root).
+
+    Yields one dict per location code with the chain topology needed to trace a
+    road: lin_ref (→ vild_line.id), pos_off/neg_off (next/previous code), road.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with zipfile.ZipFile(zip_path) as zf:
+            dbf_member = None
+            for member in zf.namelist():
+                base = member.replace("\\", "/").rsplit("/", 1)[-1]
+                low = base.lower()
+                if low.startswith("vild") and low.endswith(".dbf") and not low.startswith("vild_"):
+                    dbf_member = member
+                    break
+            if dbf_member is None:
+                return
+            zf.extract(dbf_member, tmpdir)
+        dbf_path = next(Path(tmpdir).rglob("*.dbf"))
+
+        gdf = pyogrio.read_dataframe(str(dbf_path), read_geometry=False)
+        cols = {c.upper(): c for c in gdf.columns}
+
+        def col(name: str):
+            return cols.get(name)
+
+        loc_c = col("LOC_NR")
+        if loc_c is None:
+            return
+        lin_c, pos_c, neg_c, road_c = col("LIN_REF"), col("POS_OFF"), col("NEG_OFF"), col("ROADNUMBER")
+
+        def _int(v):
+            try:
+                if v is None or (isinstance(v, float) and v != v):  # NaN
+                    return None
+                return int(v)
+            except (TypeError, ValueError):
+                return None
+
+        for r in gdf.itertuples(index=False):
+            d = r._asdict()
+            loc_nr = _int(d.get(loc_c))
+            if loc_nr is None or loc_nr <= 0:
+                continue
+            road = d.get(road_c) if road_c else None
+            if isinstance(road, float) and road != road:
+                road = None
+            yield {
+                "loc_nr": loc_nr,
+                "lin_ref": _int(d.get(lin_c)) if lin_c else None,
+                "pos_off": _int(d.get(pos_c)) if pos_c else None,
+                "neg_off": _int(d.get(neg_c)) if neg_c else None,
+                "road_number": str(road) if road is not None else None,
+            }
+
+
 def parse_msi_shapefile(zip_path: Path) -> Iterator[dict]:
     """Parse ndw_msi_shapefiles_latest.zip → MSI sign geometry.
 

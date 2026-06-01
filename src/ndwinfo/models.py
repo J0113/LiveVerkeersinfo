@@ -47,8 +47,14 @@ class MeasurementSite(Base):
     km: Mapped[Optional[Any]] = mapped_column(Numeric)
     openlr_bearing: Mapped[Optional[int]] = mapped_column(Integer)
     geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
-    # Straight start→end segment line for travel-time sites (Linear locations).
+    # Segment line for travel-time sites: road-following (built from VILD TMC
+    # chain) when resolvable, else straight start→end chord.
     line_geom: Mapped[Optional[Any]] = mapped_column(Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True)
+    # AlertC/TMC location codes for travel-time segments (primary→secondary) +
+    # travel direction; used to trace the road via the VILD TMC table.
+    tmc_primary: Mapped[Optional[int]] = mapped_column(Integer)
+    tmc_secondary: Mapped[Optional[int]] = mapped_column(Integer)
+    tmc_direction: Mapped[Optional[str]] = mapped_column(String)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -112,6 +118,24 @@ class VildLine(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     geom: Mapped[Optional[Any]] = mapped_column(Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True)
+    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
+class VildTmc(Base):
+    """VILD TMC location table (VILD6.x.A.dbf) — location-code topology.
+
+    pos_off/neg_off chain consecutive TMC points along a road; lin_ref links a
+    point to its road line (vild_line.id). Used to trace travel-time segments
+    along the actual road between their primary and secondary location codes.
+    """
+    __tablename__ = "vild_tmc"
+
+    loc_nr: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lin_ref: Mapped[Optional[int]] = mapped_column(Integer)
+    pos_off: Mapped[Optional[int]] = mapped_column(Integer)
+    neg_off: Mapped[Optional[int]] = mapped_column(Integer)
+    road_number: Mapped[Optional[str]] = mapped_column(String)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
