@@ -273,12 +273,21 @@ def get_traveltime(
             ).label("geom_json"),
         )
         .join(MeasurementSite, TravelTime.segment_id == MeasurementSite.id)
-        .where(func.ST_Intersects(MeasurementSite.geom, bbox_geom))
+        # Filter on the segment line (fall back to point) so a segment stays
+        # visible when zoomed in between its endpoints — the line crosses the
+        # viewport even if neither endpoint is inside it.
+        .where(
+            func.ST_Intersects(
+                func.coalesce(MeasurementSite.line_geom, MeasurementSite.geom),
+                bbox_geom,
+            )
+        )
         .limit(limit)
     ).all()
 
     def props(r):
         return {
+            "fid": f"{r.segment_id}:{r.index}",  # stable id for map selection state
             "segment_id": r.segment_id,
             "index": r.index,
             "measured_at": r.measured_at.isoformat() if r.measured_at else None,

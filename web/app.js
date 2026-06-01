@@ -18,11 +18,14 @@ const LAYERS = [
     // back to a point in the API and won't draw on this line layer.
     key: 'traveltime', label: 'Travel Time', group: 'traffic',
     endpoint: '/traffic/traveltime', geomType: 'line', legendColor: '#cc66ff',
-    arrows: true,  // direction arrows along the segment line (start→end)
+    arrows: true,    // direction arrows along the segment line (start→end)
+    promoteId: 'fid', // enables per-feature selection state
     paint: {
-      'line-width': 4,
-      'line-opacity': 0.85,
+      // Selected segment overrides to bright cyan + thicker; otherwise delay colour.
+      'line-width': ['case', ['boolean', ['feature-state', 'selected'], false], 7, 4],
+      'line-opacity': 0.9,
       'line-color': ['case',
+        ['boolean', ['feature-state', 'selected'], false], '#00e5ff',
         ['any',
           ['==', ['get', 'ref_duration_s'], null],
           ['==', ['get', 'duration_s'], null],
@@ -170,6 +173,7 @@ const enabled = new Set(DEFAULT_ENABLED)
 const controllers = {}  // key → AbortController
 let debounceTimer = null
 let activePopup = null
+let selectedFeature = null  // { source, id } currently highlighted (feature-state)
 let msiMarkers = []    // { marker, el, bearing } for MSI gantries
 let speedMarkers = []  // maplibregl.Marker instances for traffic speed sites
 
@@ -227,7 +231,9 @@ map.on('load', () => {
   for (const layer of LAYERS) {
     if (layer.geomType === 'msi') continue  // rendered as HTML markers, not MapLibre layers
 
-    map.addSource(layer.key, { type: 'geojson', data: EMPTY_FC })
+    const srcOpts = { type: 'geojson', data: EMPTY_FC }
+    if (layer.promoteId) srcOpts.promoteId = layer.promoteId
+    map.addSource(layer.key, srcOpts)
     const vis = enabled.has(layer.key) ? 'visible' : 'none'
 
     if (layer.geomType === 'polygon') {
@@ -254,6 +260,7 @@ map.on('load', () => {
         })
       }
       setupClickPopup(layer.key)
+      if (layer.promoteId) setupLineSelection(layer.key)
     } else {
       map.addLayer({ id: layer.key, type: 'circle', source: layer.key, paint: layer.paint, layout: { visibility: vis } })
       setupClickPopup(layer.key)
@@ -349,6 +356,7 @@ function fetchLayer (layer) {
     .then(data => {
       setBboxTooLargeHint(false)
       map.getSource(layer.key)?.setData(data)
+      if (layer.promoteId) reapplySelection(layer.key)
     })
     .catch(e => {
       if (e.name === 'AbortError') return
@@ -617,6 +625,29 @@ function setupClickPopup (mapLayerId) {
   })
   map.on('mouseenter', mapLayerId, () => { map.getCanvas().style.cursor = 'pointer' })
   map.on('mouseleave', mapLayerId, () => { map.getCanvas().style.cursor = '' })
+}
+
+// Highlight the clicked feature via feature-state 'selected'. One selection at a
+// time across the map; cleared when another feature is clicked.
+function setupLineSelection (layerKey) {
+  map.on('click', layerKey, e => {
+    if (!e.features?.length) return
+    const id = e.features[0].id
+    if (id === undefined || id === null) return
+    if (selectedFeature) {
+      map.setFeatureState({ source: selectedFeature.source, id: selectedFeature.id }, { selected: false })
+    }
+    map.setFeatureState({ source: layerKey, id }, { selected: true })
+    selectedFeature = { source: layerKey, id }
+  })
+}
+
+// feature-state is wiped when a source's data is replaced; re-apply the current
+// selection after a refresh so the highlight survives the 60s/​moveend refetch.
+function reapplySelection (layerKey) {
+  if (selectedFeature && selectedFeature.source === layerKey) {
+    map.setFeatureState({ source: layerKey, id: selectedFeature.id }, { selected: true })
+  }
 }
 
 function buildPopupHtml (props) {
