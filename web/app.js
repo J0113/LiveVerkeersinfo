@@ -493,14 +493,26 @@ function renderSpeedMarkers (fc) {
     el.addEventListener('click', e => {
       e.stopPropagation()
       if (activePopup) activePopup.remove()
-      const header = `<div style="font-size:11px;color:#6688aa;margin-bottom:6px">${esc(p.site_id)} · ${esc(p.side || '')} · ${p.num_lanes ?? '?'} lanes</div>`
-      const table = `<table class="popup-table"><tbody>` +
-        (p.measured_at ? `<tr><td class="pk">measured_at</td><td>${esc(p.measured_at)}</td></tr>` : '') +
-        lanes.map(l => `<tr><td class="pk">lane ${l.lane}</td><td>${l.speed_kmh !== null ? Math.round(l.speed_kmh) + ' km/h' : '—'}${l.flow_veh_h !== null ? ' · ' + Math.round(l.flow_veh_h) + ' veh/h' : ''}</td></tr>`).join('') +
-        `</tbody></table>`
+      const roadLabel = p.road ? `${esc(p.road)} ${esc(p.carriageway || '')} km ${p.km ?? ''}` : esc(p.site_id)
+      const header = `<div style="font-size:11px;color:#6688aa;margin-bottom:6px">${roadLabel}</div>`
+      const meta = buildPopupHtml({
+        ...(p.road ? { road: p.road } : {}),
+        ...(p.carriageway ? { carriageway: p.carriageway } : {}),
+        ...(p.km != null ? { km: p.km } : {}),
+        ...(p.measured_at ? { measured: p.measured_at } : {}),
+        ...(p.bearing != null ? { bearing: p.bearing + '°' } : {}),
+        ...(p.side ? { side: p.side } : {}),
+      })
+      const lanesHtml = lanes.map(l =>
+        `<b style="color:#6688aa;font-size:11px">Lane ${l.lane ?? '?'}</b>` +
+        buildPopupHtml({
+          speed_kmh: l.speed_kmh !== null ? Math.round(l.speed_kmh) + ' km/h' : '—',
+          flow_veh_h: l.flow_veh_h !== null ? Math.round(l.flow_veh_h) + ' veh/h' : '—',
+        })
+      ).join('<hr style="border-color:#2a2a40;margin:5px 0">')
       activePopup = new maplibregl.Popup({ maxWidth: '300px', offset: [0, -8] })
         .setLngLat(f.geometry.coordinates)
-        .setHTML(header + table)
+        .setHTML(header + meta + lanesHtml)
         .addTo(map)
     })
 
