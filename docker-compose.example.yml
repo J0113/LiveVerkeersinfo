@@ -5,8 +5,6 @@ services:
       POSTGRES_DB: ndwinfo
       POSTGRES_USER: ndwinfo
       POSTGRES_PASSWORD: ndwinfo
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -15,9 +13,31 @@ services:
       timeout: 5s
       retries: 10
 
+  migrate:
+    image: ghcr.io/j0113/liveverkeersinfo:latest
+    command: alembic upgrade head
+    environment:
+      DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
+    depends_on:
+      db:
+        condition: service_healthy
+
+  poller:
+    image: ghcr.io/j0113/liveverkeersinfo:latest
+    command: sh -c "alembic upgrade head && python -m ndwinfo.poller"
+    environment:
+      DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
+      NDW_BASE_URL: https://opendata.ndw.nu
+      DATA_DIR: /app/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./data:/app/data
+
   app:
     image: ghcr.io/j0113/liveverkeersinfo:latest
-    command: sh -c "alembic upgrade head && uvicorn ndwinfo.api.main:app --host 0.0.0.0 --port 3500"
+    command: uvicorn ndwinfo.api.main:app --host 0.0.0.0 --port 3500
     environment:
       DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
       NDW_BASE_URL: https://opendata.ndw.nu
@@ -25,21 +45,8 @@ services:
     ports:
       - "3500:3500"
     depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - ./data:/app/data
-
-  poller:
-    image: ghcr.io/j0113/liveverkeersinfo:latest
-    command: python -m ndwinfo.poller
-    environment:
-      DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
-      NDW_BASE_URL: https://opendata.ndw.nu
-      DATA_DIR: /app/data
-    depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ./data:/app/data
 

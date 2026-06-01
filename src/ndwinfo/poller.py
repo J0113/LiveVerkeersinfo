@@ -49,8 +49,12 @@ def run_once() -> None:
 
     now = datetime.now(UTC)
 
+    disabled = {s.strip() for s in settings.disabled_feeds.split(",") if s.strip()}
     for feed in FEEDS:
         name = feed["name"]
+        if name in disabled:
+            logger.debug("%s: disabled via DISABLED_FEEDS, skipping", name)
+            continue
         if name not in INGESTERS:
             logger.debug("%s: no ingester registered, skipping", name)
             continue

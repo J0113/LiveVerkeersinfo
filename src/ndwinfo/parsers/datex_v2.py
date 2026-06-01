@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 
 from lxml import etree
@@ -42,6 +43,75 @@ def _latlon(elem) -> str | None:
     return None
 
 
+def _multilang(elem, tag: str) -> str | None:
+    """Extract text from <tag><values><value lang="nl">…</value></values></tag>."""
+    child = elem.find(f"{T}{tag}")
+    if child is None:
+        return None
+    val = child.find(f".//{T}value")
+    return val.text.strip() if val is not None and val.text else None
+
+
+def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) -> dict:
+    """Extract road, carriageway (R/L), and km from site_id + name.
+
+    Covers three provider families that carry structured data:
+      - GEO*/RWSTI: 12-char name code (RWS highway loop sensors)
+      - RWS01 MONIBAS: 13-char name code (MONIBAS aggregate sensors)
+      - RWS08: road+HRL/HRR+km encoded in the site_id
+      - Provincial (PZH/PFR/etc.): "N457 hmp 4.75 Re" in name
+    """
+    road = km = carriageway = None
+    n = name or ""
+    prefix = site_id.split("_")[0]
+
+    # --- GEO*/RWSTI: "009hrl057760" (3-digit road, 3-char cw, 6-digit metres) ---
+    if prefix.startswith("GEO") and re.fullmatch(r"\d{3}[a-z]{3}\d{6}", n):
+        road_num = int(n[0:3])
+        road = f"A{road_num}" if road_num <= 99 else f"N{road_num}"
+        km = round(int(n[6:12]) / 1000.0, 3)
+        carriageway = "R" if alc_dir == "positive" else "L" if alc_dir == "negative" else None
+
+    # --- RWS01 MONIBAS: "0091hrl0572ra" (3-digit road + 1-digit subcode, 3-char cw, 4-digit hm, 2-char suffix) ---
+    elif prefix == "RWS01" and re.fullmatch(r"\d{4}[a-z]{3}\d{4}[a-z]{2}", n):
+        road_num = int(n[0:3])  # subcode at n[3] ignored
+        road = f"A{road_num}" if road_num <= 99 else f"N{road_num}"
+        km = round(int(n[7:11]) * 0.1, 1)  # hectometres → km
+        cw_code = n[4:7]
+        if cw_code.startswith("hr"):
+            # hrr = hoofdrijbaan rechts (R), hrl = hoofdrijbaan links (L)
+            carriageway = "R" if cw_code[2] == "r" else "L"
+        elif alc_dir == "positive":
+            carriageway = "R"
+        elif alc_dir == "negative":
+            carriageway = "L"
+
+    # --- RWS08: id = "RWS08_6_HRL_096.6_1" or "RWS08_A30_HRL_021.8_1" ---
+    elif prefix == "RWS08":
+        parts = site_id.split("_")
+        if len(parts) >= 4:
+            rp, cp, kp = parts[1], parts[2], parts[3]
+            digits = re.sub(r"\D", "", rp)
+            if digits:
+                n2 = int(digits)
+                road = rp if rp[0].isalpha() else (f"A{n2}" if n2 <= 99 else f"N{n2}")
+            carriageway = "R" if "HRR" in cp.upper() else "L" if "HRL" in cp.upper() else None
+            try:
+                km = float(kp)
+            except (ValueError, TypeError):
+                pass
+
+    # --- Provincial: "N457 hmp 4.75 Re" / "N457 km 4.75 Li" ---
+    else:
+        m = re.match(r"^([AN]\s*\d+[a-zA-Z]?)\s+(?:[Hh]mp|[Kk]m)\s+([\d.,]+)\s+(Re|Li)", n)
+        if m:
+            road = m.group(1).replace(" ", "")
+            km = round(float(m.group(2).replace(",", ".")), 3)
+            carriageway = "R" if m.group(3) == "Re" else "L"
+
+    return {"road": road, "carriageway": carriageway, "km": km}
+
+
 def _clear(elem) -> None:
     """Free memory: clear element and delete preceding siblings."""
     elem.clear()
@@ -66,14 +136,30 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
         loc = elem.find(f"{T}measurementSiteLocation")
         geom = _latlon(loc) if loc is not None else None
 
+        name = _multilang(elem, "measurementSiteName")
+
+        # openlrBearing: first openlrLocationReferencePoint bearing
+        bear_e = elem.find(f".//{T}openlrLocationReferencePoint/{T}openlrLineAttributes/{T}openlrBearing")
+        openlr_bearing = int(bear_e.text) if bear_e is not None and bear_e.text else None
+
+        # alertCDirectionCoded: positive/negative travel direction
+        dir_e = elem.find(f".//{T}alertCDirectionCoded")
+        alc_dir = dir_e.text if dir_e is not None else None
+
+        location_info = _parse_site_location(site_id, name, alc_dir)
+
         site: dict = {
             "id": site_id,
-            "name": _text(elem, "measurementSiteName"),
-            "equipment_type": _text(elem, "measurementEquipmentTypeUsed"),
+            "name": name,
+            "equipment_type": _multilang(elem, "measurementEquipmentTypeUsed"),
             "num_lanes": _int(elem, "measurementSiteNumberOfLanes"),
             "side": _text(elem, "measurementSide"),
             "version": int(version_str) if version_str else None,
             "record_version_time": _text(elem, "measurementSiteRecordVersionTime"),
+            "road": location_info["road"],
+            "carriageway": location_info["carriageway"],
+            "km": location_info["km"],
+            "openlr_bearing": openlr_bearing,
             "geom": geom,
         }
         site["raw"] = {k: v for k, v in site.items() if k != "raw"}

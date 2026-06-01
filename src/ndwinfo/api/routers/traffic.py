@@ -39,6 +39,10 @@ def get_speed(
             TrafficMeasurement.site_id,
             MeasurementSite.num_lanes,
             MeasurementSite.side,
+            MeasurementSite.road,
+            MeasurementSite.carriageway,
+            MeasurementSite.km,
+            MeasurementSite.openlr_bearing,
             MeasurementCharacteristic.lane,
             func.max(
                 case((TrafficMeasurement.value_type == "TrafficSpeed", TrafficMeasurement.speed_kmh))
@@ -67,6 +71,10 @@ def get_speed(
             TrafficMeasurement.site_id,
             MeasurementSite.num_lanes,
             MeasurementSite.side,
+            MeasurementSite.road,
+            MeasurementSite.carriageway,
+            MeasurementSite.km,
+            MeasurementSite.openlr_bearing,
             MeasurementCharacteristic.lane,
             MeasurementSite.geom,
         )
@@ -87,11 +95,21 @@ def get_speed(
             loc = locs[key] = {
                 "coords": coords,
                 "side": r.side,
+                "road": r.road,
+                "carriageway": r.carriageway,
+                "km": float(r.km) if r.km is not None else None,
+                "openlr_bearing": int(r.openlr_bearing) if r.openlr_bearing is not None else None,
                 "num_lanes": r.num_lanes or 0,
                 "sources": set(),
                 "lanes": defaultdict(list),  # lane -> list of readings
             }
         loc["num_lanes"] = max(loc["num_lanes"], r.num_lanes or 0)
+        if loc["road"] is None and r.road is not None:
+            loc["road"] = r.road
+            loc["carriageway"] = r.carriageway
+            loc["km"] = float(r.km) if r.km is not None else None
+        if loc["openlr_bearing"] is None and r.openlr_bearing is not None:
+            loc["openlr_bearing"] = int(r.openlr_bearing)
         loc["sources"].add(r.site_id)
         loc["lanes"][r.lane].append({
             "speed": float(r.speed_kmh) if r.speed_kmh is not None else None,
@@ -125,6 +143,10 @@ def get_speed(
             "geometry": {"type": "Point", "coordinates": list(loc["coords"])},
             "properties": {
                 "site_id": rep,
+                "road": loc["road"],
+                "carriageway": loc["carriageway"],
+                "km": loc["km"],
+                "openlr_bearing": loc["openlr_bearing"],
                 "num_lanes": loc["num_lanes"] or None,
                 "side": loc["side"],
                 "measured_at": feat_ts.isoformat() if feat_ts else None,
@@ -139,14 +161,29 @@ def get_speed(
 
 
 def _attach_bearings(db, features: list[dict]) -> None:
-    """Set props['bearing'] (deg from north) per feature from the nearest road
-    segment (meetlocatie_vak linestring). The speed feed carries no bearing, only
-    a coarse `side`; the segment azimuth gives the road direction at that point.
+    """Set props['bearing'] per feature.
+
+    Uses openlr_bearing from the site record when available (parsed at ingest
+    from the DATEX v2 OpenLR extension). Falls back to a nearest-neighbour
+    azimuth against the meetlocatie_vak linestring table for sites without it.
+    Removes the intermediate openlr_bearing key from output properties.
     """
     if not features:
         return
-    lons = [f["geometry"]["coordinates"][0] for f in features]
-    lats = [f["geometry"]["coordinates"][1] for f in features]
+
+    need_spatial: list[tuple[int, dict]] = []  # (0-based index, feature)
+    for idx, f in enumerate(features):
+        ob = f["properties"].pop("openlr_bearing", None)
+        if ob is not None:
+            f["properties"]["bearing"] = int(ob) % 360
+        else:
+            need_spatial.append((idx, f))
+
+    if not need_spatial:
+        return
+
+    lons = [f["geometry"]["coordinates"][0] for _, f in need_spatial]
+    lats = [f["geometry"]["coordinates"][1] for _, f in need_spatial]
     rows = db.execute(
         text(
             """
@@ -163,9 +200,9 @@ def _attach_bearings(db, features: list[dict]) -> None:
         ),
         {"lons": lons, "lats": lats},
     ).all()
-    bearings = {int(i): (round(float(b) % 360, 1) if b is not None else None) for i, b in rows}
-    for idx, f in enumerate(features, start=1):
-        f["properties"]["bearing"] = bearings.get(idx)
+    spatial_bearings = {int(i): (round(float(b) % 360, 1) if b is not None else None) for i, b in rows}
+    for local_i, (_, f) in enumerate(need_spatial, start=1):
+        f["properties"]["bearing"] = spatial_bearings.get(local_i)
 
 
 def _merge_lane(readings: list[dict]) -> dict:
