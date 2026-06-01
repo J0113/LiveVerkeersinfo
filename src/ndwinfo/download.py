@@ -46,9 +46,15 @@ def fetch(
             "GET", url, headers=headers, follow_redirects=True, timeout=60.0
         ) as resp:
             if resp.status_code == 304:
+                # Server says unchanged, but if our local copy is gone (e.g. a
+                # prior download failed mid-stream and was unlinked) we have
+                # nothing to parse. Re-fetch unconditionally instead of getting
+                # stuck on 304 until the upstream ETag next changes.
+                if not path.exists():
+                    return fetch(feed, etag=None, last_modified=None)
                 return DownloadResult(
                     status="not_modified",
-                    path=path if path.exists() else None,
+                    path=path,
                     etag=etag,
                     last_modified=last_modified,
                     http_status=304,

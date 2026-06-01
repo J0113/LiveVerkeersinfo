@@ -257,6 +257,8 @@ def parse_trafficspeed(fileobj) -> Iterator[dict]:
 
             flow: float | None = None
             speed: float | None = None
+            n_inputs: int | None = None
+            std_dev: float | None = None
 
             if "TrafficFlow" in xsi_type:
                 vfr = basic.find(f".//{T}vehicleFlowRate")
@@ -269,11 +271,20 @@ def parse_trafficspeed(fileobj) -> Iterator[dict]:
             elif "TrafficSpeed" in xsi_type:
                 avg = basic.find(f"{T}averageVehicleSpeed")
                 n_str = avg.get("numberOfInputValuesUsed", "1") if avg is not None else "1"
+                sd_str = avg.get("standardDeviation") if avg is not None else None
+                try:
+                    n_inputs = int(n_str) if n_str else None
+                except ValueError:
+                    n_inputs = None
+                try:
+                    std_dev = float(sd_str) if sd_str else None
+                except ValueError:
+                    std_dev = None
                 speed_e = basic.find(f".//{T}speed")
                 if speed_e is not None and speed_e.text:
                     try:
                         s = float(speed_e.text)
-                        n = int(n_str) if n_str else 1
+                        n = n_inputs if n_inputs is not None else 1
                         if s != -1.0 and n > 0:
                             speed = s
                     except ValueError:
@@ -286,6 +297,8 @@ def parse_trafficspeed(fileobj) -> Iterator[dict]:
                 "value_type": value_type,
                 "flow_veh_h": flow,
                 "speed_kmh": speed,
+                "n_inputs": n_inputs,
+                "std_dev": std_dev,
             }
             row["raw"] = dict(row)
             yield row
@@ -330,6 +343,7 @@ def parse_traveltime(fileobj) -> Iterator[dict]:
             tt_elem = basic.find(f"{T}travelTime")
             duration_s = accuracy = None
             n_inputs = None
+            quality = None
             if tt_elem is not None:
                 dur_e = tt_elem.find(f"{T}duration")
                 duration_s = float(dur_e.text) if dur_e is not None and dur_e.text else None
@@ -337,6 +351,7 @@ def parse_traveltime(fileobj) -> Iterator[dict]:
                 accuracy = float(acc_s) if acc_s else None
                 n_s = tt_elem.get("numberOfInputValuesUsed")
                 n_inputs = int(n_s) if n_s else None
+                quality = tt_elem.get("supplierCalculatedDataQuality")
 
             # Reference (free-flow) duration — measuredValueExtension is a SIBLING of basicData
             ref_duration_s = None
@@ -356,6 +371,7 @@ def parse_traveltime(fileobj) -> Iterator[dict]:
                 "ref_duration_s": ref_duration_s,
                 "accuracy": accuracy,
                 "n_inputs": n_inputs,
+                "quality": quality,
             }
             row["raw"] = dict(row)
             yield row

@@ -13,10 +13,11 @@ LOC = "http://datex2.eu/schema/3/locationReferencing"
 COM = "http://datex2.eu/schema/3/common"
 VMS = "http://datex2.eu/schema/3/vms"
 CZ  = "http://datex2.eu/schema/3/controlledZone"
+TRO = "http://datex2.eu/schema/3/trafficRegulation"
 XSI = "http://www.w3.org/2001/XMLSchema-instance"
 
 XSIT = f"{{{XSI}}}"
-NS = {"sit": SIT, "mc": MC, "loc": LOC, "com": COM, "vms": VMS, "cz": CZ}
+NS = {"sit": SIT, "mc": MC, "loc": LOC, "com": COM, "vms": VMS, "cz": CZ, "tro": TRO}
 
 
 def _t(ns: str) -> str:
@@ -189,17 +190,27 @@ def parse_drip(fileobj) -> Iterator[dict]:
             vstatus = _vs if _vs is not None else vstatus_outer
             working_status = _text_e(vstatus, f"{VMS_T}workingStatus")
             image_data = image_format = None
+            display_text = None
             msg_inner = vstatus.find(f"{VMS_T}vmsMessage/{VMS_T}vmsMessage")
             if msg_inner is not None:
                 img_e = msg_inner.find(f"{VMS_T}image")
                 if img_e is not None:
                     image_data = _text_e(img_e, f"{VMS_T}imageData")
                     image_format = _text_e(img_e, f"{VMS_T}imageFormat") or "png"
+                # Text-mode panels (TextDisplay): gather non-empty textLine content
+                lines = [
+                    tl.text.strip()
+                    for tl in msg_inner.findall(f".//{VMS_T}textLine")
+                    if tl.text and tl.text.strip()
+                ]
+                if lines:
+                    display_text = "\n".join(lines)
             key = (ctrl_id, int(vidx_str) if vidx_str else 0)
             status_map[key] = {
                 "working_status": working_status,
                 "image_data": image_data,
                 "image_format": image_format,
+                "display_text": display_text,
             }
 
     # Pass 2: yield sign rows merged with status
@@ -238,6 +249,12 @@ def parse_drip(fileobj) -> Iterator[dict]:
             vms_index = int(vms_index_str) if vms_index_str else 0
             status = status_map.get((ctrl_id, vms_index))
 
+            nda_str = _text_e(vms, f"{VMS_T}vmsConfiguration/{VMS_T}numberOfDisplayAreas")
+            try:
+                num_display_areas = int(nda_str) if nda_str else None
+            except ValueError:
+                num_display_areas = None
+
             row = {
                 "controller_id": ctrl_id,
                 "vms_index": vms_index,
@@ -245,6 +262,8 @@ def parse_drip(fileobj) -> Iterator[dict]:
                 "vms_type": _text_e(vms, f"{VMS_T}vmsType"),
                 "physical_support": _text_e(vms, f"{VMS_T}physicalSupport"),
                 "bearing": bearing,
+                "num_display_areas": num_display_areas,
+                "display_text": status.get("display_text") if status else None,
                 "geom": geom,
                 "message": status,
             }
@@ -340,6 +359,7 @@ def parse_emission_zones(fileobj) -> Iterator[dict]:
     CZ_T = _t(CZ)
     COM_T = _t(COM)
     LOC_T = _t(LOC)
+    TRO_T = _t(TRO)
 
     for _, zone in etree.iterparse(
         fileobj, events=("end",), tag=f"{CZ_T}urbanVehicleAccessRegulation"
@@ -356,13 +376,19 @@ def parse_emission_zones(fileobj) -> Iterator[dict]:
         if poslist_e is not None and poslist_e.text:
             geom = _poslist_to_polygon(poslist_e.text)
 
+        # Issuing authority: trafficRegulationOrder/issuingAuthority/values/value (first)
+        authority = _text_e(
+            zone,
+            f"{CZ_T}trafficRegulationOrder/{TRO_T}issuingAuthority//{COM_T}value",
+        )
+
         row = {
             "id": zone_id,
             "name": name,
             "zone_type": _text_e(zone, f"{CZ_T}controlledZoneType"),
             "status": _text_e(zone, f"{CZ_T}status"),
-            "authority": None,
-            "info_url": None,
+            "authority": authority,
+            "info_url": _text_e(zone, f"{CZ_T}urlForFurtherInformation"),
             "geom": geom,
         }
         row["raw"] = {k: v for k, v in row.items() if k != "raw"}

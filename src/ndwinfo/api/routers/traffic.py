@@ -50,6 +50,12 @@ def get_speed(
             func.max(
                 case((TrafficMeasurement.value_type == "TrafficFlow", TrafficMeasurement.flow_veh_h))
             ).label("flow_veh_h"),
+            func.max(
+                case((TrafficMeasurement.value_type == "TrafficSpeed", TrafficMeasurement.n_inputs))
+            ).label("n_inputs"),
+            func.max(
+                case((TrafficMeasurement.value_type == "TrafficSpeed", TrafficMeasurement.std_dev))
+            ).label("std_dev"),
             func.max(TrafficMeasurement.measured_at).label("measured_at"),
             func.ST_AsGeoJSON(MeasurementSite.geom, 6).label("geom_json"),
         )
@@ -114,6 +120,8 @@ def get_speed(
         loc["lanes"][r.lane].append({
             "speed": float(r.speed_kmh) if r.speed_kmh is not None else None,
             "flow": float(r.flow_veh_h) if r.flow_veh_h is not None else None,
+            "n_inputs": int(r.n_inputs) if r.n_inputs is not None else None,
+            "std_dev": float(r.std_dev) if r.std_dev is not None else None,
             "ts": r.measured_at,
         })
 
@@ -129,6 +137,8 @@ def get_speed(
                 "lane": lane,
                 "speed_kmh": m["speed_kmh"],
                 "flow_veh_h": m["flow_veh_h"],
+                "n_inputs": m["n_inputs"],
+                "std_dev": m["std_dev"],
             })
             if m["ts"] and (feat_ts is None or m["ts"] > feat_ts):
                 feat_ts = m["ts"]
@@ -218,15 +228,26 @@ def _merge_lane(readings: list[dict]) -> dict:
         same = [x for x in valid if x["ts"] == latest]
         speeds = [x["speed"] for x in same]
         flows = [x["flow"] for x in same if x["flow"] is not None]
+        n_inputs = [x["n_inputs"] for x in same if x["n_inputs"] is not None]
+        stds = [x["std_dev"] for x in same if x["std_dev"] is not None]
         return {
             "speed_kmh": round(sum(speeds) / len(speeds), 1),
             "flow_veh_h": round(sum(flows) / len(flows)) if flows else None,
+            # Summed sensor count, mean of reported deviations across merged systems.
+            "n_inputs": sum(n_inputs) if n_inputs else None,
+            "std_dev": round(sum(stds) / len(stds), 2) if stds else None,
             "ts": latest,
         }
 
     timed = [x for x in readings if x["ts"] is not None]
     pick = max(timed, key=lambda x: x["ts"]) if timed else readings[0]
-    return {"speed_kmh": pick["speed"], "flow_veh_h": pick["flow"], "ts": pick["ts"]}
+    return {
+        "speed_kmh": pick["speed"],
+        "flow_veh_h": pick["flow"],
+        "n_inputs": pick["n_inputs"],
+        "std_dev": pick["std_dev"],
+        "ts": pick["ts"],
+    }
 
 
 @router.get("/traveltime")
@@ -246,6 +267,7 @@ def get_traveltime(
             TravelTime.ref_duration_s,
             TravelTime.accuracy,
             TravelTime.n_inputs,
+            TravelTime.quality,
             func.ST_AsGeoJSON(MeasurementSite.geom, 6).label("geom_json"),
         )
         .join(MeasurementSite, TravelTime.segment_id == MeasurementSite.id)
@@ -263,6 +285,7 @@ def get_traveltime(
             "ref_duration_s": float(r.ref_duration_s) if r.ref_duration_s is not None else None,
             "accuracy": float(r.accuracy) if r.accuracy is not None else None,
             "n_inputs": r.n_inputs,
+            "quality": r.quality,
         }
 
     return geo_response(make_fc(rows, "geom_json", props))

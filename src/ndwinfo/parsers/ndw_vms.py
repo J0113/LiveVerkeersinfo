@@ -56,23 +56,35 @@ def parse_matrix_signs(fileobj) -> Iterator[tuple[dict, dict | None]]:
                 and (existing.get("ts_state") is None or ts_state > existing["ts_state"])
             )
             if is_newer:
-                aspect_type = value = None
-                flashing = red_ring = False
-                for child in display:
-                    aspect_type = child.tag.replace(NT, "")
-                    value = child.text.strip() if child.text else None
-                    flashing = child.get("flashing", "false").lower() == "true"
-                    red_ring = child.get("red_ring", "false").lower() == "true"
-                    break
+                # A <display> usually holds one aspect, but can carry several
+                # (e.g. lane_open + speedlimit). Capture all; surface the most
+                # informative (non-blank) one in the typed columns, keep the
+                # full list in raw.
+                aspects = [
+                    {
+                        "aspect_type": child.tag.replace(NT, ""),
+                        "value": child.text.strip() if child.text else None,
+                        "flashing": child.get("flashing", "false").lower() == "true",
+                        "red_ring": child.get("red_ring", "false").lower() == "true",
+                    }
+                    for child in display
+                ]
+                primary = next(
+                    (a for a in aspects if a["aspect_type"] != "blank"),
+                    aspects[0] if aspects else None,
+                )
 
-                sign_states[uuid] = {
+                state = {
                     "uuid": uuid,
                     "ts_state": ts_state,
-                    "aspect_type": aspect_type,
-                    "value": value,
-                    "flashing": flashing,
-                    "red_ring": red_ring,
+                    "aspect_type": primary["aspect_type"] if primary else None,
+                    "value": primary["value"] if primary else None,
+                    "flashing": primary["flashing"] if primary else False,
+                    "red_ring": primary["red_ring"] if primary else False,
                 }
+                if len(aspects) > 1:
+                    state["aspects"] = aspects
+                sign_states[uuid] = state
 
     # Yield pairs; signs without a display event still yield with state=None
     for uuid in set(sign_locations) | set(sign_states):

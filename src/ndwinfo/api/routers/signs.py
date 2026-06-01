@@ -62,6 +62,7 @@ def get_matrix_signs(
             MsiState.value,
             MsiState.flashing,
             MsiState.red_ring,
+            MsiState.raw,
             func.ST_AsGeoJSON(MsiSign.geom, 6).label("geom_json"),
         )
         .outerjoin(MsiState, MsiSign.uuid == MsiState.uuid)
@@ -84,6 +85,9 @@ def get_matrix_signs(
             "value": r.value,
             "flashing": r.flashing,
             "red_ring": r.red_ring,
+            # Full aspect list when the sign shows several at once (e.g.
+            # lane_open + speedlimit); absent for single-aspect displays.
+            "aspects": (r.raw or {}).get("aspects"),
         }
 
     return geo_response(make_fc(rows, "geom_json", props))
@@ -104,6 +108,8 @@ def get_drips(
             Drip.vms_type,
             Drip.physical_support,
             Drip.bearing,
+            Drip.num_display_areas,
+            Drip.display_text,
             Drip.message,
             func.ST_AsGeoJSON(Drip.geom, 6).label("geom_json"),
         )
@@ -120,6 +126,8 @@ def get_drips(
             "vms_type": r.vms_type,
             "physical_support": r.physical_support,
             "bearing": r.bearing,
+            "num_display_areas": r.num_display_areas,
+            "display_text": r.display_text,
             "working_status": msg.get("working_status"),
             "image_format": msg.get("image_format"),
             "image_b64": msg.get("image_data"),
