@@ -401,54 +401,7 @@ function renderMatrixMarkers (fc) {
   updateMatrixLayout()
 }
 
-// Build one lane cell for an MSI gantry from its aspect_type.
-function buildMsiLane (lane) {
-  const box = document.createElement('div')
-  const aspect = lane.aspect_type || ''
-  const val = lane.value
-
-  if ((aspect === 'speedlimit' || (!aspect && val)) && val) {
-    box.className = 'msi-lane'
-    const disc = document.createElement('div')
-    // Red ring only when red_ring=true (mandatory); otherwise plain disc.
-    disc.className = 'msi-speed-disc' + (lane.red_ring ? ' ringed' : '')
-    disc.textContent = val
-    box.appendChild(disc)
-  } else if (aspect === 'lane_open') {
-    box.className = 'msi-lane lane-open'
-    box.textContent = '↓'
-  } else if (aspect === 'merge_left' || aspect === 'lane_closed_ahead') {
-    // Lane closes ahead → white diagonal "move over" arrow (default left).
-    box.className = 'msi-lane lane-merge'
-    box.textContent = '↙'
-  } else if (aspect === 'merge_right') {
-    box.className = 'msi-lane lane-merge'
-    box.textContent = '↘'
-  } else if (aspect === 'lane_closed') {
-    box.className = 'msi-lane lane-closed'
-    box.textContent = '✕'
-  } else if (aspect === 'restriction_end' || aspect === 'end_of_restriction') {
-    box.className = 'msi-lane'
-    const disc = document.createElement('div')
-    disc.className = 'msi-end-disc'  // white disc with diagonal slash
-    box.appendChild(disc)
-  } else {
-    box.className = 'msi-lane blank'
-  }
-
-  if (lane.flashing) addFlashingLamps(box)
-  box.title = [lane.road, lane.carriageway, `lane ${lane.lane ?? '?'}`, aspect || val].filter(Boolean).join(' · ')
-  return box
-}
-
-// RWS flashing lamps: 4 corner dots cycling top pair → off → bottom pair → off.
-function addFlashingLamps (box) {
-  for (const [pos, phase] of [['tl', 'top'], ['tr', 'top'], ['bl', 'bottom'], ['br', 'bottom']]) {
-    const dot = document.createElement('span')
-    dot.className = `msi-lamp ${pos} ${phase}`
-    box.appendChild(dot)
-  }
-}
+// buildMsiLane / addFlashingLamps moved to lib.js (shared with drive.js).
 
 // Scale gantries with zoom and offset them to the roadside (perpendicular to the
 // road bearing) so the signs sit beside the carriageway instead of on top of it.
@@ -581,21 +534,7 @@ function updateSpeedLayout () {
   }
 }
 
-function speedColor (kmh) {
-  if (kmh === null || kmh === undefined) return '#444'
-  if (kmh <= 0)   return '#cc2200'
-  if (kmh <= 30)  return '#ff5500'
-  if (kmh <= 60)  return '#ffaa00'
-  if (kmh <= 80)  return '#ffdd00'
-  if (kmh <= 100) return '#aaee00'
-  if (kmh <= 120) return '#00cc44'
-  return '#00ffaa'
-}
-
-function speedTextColor (kmh) {
-  if (kmh !== null && kmh > 60 && kmh <= 100) return '#111'
-  return '#fff'
-}
+// speedColor / speedTextColor moved to lib.js (shared with drive.js).
 
 function fetchFeedStatus () {
   fetch('/api/feeds')
@@ -644,13 +583,7 @@ function buildPopupHtml (props) {
   return imageHtml + (rows.length ? `<table class="popup-table"><tbody>${rows.join('')}</tbody></table>` : '')
 }
 
-function esc (s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
+// esc moved to lib.js (shared with drive.js).
 
 // ─── Layer panel ──────────────────────────────────────────────────────────────
 
@@ -1116,33 +1049,4 @@ function makeCirclePolygon(lng, lat, radiusMeters) {
   }
 }
 
-function calculateDistance(coord1, coord2) {
-  const [lng1, lat1] = coord1
-  const [lng2, lat2] = coord2
-  const R = 6371000 // in meters
-  const phi1 = (lat1 * Math.PI) / 180
-  const phi2 = (lat2 * Math.PI) / 180
-  const dPhi = ((lat2 - lat1) * Math.PI) / 180
-  const dLam = ((lng2 - lng1) * Math.PI) / 180
-
-  const a =
-    Math.sin(dPhi / 2) * Math.sin(dPhi / 2) +
-    Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLam / 2) * Math.sin(dLam / 2)
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-  return R * c
-}
-
-function calculateBearing(coord1, coord2) {
-  const [lng1, lat1] = coord1
-  const [lng2, lat2] = coord2
-  const dLon = ((lng2 - lng1) * Math.PI) / 180
-  const lat1Rad = (lat1 * Math.PI) / 180
-  const lat2Rad = (lat2 * Math.PI) / 180
-
-  const y = Math.sin(dLon) * Math.cos(lat2Rad)
-  const x =
-    Math.cos(lat1Rad) * Math.sin(lat2Rad) -
-    Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon)
-  const brng = (Math.atan2(y, x) * 180) / Math.PI
-  return (brng + 360) % 360
-}
+// calculateDistance / calculateBearing moved to lib.js (shared with drive.js).

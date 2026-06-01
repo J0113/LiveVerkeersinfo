@@ -516,3 +516,118 @@ input[type="checkbox"] {
 .user-heading-cone.visible {
   opacity: 1;
 }
+
+/* ── Drive HUD page (/drive) ─────────────────────────────────────────────────── */
+
+body.drive {
+  color: #e6e6f0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+#drive-status {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  background: #0a0a12;
+  border-bottom: 1px solid #23233a;
+}
+
+#drive-gps-btn {
+  font: 700 13px/1 system-ui, sans-serif;
+  color: #fff;
+  border: none;
+  border-radius: 20px;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+#drive-gps-btn.state-off { background: #444; }
+#drive-gps-btn.state-on  { background: #1e8e3e; }
+
+#drive-speed-readout { display: flex; align-items: baseline; gap: 4px; }
+#drive-kmh { font-size: 30px; font-weight: 800; }
+#drive-speed-readout small { color: #8888a0; font-size: 12px; }
+
+#drive-road { flex: 1; text-align: right; color: #aab; font-size: 14px; }
+
+#drive-flags .flag { opacity: 0.25; font-size: 18px; }
+#drive-flags .flag.active { opacity: 1; color: #ffd24d; }
+
+#drive-banner {
+  background: #b35900;
+  color: #fff;
+  padding: 8px 14px;
+  font-size: 13px;
+  text-align: center;
+}
+
+#drive-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+}
+
+.hud-label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #777790;
+  margin-bottom: 8px;
+}
+
+.hud-empty { color: #66667e; font-size: 14px; padding: 6px 0; }
+.hud-meta  { color: #8888a0; font-size: 13px; margin-top: 8px; }
+
+/* Per-lane measured-speed strip */
+.speed-strip { display: flex; gap: 8px; }
+.speed-tile {
+  flex: 1;
+  min-width: 56px;
+  height: 72px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.speed-tile b { font-size: 32px; font-weight: 800; }
+
+/* Cards */
+.hud-card {
+  background: #15151f;
+  border: 1px solid #26263c;
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.hud-card.passed { opacity: 0.5; }
+
+.hud-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+.hud-road { font-size: 15px; font-weight: 700; color: #dfe; }
+.hud-dist { font-size: 16px; font-weight: 800; color: #ffd24d; }
+
+.hud-gantry-wrap { display: flex; justify-content: center; }
+#hud-passed .hud-gantry-wrap { transform: scale(0.8); transform-origin: left center; }
+
+.hud-drip-img {
+  max-width: 100%;
+  display: block;
+  border-radius: 6px;
+  image-rendering: pixelated;
+  background: #000;
+}
+
+#hud-passed { margin-top: 4px; }
