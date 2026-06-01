@@ -67,7 +67,7 @@ class MsiShapefileIngester(Ingester):
                     session.execute(
                         update(MsiSign)
                         .where(MsiSign.uuid == r["uuid"])
-                        .values(geom=r["geom"], raw=r["raw"])
+                        .values(geom=r["geom"], bearing=r["bearing"], raw=r["raw"])
                     )
                 total += len(batch)
                 session.flush()
