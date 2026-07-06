@@ -12,30 +12,9 @@ class FeedDef(TypedDict):
 
 
 # parser_fn and ingester_cls are filled in as Phase 3/4 work lands.
+# Ordered fastest cadence -> slowest: smaller/faster files poll first each tick.
 FEEDS: list[FeedDef] = [
-    # --- Reference / static ---
-    {
-        "name": "measurement_site",
-        "filename": "measurement_current.xml.gz",
-        "cadence_s": 3600,
-        "parser_fn": None,
-        "ingester_cls": None,
-    },
-    {
-        "name": "meetlocaties_shapefile",
-        "filename": "ndw_avg_meetlocaties_shapefile.zip",
-        "cadence_s": 86400,
-        "parser_fn": None,
-        "ingester_cls": None,
-    },
-    {
-        "name": "vild_shapefile",
-        "filename": "VILD6.13.A.zip",
-        "cadence_s": 604800,
-        "parser_fn": None,
-        "ingester_cls": None,
-    },
-    # --- Real-time measurement ---
+    # --- cadence 60s ---
     {
         "name": "trafficspeed",
         "filename": "trafficspeed.xml.gz",
@@ -50,7 +29,6 @@ FEEDS: list[FeedDef] = [
         "parser_fn": None,
         "ingester_cls": None,
     },
-    # --- Situations ---
     {
         "name": "actueel_beeld",
         "filename": "actueel_beeld.xml.gz",
@@ -62,13 +40,6 @@ FEEDS: list[FeedDef] = [
         "name": "srti",
         "filename": "veiligheidsgerelateerde_berichten_srti.xml.gz",
         "cadence_s": 60,
-        "parser_fn": None,
-        "ingester_cls": None,
-    },
-    {
-        "name": "roadworks",
-        "filename": "planningsfeed_wegwerkzaamheden_en_evenementen.xml.gz",
-        "cadence_s": 900,
         "parser_fn": None,
         "ingester_cls": None,
     },
@@ -93,7 +64,6 @@ FEEDS: list[FeedDef] = [
         "parser_fn": None,
         "ingester_cls": None,
     },
-    # --- Signs & VMS ---
     {
         "name": "matrix_signs",
         "filename": "Matrixsignaalinformatie.xml.gz",
@@ -109,22 +79,6 @@ FEEDS: list[FeedDef] = [
         "ingester_cls": None,
     },
     {
-        "name": "msi_shapefiles",
-        "filename": "ndw_msi_shapefiles_latest.zip",
-        "cadence_s": 86400,
-        "parser_fn": None,
-        "ingester_cls": None,
-    },
-    # --- Emission zones ---
-    {
-        "name": "emission_zones",
-        "filename": "emissiezones.xml.gz",
-        "cadence_s": 86400,
-        "parser_fn": None,
-        "ingester_cls": None,
-    },
-    # --- EV charging ---
-    {
         "name": "charging_geojson",
         "filename": "charging_point_locations.geojson.gz",
         "cadence_s": 60,
@@ -139,13 +93,57 @@ FEEDS: list[FeedDef] = [
         "ingester_cls": None,
     },
     {
+        "name": "truckparking_status",
+        "filename": "Truckparking_Parking_Status.xml",
+        "cadence_s": 60,
+        "parser_fn": None,
+        "ingester_cls": None,
+    },
+    # --- cadence 900s ---
+    {
+        "name": "roadworks",
+        "filename": "planningsfeed_wegwerkzaamheden_en_evenementen.xml.gz",
+        "cadence_s": 900,
+        "parser_fn": None,
+        "ingester_cls": None,
+    },
+    # --- cadence 3600s ---
+    {
+        "name": "measurement_site",
+        "filename": "measurement_current.xml.gz",
+        "cadence_s": 3600,
+        "parser_fn": None,
+        "ingester_cls": None,
+    },
+    {
         "name": "tariffs_ocpi",
         "filename": "charging_point_tariffs_ocpi.json.gz",
         "cadence_s": 3600,
         "parser_fn": None,
         "ingester_cls": None,
     },
-    # --- Truck parking ---
+    # --- cadence 86400s ---
+    {
+        "name": "meetlocaties_shapefile",
+        "filename": "ndw_avg_meetlocaties_shapefile.zip",
+        "cadence_s": 86400,
+        "parser_fn": None,
+        "ingester_cls": None,
+    },
+    {
+        "name": "msi_shapefiles",
+        "filename": "ndw_msi_shapefiles_latest.zip",
+        "cadence_s": 86400,
+        "parser_fn": None,
+        "ingester_cls": None,
+    },
+    {
+        "name": "emission_zones",
+        "filename": "emissiezones.xml.gz",
+        "cadence_s": 86400,
+        "parser_fn": None,
+        "ingester_cls": None,
+    },
     {
         "name": "truckparking_table",
         "filename": "Truckparking_Parking_Table.xml",
@@ -154,17 +152,17 @@ FEEDS: list[FeedDef] = [
         "ingester_cls": None,
     },
     {
-        "name": "truckparking_status",
-        "filename": "Truckparking_Parking_Status.xml",
-        "cadence_s": 60,
-        "parser_fn": None,
-        "ingester_cls": None,
-    },
-    # --- Traffic signs ---
-    {
         "name": "verkeersborden_csv",
         "filename": "verkeersborden_actueel_beeld.csv.gz",
         "cadence_s": 86400,
+        "parser_fn": None,
+        "ingester_cls": None,
+    },
+    # --- cadence 604800s ---
+    {
+        "name": "vild_shapefile",
+        "filename": "VILD6.13.A.zip",
+        "cadence_s": 604800,
         "parser_fn": None,
         "ingester_cls": None,
     },
