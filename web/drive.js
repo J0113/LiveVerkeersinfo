@@ -217,7 +217,8 @@ function renderSpeed (speeds, ctx) {
     strip.appendChild(tile)
   }
   const dist = ctx.directed ? `in ${formatDistance(pick.cls.along)}` : `${formatDistance(pick.cls.dist)}`
-  meta.textContent = `${pick.data.systems?.join('+') || ''} · ${dist}`
+  const age = formatAge(pick.data.measured_at)
+  meta.textContent = `${pick.data.systems?.join('+') || ''} · ${dist} · ${age}`
 }
 
 function renderUpcoming (items, ctx) {

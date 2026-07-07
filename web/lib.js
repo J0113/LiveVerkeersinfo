@@ -211,3 +211,13 @@ function formatDistance (m) {
   if (m < 1000) return `${Math.round(m / 10) * 10} m`
   return `${(m / 1000).toFixed(1)} km`
 }
+
+// Age of an ISO timestamp as "8s ago" / "2m ago" / "3h ago", relative to now.
+function formatAge (isoTs) {
+  if (!isoTs) return ''
+  const ageS = (Date.now() - new Date(isoTs).getTime()) / 1000
+  if (ageS < 0) return '0s ago'
+  if (ageS < 60) return `${Math.round(ageS)}s ago`
+  if (ageS < 3600) return `${Math.round(ageS / 60)}m ago`
+  return `${Math.round(ageS / 3600)}h ago`
+}
