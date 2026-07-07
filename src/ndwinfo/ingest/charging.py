@@ -38,12 +38,14 @@ class ChargingGeojsonIngester(Ingester):
             session.flush()
 
         # Replace availability for all seen charge points atomically
-        if seen_cp_ids:
+        for i in range(0, len(seen_cp_ids), BATCH_SIZE):
+            batch = seen_cp_ids[i : i + BATCH_SIZE]
             session.execute(
                 delete(ChargeAvailability).where(
-                    ChargeAvailability.cp_id.in_(seen_cp_ids)
+                    ChargeAvailability.cp_id.in_(batch)
                 )
             )
+        if seen_cp_ids:
             session.flush()
 
             for i in range(0, len(avail_rows), BATCH_SIZE):
