@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
@@ -36,7 +37,18 @@ def _api_idle(session) -> bool:
     return elapsed > settings.poller_idle_timeout_s
 
 
-def run_once() -> None:
+_executor = ThreadPoolExecutor(max_workers=settings.poller_max_workers)
+_inflight: dict[str, Future] = {}
+
+
+def _run_feed(name: str) -> None:
+    try:
+        INGESTERS[name].run()
+    except Exception:
+        logger.exception("%s: unexpected error in poller", name)
+
+
+def run_once(wait: bool = False) -> None:
     with SessionLocal() as session:
         last = _last_finished_per_feed(session)
         idle = _api_idle(session)
@@ -59,17 +71,26 @@ def run_once() -> None:
             logger.debug("%s: no ingester registered, skipping", name)
             continue
 
+        # A slow feed (e.g. a 30-minute shapefile/CSV ingest) may still be
+        # running from a previous tick — don't resubmit it, and don't let
+        # it block other feeds from being checked/started this tick.
+        prev = _inflight.get(name)
+        if prev is not None and not prev.done():
+            logger.debug("%s: still running from a previous pass, skipping", name)
+            continue
+
         lf = last.get(name)
         elapsed = (now - lf).total_seconds() if lf else float("inf")
 
         if elapsed >= feed["cadence_s"]:
             logger.info("%s: due (elapsed %.0fs >= cadence %ds), running", name, elapsed, feed["cadence_s"])
-            try:
-                INGESTERS[name].run()
-            except Exception:
-                logger.exception("%s: unexpected error in poller", name)
+            _inflight[name] = _executor.submit(_run_feed, name)
         else:
             logger.debug("%s: not due yet (%.0fs remaining)", name, feed["cadence_s"] - elapsed)
+
+    if wait:
+        for future in list(_inflight.values()):
+            future.result()
 
 
 def main() -> None:
@@ -83,7 +104,7 @@ def main() -> None:
     )
 
     if args.once:
-        run_once()
+        run_once(wait=True)
         return
 
     logger.info("Poller started (tick=%ds)", TICK_S)
