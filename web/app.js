@@ -212,7 +212,7 @@ const GROUPS = [
   { key: 'reference',    label: 'Reference' }
 ]
 
-const DEFAULT_ENABLED = new Set(['speed', 'matrix', 'drips'])
+const DEFAULT_ENABLED = new Set(['speed', 'matrix', 'drips', 'weggeg_lanes'])
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
 let nwbTruncated = false
@@ -283,8 +283,8 @@ map.on('load', () => {
   addArrowImage()
 
   for (const layer of LAYERS) {
-    // Both are rendered as HTML markers and do not need an empty MapLibre layer.
-    if (layer.geomType === 'msi' || layer.geomType === 'speed') continue
+    // Rendered as HTML markers, not MapLibre layers.
+    if (layer.geomType === 'msi') continue
 
     const srcOpts = { type: 'geojson', data: EMPTY_FC }
     if (layer.promoteId) srcOpts.promoteId = layer.promoteId
@@ -419,18 +419,23 @@ map.on('moveend', () => {
   debounceTimer = setTimeout(fetchAll, 300)
 })
 
+// Slide lane-speed labels along their line during pan/zoom/rotate so they
+// stay on screen between refetches, instead of waiting on the debounced fetch.
+map.on('move', updateLaneSpeedLayout)
+
 // Re-evaluate verkeersborden hint + re-fetch on zoom change
 map.on('zoom', () => {
   updateZoomHint()
   updateMatrixLayout()
   updateSpeedLayout()
+  updateLaneSpeedLayout()
   // If verkeersborden just crossed zoom 13, trigger a fetch
   const layer = LAYERS.find(l => l.key === 'verkeersborden')
   if (layer && enabled.has('verkeersborden')) fetchLayer(layer)
 })
 
 // Keep roadside offsets correct while the map rotates (e.g. navigation mode).
-map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout() })
+map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout(); updateLaneSpeedLayout() })
 
 // ─── Fetch ────────────────────────────────────────────────────────────────────
 
@@ -725,7 +730,7 @@ function fetchSpeedMarkers () {
 function renderSpeedMarkers (fc, laneFc = EMPTY_FC) {
   for (const m of speedMarkers) m.marker.remove()
   speedMarkers = []
-  for (const marker of laneSpeedMarkers) marker.remove()
+  for (const m of laneSpeedMarkers) m.marker.remove()
   laneSpeedMarkers = []
 
   if (!enabled.has('speed')) return
@@ -800,15 +805,24 @@ function renderSpeedMarkers (fc, laneFc = EMPTY_FC) {
 function renderLaneSpeedLabels (laneFc) {
   if (map.getZoom() < 16) return
 
+  const bounds = currentBoundsBox()
+
   for (const feature of laneFc.features || []) {
     const p = feature.properties || {}
     if (!feature.geometry || p.speed_kmh === null || p.speed_kmh === undefined) continue
     if (!Array.isArray(p.measurement_coords)) continue
 
+    const best = projectPointOnLine(feature.geometry, p.measurement_coords)
+    if (!best) continue
+
     // Stagger labels longitudinally so adjacent 3.5m lanes remain readable.
     const centerLane = ((p.lane_count || 1) + 1) / 2
     const shiftM = ((p.lane || 1) - centerLane) * 22
-    const coords = closestCoordinateOnLine(feature.geometry, p.measurement_coords, shiftM)
+    const basePosition = Math.max(0, Math.min(best.total, best.position + shiftM))
+    const range = visibleRangeOnLine(best, bounds)
+    if (!range) continue  // line doesn't currently cross the viewport at all
+    const wanted = Math.max(range.min, Math.min(range.max, basePosition))
+    const coords = coordAtDistance(best, wanted)
     if (!coords) continue
 
     const el = document.createElement('div')
@@ -822,7 +836,7 @@ function renderLaneSpeedLabels (laneFc) {
       e.stopPropagation()
       if (activePopup) activePopup.remove()
       activePopup = new maplibregl.Popup({ maxWidth: '280px', offset: [0, -8] })
-        .setLngLat(coords)
+        .setLngLat(marker.getLngLat())
         .setHTML(buildPopupHtml({
           road: p.road,
           carriageway: p.carriageway,
@@ -835,13 +849,39 @@ function renderLaneSpeedLabels (laneFc) {
         .addTo(map)
     })
 
-    laneSpeedMarkers.push(
-      new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(coords).addTo(map)
-    )
+    const marker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(coords).addTo(map)
+    laneSpeedMarkers.push({ marker, best, basePosition })
   }
 }
 
-function closestCoordinateOnLine (geometry, target, shiftMeters = 0) {
+// Slide already-rendered lane-speed labels along their line so they stay on
+// screen while panning/zooming, instead of sitting fixed at the sensor's
+// physical location (which can scroll out of view at high zoom).
+function updateLaneSpeedLayout () {
+  if (!laneSpeedMarkers.length) return
+  const bounds = currentBoundsBox()
+  for (const m of laneSpeedMarkers) {
+    const range = visibleRangeOnLine(m.best, bounds)
+    const el = m.marker.getElement()
+    if (!range) {
+      el.style.visibility = 'hidden'
+      continue
+    }
+    el.style.visibility = ''
+    const wanted = Math.max(range.min, Math.min(range.max, m.basePosition))
+    const coords = coordAtDistance(m.best, wanted)
+    if (coords) m.marker.setLngLat(coords)
+  }
+}
+
+function currentBoundsBox () {
+  const b = map.getBounds()
+  return { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() }
+}
+
+// Find the point on `geometry` closest to `target`, and the running distances
+// (metres) needed to walk to any other point along the same line.
+function projectPointOnLine (geometry, target) {
   const lines = geometry.type === 'LineString'
     ? [geometry.coordinates]
     : geometry.type === 'MultiLineString' ? geometry.coordinates : []
@@ -881,8 +921,13 @@ function closestCoordinateOnLine (geometry, target, shiftMeters = 0) {
     }
   }
 
-  if (!best) return null
-  let wanted = Math.max(0, Math.min(best.total, best.position + shiftMeters))
+  return best
+}
+
+// Coordinate at `distance` metres along the line described by a
+// projectPointOnLine() result.
+function coordAtDistance (best, distance) {
+  let wanted = Math.max(0, Math.min(best.total, distance))
   for (let i = 0; i < best.lengths.length; i++) {
     if (wanted <= best.lengths[i] || i === best.lengths.length - 1) {
       const t = best.lengths[i] ? wanted / best.lengths[i] : 0
@@ -894,6 +939,29 @@ function closestCoordinateOnLine (geometry, target, shiftMeters = 0) {
     wanted -= best.lengths[i]
   }
   return null
+}
+
+// Range of along-line distance (metres) currently inside the viewport, using
+// vertex-level containment — dense WEGGEG vertex spacing makes this accurate
+// enough without a full line/bbox clip.
+function visibleRangeOnLine (best, bounds) {
+  const { line, lengths, total } = best
+  let cum = 0
+  let min = null
+  let max = null
+  for (let i = 0; i < line.length; i++) {
+    const [lng, lat] = line[i]
+    const inside = lng >= bounds.west && lng <= bounds.east && lat >= bounds.south && lat <= bounds.north
+    if (inside) {
+      if (min === null || cum < min) min = cum
+      if (max === null || cum > max) max = cum
+    }
+    if (i < lengths.length) cum += lengths[i]
+  }
+  if (min === null) return null
+  // Small inset so a label doesn't render half-cut on the viewport edge.
+  const pad = Math.min(20, (max - min) / 2)
+  return { min: Math.max(0, min + pad), max: Math.min(total, max - pad) }
 }
 
 // Keep fallback speed rows upright and offset them roadside using the bearing.
@@ -1117,7 +1185,7 @@ function setLayerVisibility (layer, visible) {
     if (!visible) {
       for (const m of speedMarkers) m.marker.remove()
       speedMarkers = []
-      for (const marker of laneSpeedMarkers) marker.remove()
+      for (const m of laneSpeedMarkers) m.marker.remove()
       laneSpeedMarkers = []
       map.getSource('speed')?.setData(EMPTY_FC)
     }

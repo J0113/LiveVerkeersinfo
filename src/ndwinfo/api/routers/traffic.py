@@ -318,7 +318,7 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
 
     # Exit and connector measurements sometimes retain their former road/km
     # metadata while WEGGEG assigns the physical lane to the intersecting road.
-    # Only accept an exact lane-count match within 12m, and reject it when a
+    # Only accept an exact lane-count match within 25m, and reject it when a
     # second candidate is less than 5m farther away. This prevents snapping to
     # a parallel/opposite carriageway in dense interchange geometry.
     spatial_payload = []
@@ -385,7 +385,7 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
                 WHERE w.lane = 1
                   AND w.lane_count = s.num_lanes
                   AND GeometryType(merged.line) = 'LINESTRING'
-                  AND ST_DWithin(w.geom::geography, s.point::geography, 12)
+                  AND ST_DWithin(w.geom::geography, s.point::geography, 25)
                 ORDER BY w.geom <-> s.point
                 LIMIT 2
             ) candidate
