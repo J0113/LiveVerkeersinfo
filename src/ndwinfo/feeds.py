@@ -3,12 +3,15 @@
 from typing import Callable, TypedDict
 
 
-class FeedDef(TypedDict):
+class FeedDef(TypedDict, total=False):
     name: str
     filename: str
     cadence_s: int
     parser_fn: Callable | None
     ingester_cls: type | None
+    # Most feeds are relative to NDW_BASE_URL. Versioned external datasets can
+    # instead expose an Apache-style index resolved by the downloader.
+    index_url: str
 
 
 # parser_fn and ingester_cls are filled in as Phase 3/4 work lands.
@@ -163,6 +166,18 @@ FEEDS: list[FeedDef] = [
         "name": "vild_shapefile",
         "filename": "VILD6.13.A.zip",
         "cadence_s": 604800,
+        "parser_fn": None,
+        "ingester_cls": None,
+    },
+    {
+        # WEGGEG publishes one versioned package per month rather than a stable
+        # "latest" filename. `index_url` is resolved to the newest DD-MM-YYYY
+        # package by download.fetch, while this local filename stays stable.
+        "name": "weggeg_rijstroken",
+        "filename": "weggeg_rijstroken.zip",
+        "index_url": "https://downloads.rijkswaterstaatdata.nl/weggeg/geogegevens/"
+        "shapefile/weggeg_kenmerkniveau/",
+        "cadence_s": 86400,
         "parser_fn": None,
         "ingester_cls": None,
     },

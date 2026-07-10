@@ -150,6 +150,31 @@ class VildArea(Base):
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
 
+class WeggegLane(Base):
+    """One displayable lane derived from a WEGGEG Rijstroken road section."""
+
+    __tablename__ = "weggeg_lane"
+    __table_args__ = (
+        Index("ix_weggeg_lane_geom", "geom", postgresql_using="gist"),
+        Index("ix_weggeg_lane_source_id", "source_id"),
+        Index("ix_weggeg_lane_road_side_lane", "road_number", "carriageway_side", "lane"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # FK_VELD4 is WEGGEG's stable identifier for the source road section.
+    source_id: Mapped[str] = mapped_column(String, nullable=False)
+    lane: Mapped[int] = mapped_column(Integer, nullable=False)
+    lane_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    road_number: Mapped[Optional[str]] = mapped_column(String)
+    direction: Mapped[Optional[str]] = mapped_column(String)
+    carriageway_side: Mapped[Optional[str]] = mapped_column(String)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True
+    )
+    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
 # ---------------------------------------------------------------------------
 # Real-time measurement (latest per site+index)
 # ---------------------------------------------------------------------------
