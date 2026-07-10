@@ -46,7 +46,7 @@ All list endpoints require `?bbox=minLon,minLat,maxLon,maxLat`. Max area: 25 deg
 | `GET /api/truckparking` | Truck parking sites + live occupancy | 60 s |
 | `GET /api/emission-zones` | Low-emission zones | daily |
 | `GET /api/verkeersborden?rvvCode=` | Traffic signs (bbox required; best above zoom 13) | daily |
-| `GET /api/nwb/roads?bbox=&zoom=` | Normalized NWB road sections for the viewport | monthly |
+| `GET /api/nwb/roads?bbox=&zoom=` | Normalized NWB road sections for the viewport (served from PostGIS) | daily |
 | `GET /api/feeds/status` | Last run per feed — status, time, rows upserted | — |
 
 All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (default 500, max 2000).
@@ -63,9 +63,10 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 ## Data sources
 
 Full catalogue: [docs/README.md](docs/README.md). Live traffic data comes from
-[opendata.ndw.nu](https://opendata.ndw.nu); NWB road geometry comes from the
-official [PDOK OGC API Features service](https://api.pdok.nl/rws/nationaal-wegenbestand-wegen/ogc/v1).
-Neither requires authentication. See [NWB road-network foundation](docs/08-nwb-road-network.md).
+[opendata.ndw.nu](https://opendata.ndw.nu); NWB road geometry is ingested daily
+from RWS's [Wegvakken GeoPackage](https://downloads.rijkswaterstaatdata.nl/nwb-wegen/)
+into PostGIS and served from there — not proxied per request. Neither source
+requires authentication. See [NWB road-network foundation](docs/08-nwb-road-network.md).
 
 ## Local development (without Docker)
 
@@ -91,9 +92,6 @@ python -m ndwinfo.poller
 | `MAX_BBOX_AREA` | `25.0` | Maximum bbox area in deg² for API requests |
 | `API_DEFAULT_LIMIT` | `500` | Default feature limit per endpoint |
 | `API_MAX_LIMIT` | `2000` | Hard cap on feature limit |
-| `NWB_PDOK_URL` | official PDOK `wegvakken/items` URL | NWB OGC API Features endpoint |
-| `NWB_REQUEST_TIMEOUT_S` | `20` | PDOK request timeout |
-| `NWB_CACHE_TTL_S` | `3600` | Successful viewport cache lifetime |
-| `NWB_CACHE_MAX_ENTRIES` | `128` | Server-side NWB LRU cache size |
-| `NWB_MAX_FEATURES` | `5000` | Per-viewport NWB feature cap |
+| `NWB_WEGVAKKEN_URL` | official RWS `Wegvakken.gpkg` URL | Daily bulk-download source (used by the poller) |
+| `NWB_MAX_FEATURES` | `5000` | Per-viewport NWB row cap |
 | `NWB_DIAGNOSTIC_MODE` | `false` | Enable clickable NWB metadata diagnostics |

@@ -1,6 +1,7 @@
 """Conditional GET download helper."""
 
 import gzip
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,9 @@ from typing import IO
 import httpx
 
 from ndwinfo.config import settings
+
+logger = logging.getLogger(__name__)
+MAX_RESUME_ATTEMPTS = 5
 
 
 @dataclass
@@ -30,55 +34,86 @@ def fetch(
 
     Pass etag/last_modified from the previous feed_run to avoid re-downloading
     unchanged files (returns status='not_modified' on HTTP 304).
+
+    Large downloads can be dropped mid-stream by an intermediate proxy well
+    before completion (observed on multi-hundred-MB files). When that happens
+    the partial write is resumed with a Range request instead of restarting
+    from byte zero, up to MAX_RESUME_ATTEMPTS.
     """
-    url = f"{settings.ndw_base_url.rstrip('/')}/{feed['filename']}"
+    url = feed.get("url") or f"{settings.ndw_base_url.rstrip('/')}/{feed['filename']}"
     path = Path(settings.data_dir) / feed["filename"]
     path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".part")
 
-    headers: dict[str, str] = {}
+    base_headers: dict[str, str] = {}
     if etag:
-        headers["If-None-Match"] = etag
+        base_headers["If-None-Match"] = etag
     elif last_modified:
-        headers["If-Modified-Since"] = last_modified
+        base_headers["If-Modified-Since"] = last_modified
+
+    resp_etag = resp_lm = None
+    resume_from = 0
+    tmp_path.unlink(missing_ok=True)
 
     try:
-        with httpx.stream(
-            "GET", url, headers=headers, follow_redirects=True, timeout=60.0
-        ) as resp:
-            if resp.status_code == 304:
-                # Server says unchanged, but if our local copy is gone (e.g. a
-                # prior download failed mid-stream and was unlinked) we have
-                # nothing to parse. Re-fetch unconditionally instead of getting
-                # stuck on 304 until the upstream ETag next changes.
-                if not path.exists():
-                    return fetch(feed, etag=None, last_modified=None)
-                return DownloadResult(
-                    status="not_modified",
-                    path=path,
-                    etag=etag,
-                    last_modified=last_modified,
-                    http_status=304,
-                    error=None,
+        for attempt in range(1, MAX_RESUME_ATTEMPTS + 1):
+            req_headers = dict(base_headers)
+            mode = "wb"
+            if resume_from:
+                req_headers.pop("If-None-Match", None)
+                req_headers.pop("If-Modified-Since", None)
+                req_headers["Range"] = f"bytes={resume_from}-"
+                mode = "ab"
+
+            try:
+                with httpx.stream(
+                    "GET", url, headers=req_headers, follow_redirects=True, timeout=60.0
+                ) as resp:
+                    if resp.status_code == 304 and resume_from == 0:
+                        # Server says unchanged, but if our local copy is gone (e.g. a
+                        # prior download failed mid-stream and was unlinked) we have
+                        # nothing to parse. Re-fetch unconditionally instead of getting
+                        # stuck on 304 until the upstream ETag next changes.
+                        if not path.exists():
+                            return fetch(feed, etag=None, last_modified=None)
+                        return DownloadResult(
+                            status="not_modified",
+                            path=path,
+                            etag=etag,
+                            last_modified=last_modified,
+                            http_status=304,
+                            error=None,
+                        )
+                    resp.raise_for_status()
+
+                    if resume_from == 0:
+                        resp_etag = resp.headers.get("ETag")
+                        resp_lm = resp.headers.get("Last-Modified")
+
+                    with open(tmp_path, mode) as f:
+                        for chunk in resp.iter_bytes(chunk_size=65536):
+                            f.write(chunk)
+                            resume_from += len(chunk)
+                break  # streamed to completion without the connection dropping
+            except (httpx.TransportError, httpx.StreamError) as exc:
+                if attempt >= MAX_RESUME_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "%s: download interrupted at %d bytes (attempt %d/%d), resuming: %s",
+                    feed["name"], resume_from, attempt, MAX_RESUME_ATTEMPTS, exc,
                 )
-            resp.raise_for_status()
 
-            resp_etag = resp.headers.get("ETag")
-            resp_lm = resp.headers.get("Last-Modified")
-
-            with open(path, "wb") as f:
-                for chunk in resp.iter_bytes(chunk_size=65536):
-                    f.write(chunk)
-
-            return DownloadResult(
-                status="ok",
-                path=path,
-                etag=resp_etag,
-                last_modified=resp_lm,
-                http_status=resp.status_code,
-                error=None,
-            )
+        tmp_path.replace(path)
+        return DownloadResult(
+            status="ok",
+            path=path,
+            etag=resp_etag,
+            last_modified=resp_lm,
+            http_status=200,
+            error=None,
+        )
     except Exception as exc:
-        path.unlink(missing_ok=True)  # partial write → remove so 304 can't reuse it
+        tmp_path.unlink(missing_ok=True)
         return DownloadResult(
             status="error",
             path=None,

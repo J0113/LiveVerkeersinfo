@@ -7,6 +7,7 @@ from ndwinfo.ingest.measurement import (
     TrafficspeedIngester,
     TraveltimeIngester,
 )
+from ndwinfo.ingest.nwb import NwbWegvakkenIngester
 from ndwinfo.ingest.parking import TruckParkingStatusIngester, TruckParkingTableIngester
 from ndwinfo.ingest.reference import MeetlocatiesIngester, MsiShapefileIngester, VildIngester
 from ndwinfo.ingest.signs import DripIngester, MatrixSignIngester
@@ -24,6 +25,7 @@ INGESTERS: dict[str, object] = {
     "measurement_site": MeasurementSiteIngester(),
     "meetlocaties_shapefile": MeetlocatiesIngester(),
     "vild_shapefile": VildIngester(),
+    "nwb_wegvakken": NwbWegvakkenIngester(),
     "trafficspeed": TrafficspeedIngester(),
     "traveltime": TraveltimeIngester(),
     "actueel_beeld": ActueleBeeldIngester,

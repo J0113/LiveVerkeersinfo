@@ -43,8 +43,9 @@ Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
 - **Truck parking**: static table + live status. → [docs/05](docs/05-truckparking.md)
 - **Traffic signs (verkeersborden)**: CSV/GeoJSON, **very large (>200M)**. → [docs/06](docs/06-verkeersborden.md)
 - **Static reference**: measurement-location & VILD shapefiles. → [docs/07](docs/07-static-reference.md)
-- **Road network**: official PDOK NWB `wegvakken` OGC API Features, queried by
-  viewport and normalized to stable road-segment GeoJSON. → [docs/08](docs/08-nwb-road-network.md)
+- **Road network**: RWS NWB Wegvakken GeoPackage (whole-country, daily),
+  ingested into PostGIS and served like any other feed — not proxied
+  live. → [docs/08](docs/08-nwb-road-network.md)
 
 ## Key technical facts
 
@@ -184,7 +185,7 @@ Environment variables (`.env` or docker-compose):
 - `DATABASE_URL`: PostgreSQL connection string (default in compose: `postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo`)
 - `NDW_BASE_URL`: Base URL for downloads (default: `https://opendata.ndw.nu`)
 - `DATA_DIR`: Local snapshot directory (default: `/app/data`)
-- `NWB_PDOK_URL`: Official PDOK NWB `wegvakken/items` endpoint
+- `NWB_WEGVAKKEN_URL`: Official RWS `Wegvakken.gpkg` daily bulk-download URL
 - `NWB_DIAGNOSTIC_MODE`: Developer-only clickable NWB segment inspection
 
 Python settings (`config.py`):

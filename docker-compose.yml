@@ -30,6 +30,7 @@ services:
       NDW_BASE_URL: https://opendata.ndw.nu
       DATA_DIR: /app/data
       DISABLED_FEEDS: ${DISABLED_FEEDS:-verkeersborden_csv}
+      NWB_WEGVAKKEN_URL: ${NWB_WEGVAKKEN_URL:-https://downloads.rijkswaterstaatdata.nl/nwb-wegen/geogegevens/geopackage/NWB-dagelijks/Wegvakken/Wegvakken.gpkg}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -43,10 +44,6 @@ services:
       DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
       NDW_BASE_URL: https://opendata.ndw.nu
       DATA_DIR: /app/data
-      NWB_PDOK_URL: ${NWB_PDOK_URL:-https://api.pdok.nl/rws/nationaal-wegenbestand-wegen/ogc/v1/collections/wegvakken/items}
-      NWB_REQUEST_TIMEOUT_S: ${NWB_REQUEST_TIMEOUT_S:-20}
-      NWB_CACHE_TTL_S: ${NWB_CACHE_TTL_S:-3600}
-      NWB_CACHE_MAX_ENTRIES: ${NWB_CACHE_MAX_ENTRIES:-128}
       NWB_MAX_FEATURES: ${NWB_MAX_FEATURES:-5000}
       NWB_DIAGNOSTIC_MODE: ${NWB_DIAGNOSTIC_MODE:-false}
     ports:

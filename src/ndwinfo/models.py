@@ -150,6 +150,44 @@ class VildArea(Base):
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
 
+class NwbRoadSegment(Base):
+    """Nationaal Wegenbestand road-section centrelines (RWS Wegvakken.gpkg).
+
+    wvk_id is RWS's own stable identifier — used directly as primary key since
+    the bulk GeoPackage export has no separate synthetic feature UUID.
+    """
+
+    __tablename__ = "nwb_road_segment"
+    __table_args__ = (Index("ix_nwb_road_segment_geom", "geom", postgresql_using="gist"),)
+
+    wvk_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    begin_junction_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    end_junction_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    road_number: Mapped[Optional[str]] = mapped_column(String)
+    street_name: Mapped[Optional[str]] = mapped_column(String)
+    road_manager_type: Mapped[Optional[str]] = mapped_column(String)
+    road_manager_name: Mapped[Optional[str]] = mapped_column(String)
+    direction: Mapped[Optional[str]] = mapped_column(String)
+    administrative_direction: Mapped[Optional[str]] = mapped_column(String)
+    carriageway_position: Mapped[Optional[str]] = mapped_column(String)
+    position_to_orientation_line: Mapped[Optional[str]] = mapped_column(String)
+    carriageway_type: Mapped[Optional[str]] = mapped_column(String)
+    frc: Mapped[Optional[int]] = mapped_column(Integer)
+    form_of_way: Mapped[Optional[int]] = mapped_column(Integer)
+    openlr: Mapped[Optional[str]] = mapped_column(String)
+    begin_km: Mapped[Optional[Any]] = mapped_column(Numeric)
+    end_km: Mapped[Optional[Any]] = mapped_column(Numeric)
+    length_m: Mapped[Optional[Any]] = mapped_column(Numeric)
+    valid_from: Mapped[Optional[date]] = mapped_column(Date)
+    status: Mapped[Optional[str]] = mapped_column(String)
+    road_class: Mapped[Optional[str]] = mapped_column(String)  # motorway|primary|local
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True
+    )
+    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
 # ---------------------------------------------------------------------------
 # Real-time measurement (latest per site+index)
 # ---------------------------------------------------------------------------

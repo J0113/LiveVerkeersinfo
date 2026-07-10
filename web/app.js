@@ -11,7 +11,7 @@ const LAYERS = [
   // Added first so all existing traffic layers and interactive markers remain
   // above the reference geometry.
   {
-    key: 'nwb_roads', label: 'NWB Road Network', group: 'road_network',
+    key: 'nwb_roads', label: 'NWB Road Network', group: 'reference',
     endpoint: '/nwb/roads', geomType: 'road-network', minZoom: 9,
     legendColor: '#3f78a8', promoteId: 'segment_id',
     paint: {
@@ -181,7 +181,6 @@ const LAYERS = [
 
 // UI grouping order + labels
 const GROUPS = [
-  { key: 'road_network', label: 'Road Network' },
   { key: 'traffic',      label: 'Traffic' },
   { key: 'situations',   label: 'Situations' },
   { key: 'signs',        label: 'Signs & VMS' },
@@ -191,9 +190,7 @@ const GROUPS = [
   { key: 'reference',    label: 'Reference' }
 ]
 
-// The legacy site boxes remain available, but default off: showing them over
-// the road-following lane layer creates dense duplicate speed information.
-const DEFAULT_ENABLED = new Set(['nwb_roads', 'matrix', 'drips'])
+const DEFAULT_ENABLED = new Set(['speed', 'matrix', 'drips'])
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
 let nwbTruncated = false

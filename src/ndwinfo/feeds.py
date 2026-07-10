@@ -1,6 +1,8 @@
 """Feed registry: name → filename, URL suffix, cadence, parser, ingester."""
 
-from typing import Callable, TypedDict
+from typing import Callable, NotRequired, TypedDict
+
+from ndwinfo.config import settings
 
 
 class FeedDef(TypedDict):
@@ -9,6 +11,7 @@ class FeedDef(TypedDict):
     cadence_s: int
     parser_fn: Callable | None
     ingester_cls: type | None
+    url: NotRequired[str]  # absolute URL override; bypasses ndw_base_url join
 
 
 # parser_fn and ingester_cls are filled in as Phase 3/4 work lands.
@@ -165,6 +168,15 @@ FEEDS: list[FeedDef] = [
         "cadence_s": 604800,
         "parser_fn": None,
         "ingester_cls": None,
+    },
+    # --- cadence 86400s, non-NDW source ---
+    {
+        "name": "nwb_wegvakken",
+        "filename": "Wegvakken.gpkg",
+        "cadence_s": 86400,
+        "parser_fn": None,
+        "ingester_cls": None,
+        "url": settings.nwb_wegvakken_url,
     },
 ]
 
