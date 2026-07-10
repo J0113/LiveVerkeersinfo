@@ -87,6 +87,12 @@ schema, geographic scope, and how the feeds relate to each other.
 | `VILD6.13.A.zip` | Shapefiles + code list + docs (location reference) | 40M | on release |
 | `VILD6.12.A.zip` | Previous VILD release | 40M | archived |
 
+### Renderable road network → [08-nwb-road-network.md](08-nwb-road-network.md)
+
+| Service | Format | Spatial access | Refresh |
+|---|---|---|---|
+| PDOK NWB Wegen `wegvakken` | OGC API Features / GeoJSON | viewport bbox | monthly |
+
 > Sizes are compressed download sizes from the portal listing on 2026-05-29.
 > Decompressed sizes are much larger — e.g. `traveltime.xml.gz` 2.5M → ~73M XML,
 > `trafficspeed.xml.gz` 1.1M → ~52M XML.

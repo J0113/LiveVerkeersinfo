@@ -46,6 +46,8 @@ All list endpoints require `?bbox=minLon,minLat,maxLon,maxLat`. Max area: 25 deg
 | `GET /api/truckparking` | Truck parking sites + live occupancy | 60 s |
 | `GET /api/emission-zones` | Low-emission zones | daily |
 | `GET /api/verkeersborden?rvvCode=` | Traffic signs (bbox required; best above zoom 13) | daily |
+| `GET /api/nwb/roads?bbox=&zoom=` | Normalized NWB road sections for the viewport | monthly |
+| `GET /api/nwb/lane-speeds?bbox=&zoom=` | WEGGEG lane configuration + matched current NDW speeds | monthly + 60 s |
 | `GET /api/feeds/status` | Last run per feed — status, time, rows upserted | — |
 
 All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (default 500, max 2000).
@@ -53,7 +55,7 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 ## Web UI
 
 - Dark MapLibre map centred on the Netherlands (zoom 7)
-- Layer toggles (top-left panel): traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs
+- Layer toggles (top-left panel): NWB road network, traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs
 - Panning or zooming refetches all enabled layers for the new bbox (300 ms debounce)
 - Auto-refreshes every 60 seconds
 - Feed status panel (bottom-right): last update time and status per feed
@@ -61,7 +63,10 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 
 ## Data sources
 
-Full catalogue: [docs/README.md](docs/README.md). All data from [opendata.ndw.nu](https://opendata.ndw.nu) — no authentication required.
+Full catalogue: [docs/README.md](docs/README.md). Live traffic data comes from
+[opendata.ndw.nu](https://opendata.ndw.nu); NWB road geometry comes from the
+official [PDOK OGC API Features service](https://api.pdok.nl/rws/nationaal-wegenbestand-wegen/ogc/v1).
+Neither requires authentication. See [NWB road-network foundation](docs/08-nwb-road-network.md).
 
 ## Local development (without Docker)
 
@@ -87,3 +92,17 @@ python -m ndwinfo.poller
 | `MAX_BBOX_AREA` | `25.0` | Maximum bbox area in deg² for API requests |
 | `API_DEFAULT_LIMIT` | `500` | Default feature limit per endpoint |
 | `API_MAX_LIMIT` | `2000` | Hard cap on feature limit |
+| `NWB_PDOK_URL` | official PDOK `wegvakken/items` URL | NWB OGC API Features endpoint |
+| `NWB_REQUEST_TIMEOUT_S` | `20` | PDOK request timeout |
+| `NWB_CACHE_TTL_S` | `3600` | Successful viewport cache lifetime |
+| `NWB_CACHE_MAX_ENTRIES` | `128` | Server-side NWB LRU cache size |
+| `NWB_MAX_FEATURES` | `5000` | Per-viewport NWB feature cap |
+| `NWB_DIAGNOSTIC_MODE` | `false` | Enable clickable NWB metadata diagnostics |
+| `WEGGEG_PDOK_URL` | official `wegvak_rijstroken/items` URL | RWS lane-configuration endpoint |
+| `WEGGEG_CACHE_TTL_S` | `86400` | Successful lane-reference cache lifetime |
+| `WEGGEG_CACHE_MAX_ENTRIES` | `128` | Server-side WEGGEG LRU cache size |
+| `WEGGEG_MAX_FEATURES` | `5000` | Per-viewport WEGGEG feature cap |
+| `LANE_SPEED_MIN_ZOOM` | `13` | Minimum zoom for lane speed API output |
+| `LANE_MATCH_MAX_DISTANCE_M` | `45` | Maximum sensor-to-road match distance |
+| `LANE_MATCH_MAX_HEADING_DIFFERENCE` | `50` | Maximum heading difference in degrees |
+| `LANE_SPEED_MAX_AGE_S` | `600` | Maximum age for colouring a lane measurement |

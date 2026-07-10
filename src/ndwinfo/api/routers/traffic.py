@@ -12,7 +12,12 @@ from sqlalchemy import and_, case, func, select, text
 from ndwinfo.api.deps import BBoxDep, DbDep
 from ndwinfo.api.geo import geo_response, make_fc
 from ndwinfo.config import settings
-from ndwinfo.models import MeasurementCharacteristic, MeasurementSite, TrafficMeasurement, TravelTime
+from ndwinfo.models import (
+    MeasurementCharacteristic,
+    MeasurementSite,
+    TrafficMeasurement,
+    TravelTime,
+)
 
 router = APIRouter(prefix="/traffic", tags=["traffic"])
 
@@ -33,6 +38,11 @@ def get_speed(
     the latest timestamp are averaged; otherwise the latest non-null/non-zero
     reading wins. One marker per (location, side) instead of stacked duplicates.
     """
+    return geo_response(build_speed_feature_collection(b, db, limit))
+
+
+def build_speed_feature_collection(b, db, limit: int) -> dict:
+    """Build current per-lane observations for API output and road matching."""
     bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
     rows = db.execute(
         select(
@@ -45,10 +55,14 @@ def get_speed(
             MeasurementSite.openlr_bearing,
             MeasurementCharacteristic.lane,
             func.max(
-                case((TrafficMeasurement.value_type == "TrafficSpeed", TrafficMeasurement.speed_kmh))
+                case(
+                    (TrafficMeasurement.value_type == "TrafficSpeed", TrafficMeasurement.speed_kmh)
+                )
             ).label("speed_kmh"),
             func.max(
-                case((TrafficMeasurement.value_type == "TrafficFlow", TrafficMeasurement.flow_veh_h))
+                case(
+                    (TrafficMeasurement.value_type == "TrafficFlow", TrafficMeasurement.flow_veh_h)
+                )
             ).label("flow_veh_h"),
             func.max(
                 case((TrafficMeasurement.value_type == "TrafficSpeed", TrafficMeasurement.n_inputs))
@@ -117,13 +131,15 @@ def get_speed(
         if loc["openlr_bearing"] is None and r.openlr_bearing is not None:
             loc["openlr_bearing"] = int(r.openlr_bearing)
         loc["sources"].add(r.site_id)
-        loc["lanes"][r.lane].append({
-            "speed": float(r.speed_kmh) if r.speed_kmh is not None else None,
-            "flow": float(r.flow_veh_h) if r.flow_veh_h is not None else None,
-            "n_inputs": int(r.n_inputs) if r.n_inputs is not None else None,
-            "std_dev": float(r.std_dev) if r.std_dev is not None else None,
-            "ts": r.measured_at,
-        })
+        loc["lanes"][r.lane].append(
+            {
+                "speed": float(r.speed_kmh) if r.speed_kmh is not None else None,
+                "flow": float(r.flow_veh_h) if r.flow_veh_h is not None else None,
+                "n_inputs": int(r.n_inputs) if r.n_inputs is not None else None,
+                "std_dev": float(r.std_dev) if r.std_dev is not None else None,
+                "ts": r.measured_at,
+            }
+        )
 
     features = []
     for loc in locs.values():
@@ -133,13 +149,15 @@ def get_speed(
         feat_ts = None
         for lane in sorted(loc["lanes"], key=lambda x: (x is None, x)):
             m = _merge_lane(loc["lanes"][lane])
-            lanes_out.append({
-                "lane": lane,
-                "speed_kmh": m["speed_kmh"],
-                "flow_veh_h": m["flow_veh_h"],
-                "n_inputs": m["n_inputs"],
-                "std_dev": m["std_dev"],
-            })
+            lanes_out.append(
+                {
+                    "lane": lane,
+                    "speed_kmh": m["speed_kmh"],
+                    "flow_veh_h": m["flow_veh_h"],
+                    "n_inputs": m["n_inputs"],
+                    "std_dev": m["std_dev"],
+                }
+            )
             if m["ts"] and (feat_ts is None or m["ts"] > feat_ts):
                 feat_ts = m["ts"]
 
@@ -148,26 +166,28 @@ def get_speed(
         # Prefer the MONIBAS aggregate id as the representative site_id.
         rep = next((s for s in sources if "_MONIBAS_" in s), sources[0] if sources else None)
 
-        features.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": list(loc["coords"])},
-            "properties": {
-                "site_id": rep,
-                "road": loc["road"],
-                "carriageway": loc["carriageway"],
-                "km": loc["km"],
-                "openlr_bearing": loc["openlr_bearing"],
-                "num_lanes": loc["num_lanes"] or None,
-                "side": loc["side"],
-                "measured_at": feat_ts.isoformat() if feat_ts else None,
-                "systems": systems,
-                "source_count": len(sources),
-                "lanes": lanes_out,
-            },
-        })
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": list(loc["coords"])},
+                "properties": {
+                    "site_id": rep,
+                    "road": loc["road"],
+                    "carriageway": loc["carriageway"],
+                    "km": loc["km"],
+                    "openlr_bearing": loc["openlr_bearing"],
+                    "num_lanes": loc["num_lanes"] or None,
+                    "side": loc["side"],
+                    "measured_at": feat_ts.isoformat() if feat_ts else None,
+                    "systems": systems,
+                    "source_count": len(sources),
+                    "lanes": lanes_out,
+                },
+            }
+        )
 
     _attach_bearings(db, features)
-    return geo_response({"type": "FeatureCollection", "features": features})
+    return {"type": "FeatureCollection", "features": features}
 
 
 def _attach_bearings(db, features: list[dict]) -> None:
@@ -210,7 +230,9 @@ def _attach_bearings(db, features: list[dict]) -> None:
         ),
         {"lons": lons, "lats": lats},
     ).all()
-    spatial_bearings = {int(i): (round(float(b) % 360, 1) if b is not None else None) for i, b in rows}
+    spatial_bearings = {
+        int(i): (round(float(b) % 360, 1) if b is not None else None) for i, b in rows
+    }
     for local_i, (_, f) in enumerate(need_spatial, start=1):
         f["properties"]["bearing"] = spatial_bearings.get(local_i)
 

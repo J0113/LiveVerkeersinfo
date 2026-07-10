@@ -49,8 +49,16 @@
 
   <div id="zoom-hint" class="hint hidden">Zoom in further to see traffic signs (zoom 13+)</div>
 
+  <div id="lane-speed-legend" class="lane-speed-legend hidden">
+    <div class="lane-legend-title">Gemiddelde snelheid per rijstrook</div>
+    <div class="lane-legend-gradient"></div>
+    <div class="lane-legend-labels"><span>0</span><span>50</span><span>80</span><span>130 km/h</span></div>
+    <div class="lane-legend-foot"><span class="lane-legend-empty"></span><span>geen meting</span></div>
+    <div class="lane-legend-count">0 rijstroken met actuele meting</div>
+  </div>
+
   <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
   <script src="lib.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=lane-speed-2"></script>
 </body>
 </html>

@@ -13,6 +13,7 @@ from ndwinfo.api.routers import (
     charging,
     emission,
     feeds,
+    nwb,
     signs,
     situations,
     traffic,
@@ -20,6 +21,7 @@ from ndwinfo.api.routers import (
     verkeersborden,
     vild,
 )
+from ndwinfo.config import settings
 from ndwinfo.db import SessionLocal
 from ndwinfo.models import SystemState
 
@@ -67,6 +69,13 @@ app.include_router(verkeersborden.router, prefix="/api")
 app.include_router(emission.router, prefix="/api")
 app.include_router(feeds.router, prefix="/api")
 app.include_router(vild.router, prefix="/api")
+app.include_router(nwb.router, prefix="/api")
+
+
+@app.get("/api/config", tags=["configuration"])
+def public_config():
+    """Public, non-secret browser feature flags."""
+    return {"nwbDiagnosticMode": settings.nwb_diagnostic_mode}
 
 
 # Clean URL for the driving HUD. StaticFiles(html=True) maps "/drive/" to a
