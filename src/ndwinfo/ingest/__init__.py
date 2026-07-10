@@ -9,7 +9,12 @@ from ndwinfo.ingest.measurement import (
 )
 from ndwinfo.ingest.nwb import NwbWegvakkenIngester
 from ndwinfo.ingest.parking import TruckParkingStatusIngester, TruckParkingTableIngester
-from ndwinfo.ingest.reference import MeetlocatiesIngester, MsiShapefileIngester, VildIngester
+from ndwinfo.ingest.reference import (
+    MeetlocatiesIngester,
+    MsiShapefileIngester,
+    VildIngester,
+    WeggegLaneIngester,
+)
 from ndwinfo.ingest.signs import DripIngester, MatrixSignIngester
 from ndwinfo.ingest.situations import (
     ActueleBeeldIngester,
@@ -26,6 +31,7 @@ INGESTERS: dict[str, object] = {
     "meetlocaties_shapefile": MeetlocatiesIngester(),
     "vild_shapefile": VildIngester(),
     "nwb_wegvakken": NwbWegvakkenIngester(),
+    "weggeg_rijstroken": WeggegLaneIngester(),
     "trafficspeed": TrafficspeedIngester(),
     "traveltime": TraveltimeIngester(),
     "actueel_beeld": ActueleBeeldIngester,

@@ -47,6 +47,7 @@ All list endpoints require `?bbox=minLon,minLat,maxLon,maxLat`. Max area: 25 deg
 | `GET /api/emission-zones` | Low-emission zones | daily |
 | `GET /api/verkeersborden?rvvCode=` | Traffic signs (bbox required; best above zoom 13) | daily |
 | `GET /api/nwb/roads?bbox=&zoom=` | Normalized NWB road sections for the viewport (served from PostGIS) | daily |
+| `GET /api/weggeg/lanes` | WEGGEG-derived separate lane centrelines (bbox required; zoom 14+) | monthly |
 | `GET /api/feeds/status` | Last run per feed — status, time, rows upserted | — |
 
 All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (default 500, max 2000).
@@ -54,19 +55,24 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 ## Web UI
 
 - Dark MapLibre map centred on the Netherlands (zoom 7)
-- Layer toggles (top-left panel): NWB road network, traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs
+- Layer toggles (top-left panel): NWB road network, traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs, WEGGEG lanes
 - Panning or zooming refetches all enabled layers for the new bbox (300 ms debounce)
 - Auto-refreshes every 60 seconds
 - Feed status panel (bottom-right): last update time and status per feed
-- Traffic signs only fetched at zoom ≥ 13
+- Traffic signs only fetched at zoom ≥ 13; WEGGEG lanes only at zoom ≥ 14
+- At navigation zoom, live speeds are drawn directly on matched WEGGEG lanes;
+  unmatched measurements retain the existing roadside marker
 
 ## Data sources
 
 Full catalogue: [docs/README.md](docs/README.md). Live traffic data comes from
 [opendata.ndw.nu](https://opendata.ndw.nu); NWB road geometry is ingested daily
 from RWS's [Wegvakken GeoPackage](https://downloads.rijkswaterstaatdata.nl/nwb-wegen/)
-into PostGIS and served from there — not proxied per request. Neither source
-requires authentication. See [NWB road-network foundation](docs/08-nwb-road-network.md).
+and WEGGEG lane centrelines from the public
+[Rijkswaterstaat WEGGEG catalogue](https://downloads.rijkswaterstaatdata.nl/weggeg/) —
+both ingested into PostGIS and served from there, not proxied per request.
+Neither source requires authentication. See
+[NWB road-network foundation](docs/08-nwb-road-network.md).
 
 ## Local development (without Docker)
 

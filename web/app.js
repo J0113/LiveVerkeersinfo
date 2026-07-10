@@ -176,6 +176,28 @@ const LAYERS = [
       fill: { 'fill-color': '#3366cc', 'fill-opacity': 0.12 },
       line: { 'line-color': '#3366cc', 'line-width': 1.5, 'line-opacity': 0.8 }
     }
+  },
+  {
+    // Separate, 3.5m-offset lane centrelines derived from WEGGEG Rijstroken.
+    // A future speed matcher can set `speed_kmh` and use this existing palette.
+    key: 'weggeg_lanes', label: 'WEGGEG Lanes', group: 'reference',
+    endpoint: '/weggeg/lanes', geomType: 'line', minZoom: 14, legendColor: '#dbe8ef',
+    casing: {
+      'line-color': '#24465b',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 14, 2.5, 17, 5.5, 20, 10],
+      'line-opacity': 0.94
+    },
+    paint: {
+      'line-color': ['case',
+        ['has', 'speed_kmh'],
+        ['interpolate', ['linear'], ['coalesce', ['get', 'speed_kmh'], 0],
+          0, '#8a8a8a', 30, '#ff3333', 50, '#ff8800', 70, '#ffdd00', 90, '#00cc44'
+        ],
+        '#dbe8ef'
+      ],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1, 17, 3, 20, 7],
+      'line-opacity': 0.98
+    }
   }
 ]
 
@@ -207,6 +229,7 @@ let speedMarkers = []  // maplibregl.Marker instances for traffic speed sites
 const nwbCache = new Map() // viewport/profile key → { expires, data }
 const NWB_BROWSER_CACHE_TTL_MS = 5 * 60_000
 let publicConfig = { nwbDiagnosticMode: false }
+let laneSpeedMarkers = [] // upright numeric labels snapped to WEGGEG lanes
 
 // MSI gantries are dense; below this zoom they overlap into noise — skip rendering.
 const MATRIX_MIN_ZOOM = 11
@@ -282,11 +305,47 @@ map.on('load', () => {
         minzoom: layer.minZoom
       })
       setupNwbDiagnostic(layer.key)
+    } else if (layer.geomType === 'speed') {
+      map.addLayer({
+        id: 'speed-lanes-casing',
+        type: 'line',
+        source: layer.key,
+        paint: {
+          'line-color': '#1d3240',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 14, 3, 17, 6, 20, 11],
+          'line-opacity': 0.94
+        },
+        layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' }
+      })
+      map.addLayer({
+        id: 'speed-lanes',
+        type: 'line',
+        source: layer.key,
+        paint: {
+          'line-color': ['case',
+            ['==', ['get', 'speed_kmh'], null], '#777777',
+            ['interpolate', ['linear'], ['get', 'speed_kmh'],
+              0, '#8a8a8a', 30, '#ff3333', 50, '#ff8800',
+              70, '#ffdd00', 90, '#00cc44'
+            ]
+          ],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1.4, 17, 3.5, 20, 8],
+          'line-opacity': 0.98
+        },
+        layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' }
+      })
+      setupClickPopup('speed-lanes')
     } else if (layer.geomType === 'polygon') {
       map.addLayer({ id: `${layer.key}-fill`, type: 'fill', source: layer.key, paint: layer.paint.fill, layout: { visibility: vis } })
       map.addLayer({ id: `${layer.key}-line`, type: 'line', source: layer.key, paint: layer.paint.line, layout: { visibility: vis } })
       setupClickPopup(`${layer.key}-fill`)
     } else if (layer.geomType === 'line') {
+      if (layer.casing) {
+        map.addLayer({
+          id: `${layer.key}-casing`, type: 'line', source: layer.key,
+          paint: layer.casing, layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' }
+        })
+      }
       map.addLayer({ id: layer.key, type: 'line', source: layer.key, paint: layer.paint, layout: { visibility: vis, 'line-cap': 'round' } })
       if (layer.arrows) {
         map.addLayer({
@@ -315,6 +374,10 @@ map.on('load', () => {
       setupClickPopup(layer.key)
     }
   }
+
+  // Traffic is the primary visualization; keep it above optional references.
+  if (map.getLayer('speed-lanes-casing')) map.moveLayer('speed-lanes-casing')
+  if (map.getLayer('speed-lanes')) map.moveLayer('speed-lanes')
 
   buildLayerPanel()
   setupPanelToggles()
@@ -493,6 +556,26 @@ function setupNwbDiagnostic (layerId) {
   })
 }
 
+// Measurement sources are points, while the WEGGEG road section they drive can
+// cross a high-zoom viewport without that source point being inside it. Keep a
+// small nearby-data buffer so those speed-lane segments remain stable.
+function viewportBbox (includeNearbyPoints = false) {
+  const b = map.getBounds()
+  let west = b.getWest()
+  let south = b.getSouth()
+  let east = b.getEast()
+  let north = b.getNorth()
+  if (includeNearbyPoints) {
+    const lonPad = Math.max((east - west) * 0.75, 0.015)
+    const latPad = Math.max((north - south) * 0.75, 0.010)
+    west -= lonPad
+    south -= latPad
+    east += lonPad
+    north += latPad
+  }
+  return [west, south, east, north].map(v => v.toFixed(6)).join(',')
+}
+
 // ─── Matrix sign HTML markers ─────────────────────────────────────────────────
 
 function fetchMatrixSigns () {
@@ -619,19 +702,18 @@ function fetchSpeedMarkers () {
   const ctrl = new AbortController()
   controllers['speed'] = ctrl
 
-  const b = map.getBounds()
-  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
-    .map(v => v.toFixed(6)).join(',')
-
-  fetch(`/api/traffic/speed?bbox=${bbox}`, { signal: ctrl.signal })
+  const includeLanes = map.getZoom() >= 14
+  const bbox = viewportBbox(includeLanes)
+  fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=${includeLanes}`, { signal: ctrl.signal })
     .then(r => {
       if (r.status === 400) return r.json().then(body => Promise.reject(Object.assign(new Error(body.detail || 'Bad Request'), { isBboxError: /bbox area/i.test(body.detail || '') })))
       if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
       return r.json()
     })
-    .then(fc => {
+    .then(data => {
       setBboxTooLargeHint(false)
-      renderSpeedMarkers(fc)
+      map.getSource('speed')?.setData(data.lanes || EMPTY_FC)
+      renderSpeedMarkers(data.points || EMPTY_FC, data.lanes || EMPTY_FC)
     })
     .catch(e => {
       if (e.name === 'AbortError') return
@@ -640,15 +722,26 @@ function fetchSpeedMarkers () {
     })
 }
 
-function renderSpeedMarkers (fc) {
+function renderSpeedMarkers (fc, laneFc = EMPTY_FC) {
   for (const m of speedMarkers) m.marker.remove()
   speedMarkers = []
+  for (const marker of laneSpeedMarkers) marker.remove()
+  laneSpeedMarkers = []
 
   if (!enabled.has('speed')) return
+
+  renderLaneSpeedLabels(laneFc)
+
+  // A site is rendered as lane lines when WEGGEG matched and returned geometry.
+  // Sites without a usable WEGGEG section keep the original roadside marker.
+  const renderedSources = new Set(
+    (laneFc.features || []).map(f => f.properties?.source_id).filter(Boolean)
+  )
 
   for (const f of fc.features) {
     if (!f.geometry) continue
     const p = f.properties
+    if (p.weggeg_source_id && renderedSources.has(p.weggeg_source_id)) continue
     const lanes = p.lanes || []
     if (!lanes.length) continue
 
@@ -704,8 +797,107 @@ function renderSpeedMarkers (fc) {
   updateSpeedLayout()
 }
 
-// Rotate speed-site rows to the road bearing and offset them roadside, scaled by
-// zoom — same treatment as MSI gantries. Recomputed on zoom/rotate, no refetch.
+function renderLaneSpeedLabels (laneFc) {
+  if (map.getZoom() < 16) return
+
+  for (const feature of laneFc.features || []) {
+    const p = feature.properties || {}
+    if (!feature.geometry || p.speed_kmh === null || p.speed_kmh === undefined) continue
+    if (!Array.isArray(p.measurement_coords)) continue
+
+    // Stagger labels longitudinally so adjacent 3.5m lanes remain readable.
+    const centerLane = ((p.lane_count || 1) + 1) / 2
+    const shiftM = ((p.lane || 1) - centerLane) * 22
+    const coords = closestCoordinateOnLine(feature.geometry, p.measurement_coords, shiftM)
+    if (!coords) continue
+
+    const el = document.createElement('div')
+    el.className = 'lane-speed-label'
+    el.style.background = speedColor(p.speed_kmh)
+    el.style.color = speedTextColor(p.speed_kmh)
+    el.textContent = Math.round(p.speed_kmh)
+    el.title = `${p.road || p.road_number || ''} ${p.carriageway || ''} · lane ${p.lane} · ${Math.round(p.speed_kmh)} km/h`
+
+    el.addEventListener('click', e => {
+      e.stopPropagation()
+      if (activePopup) activePopup.remove()
+      activePopup = new maplibregl.Popup({ maxWidth: '280px', offset: [0, -8] })
+        .setLngLat(coords)
+        .setHTML(buildPopupHtml({
+          road: p.road,
+          carriageway: p.carriageway,
+          km: p.km,
+          lane: p.lane,
+          speed_kmh: Math.round(p.speed_kmh) + ' km/h',
+          flow_veh_h: p.flow_veh_h != null ? Math.round(p.flow_veh_h) + ' veh/h' : '—',
+          measured: p.measured_at,
+        }))
+        .addTo(map)
+    })
+
+    laneSpeedMarkers.push(
+      new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(coords).addTo(map)
+    )
+  }
+}
+
+function closestCoordinateOnLine (geometry, target, shiftMeters = 0) {
+  const lines = geometry.type === 'LineString'
+    ? [geometry.coordinates]
+    : geometry.type === 'MultiLineString' ? geometry.coordinates : []
+  const latScale = 110540
+  const lonScale = 111320 * Math.cos(target[1] * Math.PI / 180)
+  let best = null
+
+  for (const line of lines) {
+    if (!line || line.length < 2) continue
+    const lengths = []
+    let total = 0
+    for (let i = 0; i < line.length - 1; i++) {
+      const dx = (line[i + 1][0] - line[i][0]) * lonScale
+      const dy = (line[i + 1][1] - line[i][1]) * latScale
+      const length = Math.hypot(dx, dy)
+      lengths.push(length)
+      total += length
+    }
+
+    let before = 0
+    for (let i = 0; i < lengths.length; i++) {
+      const ax = (line[i][0] - target[0]) * lonScale
+      const ay = (line[i][1] - target[1]) * latScale
+      const bx = (line[i + 1][0] - target[0]) * lonScale
+      const by = (line[i + 1][1] - target[1]) * latScale
+      const dx = bx - ax
+      const dy = by - ay
+      const denom = dx * dx + dy * dy
+      const t = denom ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / denom)) : 0
+      const px = ax + t * dx
+      const py = ay + t * dy
+      const distanceSq = px * px + py * py
+      if (!best || distanceSq < best.distanceSq) {
+        best = { line, lengths, total, position: before + t * lengths[i], distanceSq }
+      }
+      before += lengths[i]
+    }
+  }
+
+  if (!best) return null
+  let wanted = Math.max(0, Math.min(best.total, best.position + shiftMeters))
+  for (let i = 0; i < best.lengths.length; i++) {
+    if (wanted <= best.lengths[i] || i === best.lengths.length - 1) {
+      const t = best.lengths[i] ? wanted / best.lengths[i] : 0
+      return [
+        best.line[i][0] + (best.line[i + 1][0] - best.line[i][0]) * t,
+        best.line[i][1] + (best.line[i + 1][1] - best.line[i][1]) * t,
+      ]
+    }
+    wanted -= best.lengths[i]
+  }
+  return null
+}
+
+// Keep fallback speed rows upright and offset them roadside using the bearing.
+// Recomputed on zoom/rotate; no refetch required.
 function updateSpeedLayout () {
   if (!speedMarkers.length) return
   const z = map.getZoom()
@@ -718,7 +910,9 @@ function updateSpeedLayout () {
       m.marker.setOffset([0, 0])
       continue
     }
-    m.el.style.transform = `rotate(${m.bearing - mapBearing}deg) scale(${scale})`
+    // Keep speed text upright; bearing is only used to place the fallback
+    // marker beside the road rather than rotate its numbers.
+    m.el.style.transform = `scale(${scale})`
     const screenAngle = ((m.bearing + 90 - mapBearing) * Math.PI) / 180
     const dist = (m.el.offsetWidth * scale) / 2 + 3
     m.marker.setOffset([Math.sin(screenAngle) * dist, -Math.cos(screenAngle) * dist])
@@ -917,7 +1111,16 @@ function setLayerVisibility (layer, visible) {
     return
   }
   if (layer.geomType === 'speed') {
-    if (!visible) { for (const m of speedMarkers) m.marker.remove(); speedMarkers = [] }
+    const vis = visible ? 'visible' : 'none'
+    if (map.getLayer('speed-lanes-casing')) map.setLayoutProperty('speed-lanes-casing', 'visibility', vis)
+    if (map.getLayer('speed-lanes')) map.setLayoutProperty('speed-lanes', 'visibility', vis)
+    if (!visible) {
+      for (const m of speedMarkers) m.marker.remove()
+      speedMarkers = []
+      for (const marker of laneSpeedMarkers) marker.remove()
+      laneSpeedMarkers = []
+      map.getSource('speed')?.setData(EMPTY_FC)
+    }
     return
   }
   const vis = visible ? 'visible' : 'none'
@@ -927,6 +1130,7 @@ function setLayerVisibility (layer, visible) {
     return
   }
   if (layer.geomType === 'line') {
+    if (map.getLayer(`${layer.key}-casing`)) map.setLayoutProperty(`${layer.key}-casing`, 'visibility', vis)
     if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
     if (map.getLayer(`${layer.key}-arrows`)) map.setLayoutProperty(`${layer.key}-arrows`, 'visibility', vis)
     return

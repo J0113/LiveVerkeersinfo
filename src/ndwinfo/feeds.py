@@ -5,13 +5,16 @@ from typing import Callable, NotRequired, TypedDict
 from ndwinfo.config import settings
 
 
-class FeedDef(TypedDict):
+class FeedDef(TypedDict, total=False):
     name: str
     filename: str
     cadence_s: int
     parser_fn: Callable | None
     ingester_cls: type | None
     url: NotRequired[str]  # absolute URL override; bypasses ndw_base_url join
+    # Most feeds are relative to NDW_BASE_URL. Versioned external datasets can
+    # instead expose an Apache-style index resolved by the downloader.
+    index_url: NotRequired[str]
 
 
 # parser_fn and ingester_cls are filled in as Phase 3/4 work lands.
@@ -177,6 +180,18 @@ FEEDS: list[FeedDef] = [
         "parser_fn": None,
         "ingester_cls": None,
         "url": settings.nwb_wegvakken_url,
+    },
+    {
+        # WEGGEG publishes one versioned package per month rather than a stable
+        # "latest" filename. `index_url` is resolved to the newest DD-MM-YYYY
+        # package by download.fetch, while this local filename stays stable.
+        "name": "weggeg_rijstroken",
+        "filename": "weggeg_rijstroken.zip",
+        "index_url": "https://downloads.rijkswaterstaatdata.nl/weggeg/geogegevens/"
+        "shapefile/weggeg_kenmerkniveau/",
+        "cadence_s": 86400,
+        "parser_fn": None,
+        "ingester_cls": None,
     },
 ]
 
