@@ -19,6 +19,7 @@ from ndwinfo.api.routers import (
     truckparking,
     verkeersborden,
     vild,
+    weggeg,
 )
 from ndwinfo.db import SessionLocal
 from ndwinfo.models import SystemState
@@ -67,6 +68,7 @@ app.include_router(verkeersborden.router, prefix="/api")
 app.include_router(emission.router, prefix="/api")
 app.include_router(feeds.router, prefix="/api")
 app.include_router(vild.router, prefix="/api")
+app.include_router(weggeg.router, prefix="/api")
 
 
 # Clean URL for the driving HUD. StaticFiles(html=True) maps "/drive/" to a

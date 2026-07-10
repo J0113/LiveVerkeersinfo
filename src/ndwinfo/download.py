@@ -1,14 +1,35 @@
 """Conditional GET download helper."""
 
 import gzip
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import IO
+from urllib.parse import urljoin
 
 import httpx
 
 from ndwinfo.config import settings
+
+_VERSIONED_ZIP_RE = re.compile(r'href=["\'](\d{2}-\d{2}-\d{4}\.zip)["\']', re.I)
+
+
+def _source_url(feed: dict) -> str:
+    """Return a feed URL, resolving a versioned source index when necessary."""
+    index_url = feed.get("index_url")
+    if not index_url:
+        return f"{settings.ndw_base_url.rstrip('/')}/{feed['filename']}"
+
+    response = httpx.get(index_url, follow_redirects=True, timeout=30.0)
+    response.raise_for_status()
+    candidates = _VERSIONED_ZIP_RE.findall(response.text)
+    if not candidates:
+        raise RuntimeError(f"No dated ZIP packages found at {index_url}")
+
+    latest = max(candidates, key=lambda name: datetime.strptime(name[:-4], "%d-%m-%Y"))
+    return urljoin(index_url, latest)
 
 
 @dataclass
@@ -31,7 +52,6 @@ def fetch(
     Pass etag/last_modified from the previous feed_run to avoid re-downloading
     unchanged files (returns status='not_modified' on HTTP 304).
     """
-    url = f"{settings.ndw_base_url.rstrip('/')}/{feed['filename']}"
     path = Path(settings.data_dir) / feed["filename"]
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -42,6 +62,7 @@ def fetch(
         headers["If-Modified-Since"] = last_modified
 
     try:
+        url = _source_url(feed)
         with httpx.stream(
             "GET", url, headers=headers, follow_redirects=True, timeout=60.0
         ) as resp:
@@ -109,7 +130,7 @@ if __name__ == "__main__":
     from ndwinfo.feeds import FEEDS
 
     if len(sys.argv) < 2:
-        print(f"Usage: python -m ndwinfo.download <feed_name>")
+        print("Usage: python -m ndwinfo.download <feed_name>")
         sys.exit(1)
 
     feed_name = sys.argv[1]

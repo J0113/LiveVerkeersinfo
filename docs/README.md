@@ -85,6 +85,7 @@ schema, geographic scope, and how the feeds relate to each other.
 |---|---|---|---|
 | `ndw_avg_meetlocaties_shapefile.zip` | Shapefile (count points + measurement segments) | 71M | ~weekly |
 | `VILD6.13.A.zip` | Shapefiles + code list + docs (location reference) | 40M | on release |
+| WEGGEG `weggeg_kenmerkniveau/<date>.zip` | Monthly lane-transition road reference (`Rijstroken`) | ~40M | monthly |
 | `VILD6.12.A.zip` | Previous VILD release | 40M | archived |
 
 > Sizes are compressed download sizes from the portal listing on 2026-05-29.

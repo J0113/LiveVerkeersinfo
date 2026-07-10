@@ -46,6 +46,7 @@ All list endpoints require `?bbox=minLon,minLat,maxLon,maxLat`. Max area: 25 deg
 | `GET /api/truckparking` | Truck parking sites + live occupancy | 60 s |
 | `GET /api/emission-zones` | Low-emission zones | daily |
 | `GET /api/verkeersborden?rvvCode=` | Traffic signs (bbox required; best above zoom 13) | daily |
+| `GET /api/weggeg/lanes` | WEGGEG-derived separate lane centrelines (bbox required; zoom 14+) | monthly |
 | `GET /api/feeds/status` | Last run per feed — status, time, rows upserted | — |
 
 All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (default 500, max 2000).
@@ -53,15 +54,20 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 ## Web UI
 
 - Dark MapLibre map centred on the Netherlands (zoom 7)
-- Layer toggles (top-left panel): traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs
+- Layer toggles (top-left panel): traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs, WEGGEG lanes
 - Panning or zooming refetches all enabled layers for the new bbox (300 ms debounce)
 - Auto-refreshes every 60 seconds
 - Feed status panel (bottom-right): last update time and status per feed
-- Traffic signs only fetched at zoom ≥ 13
+- Traffic signs only fetched at zoom ≥ 13; WEGGEG lanes only at zoom ≥ 14
+- At navigation zoom, live speeds are drawn directly on matched WEGGEG lanes;
+  unmatched measurements retain the existing roadside marker
 
 ## Data sources
 
-Full catalogue: [docs/README.md](docs/README.md). All data from [opendata.ndw.nu](https://opendata.ndw.nu) — no authentication required.
+Full catalogue: [docs/README.md](docs/README.md). Data comes from
+[opendata.ndw.nu](https://opendata.ndw.nu) and the public
+[Rijkswaterstaat WEGGEG catalogue](https://downloads.rijkswaterstaatdata.nl/weggeg/);
+neither requires authentication.
 
 ## Local development (without Docker)
 

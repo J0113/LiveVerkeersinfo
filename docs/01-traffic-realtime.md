@@ -73,6 +73,15 @@ payloadPublication (MeasuredDataPublication)
 ### Notes
 - `speed = -1` or `numberOfInputValuesUsed="0"` ⇒ no valid measurement, treat as null.
 - Each site emits several indexed values (per lane × length class × flow/speed).
+- The map normalizes the numeric part of the measurement road name (`A1`,
+  `N001`, `001` → `001`) and matches it to WEGGEG using carriageway, kilometre
+  range, and a maximum 100m spatial distance. Matched measurements color the
+  separate WEGGEG lanes; unmatched sites retain the original point-marker
+  rendering and bearing fallback.
+- At interchanges, NDW measurements can retain the previous road identity while
+  WEGGEG assigns the physical exit lane to the connecting road. If the semantic
+  match fails, the map accepts a geometry-only match when the lane counts are
+  equal, the lane is within 12m, and no second candidate is within another 5m.
 - **Ingest tip**: stream-parse (SAX/iterparse); the decompressed doc is large.
 
 ### Postgres model
