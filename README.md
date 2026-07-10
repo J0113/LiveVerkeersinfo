@@ -46,6 +46,7 @@ All list endpoints require `?bbox=minLon,minLat,maxLon,maxLat`. Max area: 25 deg
 | `GET /api/truckparking` | Truck parking sites + live occupancy | 60 s |
 | `GET /api/emission-zones` | Low-emission zones | daily |
 | `GET /api/verkeersborden?rvvCode=` | Traffic signs (bbox required; best above zoom 13) | daily |
+| `GET /api/nwb/roads?bbox=&zoom=` | Normalized NWB road sections for the viewport (served from PostGIS) | daily |
 | `GET /api/weggeg/lanes` | WEGGEG-derived separate lane centrelines (bbox required; zoom 14+) | monthly |
 | `GET /api/feeds/status` | Last run per feed — status, time, rows upserted | — |
 
@@ -54,7 +55,7 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 ## Web UI
 
 - Dark MapLibre map centred on the Netherlands (zoom 7)
-- Layer toggles (top-left panel): traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs, WEGGEG lanes
+- Layer toggles (top-left panel): NWB road network, traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs, WEGGEG lanes
 - Panning or zooming refetches all enabled layers for the new bbox (300 ms debounce)
 - Auto-refreshes every 60 seconds
 - Feed status panel (bottom-right): last update time and status per feed
@@ -64,10 +65,14 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 
 ## Data sources
 
-Full catalogue: [docs/README.md](docs/README.md). Data comes from
-[opendata.ndw.nu](https://opendata.ndw.nu) and the public
-[Rijkswaterstaat WEGGEG catalogue](https://downloads.rijkswaterstaatdata.nl/weggeg/);
-neither requires authentication.
+Full catalogue: [docs/README.md](docs/README.md). Live traffic data comes from
+[opendata.ndw.nu](https://opendata.ndw.nu); NWB road geometry is ingested daily
+from RWS's [Wegvakken GeoPackage](https://downloads.rijkswaterstaatdata.nl/nwb-wegen/)
+and WEGGEG lane centrelines from the public
+[Rijkswaterstaat WEGGEG catalogue](https://downloads.rijkswaterstaatdata.nl/weggeg/) —
+both ingested into PostGIS and served from there, not proxied per request.
+Neither source requires authentication. See
+[NWB road-network foundation](docs/08-nwb-road-network.md).
 
 ## Local development (without Docker)
 
@@ -93,3 +98,6 @@ python -m ndwinfo.poller
 | `MAX_BBOX_AREA` | `25.0` | Maximum bbox area in deg² for API requests |
 | `API_DEFAULT_LIMIT` | `500` | Default feature limit per endpoint |
 | `API_MAX_LIMIT` | `2000` | Hard cap on feature limit |
+| `NWB_WEGVAKKEN_URL` | official RWS `Wegvakken.gpkg` URL | Daily bulk-download source (used by the poller) |
+| `NWB_MAX_FEATURES` | `5000` | Per-viewport NWB row cap |
+| `NWB_DIAGNOSTIC_MODE` | `false` | Enable clickable NWB metadata diagnostics |

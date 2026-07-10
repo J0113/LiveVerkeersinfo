@@ -7,6 +7,31 @@
 // minZoom            → only fetch + render when map zoom >= this value
 
 const LAYERS = [
+  // ── Road network foundation ───────────────────────────────────────────────
+  // Added first so all existing traffic layers and interactive markers remain
+  // above the reference geometry.
+  {
+    key: 'nwb_roads', label: 'NWB Road Network', group: 'reference',
+    endpoint: '/nwb/roads', geomType: 'road-network', minZoom: 9,
+    legendColor: '#3f78a8', promoteId: 'segment_id',
+    paint: {
+      casing: {
+        'line-color': 'rgba(8, 20, 31, 0.82)',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 2.2, 12, 3.8, 16, 8.5],
+        'line-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0.5, 12, 0.72, 16, 0.9]
+      },
+      line: {
+        'line-color': ['match', ['get', 'road_class'],
+          'motorway', '#5ba4d6',
+          'primary', '#4b87b4',
+          '#507084'
+        ],
+        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 1.1, 12, 2.1, 16, 5.2],
+        'line-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0.68, 12, 0.82, 16, 0.92]
+      }
+    }
+  },
+
   // ── Traffic ────────────────────────────────────────────────────────────────
   {
     key: 'speed', label: 'Traffic Speed', group: 'traffic',
@@ -187,9 +212,10 @@ const GROUPS = [
   { key: 'reference',    label: 'Reference' }
 ]
 
-const DEFAULT_ENABLED = new Set(['speed', 'matrix', 'drips'])
+const DEFAULT_ENABLED = new Set(['speed', 'matrix', 'drips', 'weggeg_lanes'])
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
+let nwbTruncated = false
 
 // ─── Runtime state ────────────────────────────────────────────────────────────
 
@@ -200,6 +226,9 @@ let activePopup = null
 let selectedFeature = null  // { source, id } currently highlighted (feature-state)
 let msiMarkers = []    // { marker, el, bearing } for MSI gantries
 let speedMarkers = []  // maplibregl.Marker instances for traffic speed sites
+const nwbCache = new Map() // viewport/profile key → { expires, data }
+const NWB_BROWSER_CACHE_TTL_MS = 5 * 60_000
+let publicConfig = { nwbDiagnosticMode: false }
 let laneSpeedMarkers = [] // upright numeric labels snapped to WEGGEG lanes
 
 // MSI gantries are dense; below this zoom they overlap into noise — skip rendering.
@@ -254,14 +283,29 @@ map.on('load', () => {
   addArrowImage()
 
   for (const layer of LAYERS) {
-    if (layer.geomType === 'msi') continue  // rendered as HTML markers, not MapLibre layers
+    // Rendered as HTML markers, not MapLibre layers.
+    if (layer.geomType === 'msi') continue
 
     const srcOpts = { type: 'geojson', data: EMPTY_FC }
     if (layer.promoteId) srcOpts.promoteId = layer.promoteId
     map.addSource(layer.key, srcOpts)
     const vis = enabled.has(layer.key) ? 'visible' : 'none'
 
-    if (layer.geomType === 'speed') {
+    if (layer.geomType === 'road-network') {
+      map.addLayer({
+        id: `${layer.key}-casing`, type: 'line', source: layer.key,
+        paint: layer.paint.casing,
+        layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' },
+        minzoom: layer.minZoom
+      })
+      map.addLayer({
+        id: layer.key, type: 'line', source: layer.key,
+        paint: layer.paint.line,
+        layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' },
+        minzoom: layer.minZoom
+      })
+      setupNwbDiagnostic(layer.key)
+    } else if (layer.geomType === 'speed') {
       map.addLayer({
         id: 'speed-lanes-casing',
         type: 'line',
@@ -337,6 +381,7 @@ map.on('load', () => {
 
   buildLayerPanel()
   setupPanelToggles()
+  fetchPublicConfig()
   fetchAll()
   fetchFeedStatus()
 
@@ -374,18 +419,23 @@ map.on('moveend', () => {
   debounceTimer = setTimeout(fetchAll, 300)
 })
 
+// Slide lane-speed labels along their line during pan/zoom/rotate so they
+// stay on screen between refetches, instead of waiting on the debounced fetch.
+map.on('move', updateLaneSpeedLayout)
+
 // Re-evaluate verkeersborden hint + re-fetch on zoom change
 map.on('zoom', () => {
   updateZoomHint()
   updateMatrixLayout()
   updateSpeedLayout()
+  updateLaneSpeedLayout()
   // If verkeersborden just crossed zoom 13, trigger a fetch
   const layer = LAYERS.find(l => l.key === 'verkeersborden')
   if (layer && enabled.has('verkeersborden')) fetchLayer(layer)
 })
 
 // Keep roadside offsets correct while the map rotates (e.g. navigation mode).
-map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout() })
+map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout(); updateLaneSpeedLayout() })
 
 // ─── Fetch ────────────────────────────────────────────────────────────────────
 
@@ -399,6 +449,7 @@ function fetchAll () {
 function fetchLayer (layer) {
   if (layer.geomType === 'msi') { fetchMatrixSigns(); return }
   if (layer.geomType === 'speed') { fetchSpeedMarkers(); return }
+  if (layer.geomType === 'road-network') { fetchNwbRoads(layer); return }
 
   if (layer.minZoom && map.getZoom() < layer.minZoom) {
     map.getSource(layer.key)?.setData(EMPTY_FC)
@@ -431,6 +482,83 @@ function fetchLayer (layer) {
       if (e.isBboxError) { setBboxTooLargeHint(true); return }
       console.warn(`[${layer.key}]`, e.message)
     })
+}
+
+function fetchNwbRoads (layer) {
+  if (map.getZoom() < layer.minZoom) {
+    controllers[layer.key]?.abort()
+    map.getSource(layer.key)?.setData(EMPTY_FC)
+    nwbTruncated = false
+    updateZoomHint()
+    return
+  }
+
+  controllers[layer.key]?.abort()
+  const ctrl = new AbortController()
+  controllers[layer.key] = ctrl
+  const b = map.getBounds()
+  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
+    .map(v => v.toFixed(5)).join(',')
+  const zoom = map.getZoom()
+  const profile = zoom < 11 ? 'national' : zoom < 12 ? 'major' : 'detailed'
+  const cacheKey = `${profile}:${bbox}`
+  const cached = nwbCache.get(cacheKey)
+  if (cached && cached.expires > Date.now()) {
+    renderNwbData(layer, cached.data)
+    return
+  }
+
+  fetch(`/api${layer.endpoint}?bbox=${bbox}&zoom=${zoom.toFixed(2)}`, { signal: ctrl.signal })
+    .then(r => {
+      if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
+      return r.json()
+    })
+    .then(data => {
+      nwbCache.set(cacheKey, { expires: Date.now() + NWB_BROWSER_CACHE_TTL_MS, data })
+      // Bound browser memory during long pan/zoom sessions.
+      if (nwbCache.size > 40) nwbCache.delete(nwbCache.keys().next().value)
+      renderNwbData(layer, data)
+    })
+    .catch(e => {
+      if (e.name === 'AbortError') return
+      console.warn('[nwb_roads]', e.message)
+      // Preserve the last successful geometry so a transient PDOK failure does
+      // not blank the road network while the user is navigating.
+    })
+}
+
+function renderNwbData (layer, data) {
+  map.getSource(layer.key)?.setData(data)
+  nwbTruncated = Boolean(data?.metadata?.truncated)
+  updateZoomHint()
+}
+
+function fetchPublicConfig () {
+  fetch('/api/config')
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (data) publicConfig = data
+      document.body.classList.toggle('nwb-diagnostic', Boolean(publicConfig.nwbDiagnosticMode))
+    })
+    .catch(e => console.warn('[config]', e.message))
+}
+
+function setupNwbDiagnostic (layerId) {
+  map.on('click', layerId, e => {
+    if (!publicConfig.nwbDiagnosticMode || !e.features?.length) return
+    const feature = e.features[0]
+    if (activePopup) activePopup.remove()
+    activePopup = new maplibregl.Popup({ maxWidth: '360px' })
+      .setLngLat(e.lngLat)
+      .setHTML(`<div class="diagnostic-title">NWB road segment</div>${buildPopupHtml(feature.properties)}`)
+      .addTo(map)
+  })
+  map.on('mouseenter', layerId, () => {
+    if (publicConfig.nwbDiagnosticMode) map.getCanvas().style.cursor = 'crosshair'
+  })
+  map.on('mouseleave', layerId, () => {
+    if (publicConfig.nwbDiagnosticMode) map.getCanvas().style.cursor = ''
+  })
 }
 
 // Measurement sources are points, while the WEGGEG road section they drive can
@@ -602,7 +730,7 @@ function fetchSpeedMarkers () {
 function renderSpeedMarkers (fc, laneFc = EMPTY_FC) {
   for (const m of speedMarkers) m.marker.remove()
   speedMarkers = []
-  for (const marker of laneSpeedMarkers) marker.remove()
+  for (const m of laneSpeedMarkers) m.marker.remove()
   laneSpeedMarkers = []
 
   if (!enabled.has('speed')) return
@@ -677,15 +805,24 @@ function renderSpeedMarkers (fc, laneFc = EMPTY_FC) {
 function renderLaneSpeedLabels (laneFc) {
   if (map.getZoom() < 16) return
 
+  const bounds = currentBoundsBox()
+
   for (const feature of laneFc.features || []) {
     const p = feature.properties || {}
     if (!feature.geometry || p.speed_kmh === null || p.speed_kmh === undefined) continue
     if (!Array.isArray(p.measurement_coords)) continue
 
+    const best = projectPointOnLine(feature.geometry, p.measurement_coords)
+    if (!best) continue
+
     // Stagger labels longitudinally so adjacent 3.5m lanes remain readable.
     const centerLane = ((p.lane_count || 1) + 1) / 2
     const shiftM = ((p.lane || 1) - centerLane) * 22
-    const coords = closestCoordinateOnLine(feature.geometry, p.measurement_coords, shiftM)
+    const basePosition = Math.max(0, Math.min(best.total, best.position + shiftM))
+    const range = visibleRangeOnLine(best, bounds)
+    if (!range) continue  // line doesn't currently cross the viewport at all
+    const wanted = Math.max(range.min, Math.min(range.max, basePosition))
+    const coords = coordAtDistance(best, wanted)
     if (!coords) continue
 
     const el = document.createElement('div')
@@ -699,7 +836,7 @@ function renderLaneSpeedLabels (laneFc) {
       e.stopPropagation()
       if (activePopup) activePopup.remove()
       activePopup = new maplibregl.Popup({ maxWidth: '280px', offset: [0, -8] })
-        .setLngLat(coords)
+        .setLngLat(marker.getLngLat())
         .setHTML(buildPopupHtml({
           road: p.road,
           carriageway: p.carriageway,
@@ -712,13 +849,39 @@ function renderLaneSpeedLabels (laneFc) {
         .addTo(map)
     })
 
-    laneSpeedMarkers.push(
-      new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(coords).addTo(map)
-    )
+    const marker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(coords).addTo(map)
+    laneSpeedMarkers.push({ marker, best, basePosition })
   }
 }
 
-function closestCoordinateOnLine (geometry, target, shiftMeters = 0) {
+// Slide already-rendered lane-speed labels along their line so they stay on
+// screen while panning/zooming, instead of sitting fixed at the sensor's
+// physical location (which can scroll out of view at high zoom).
+function updateLaneSpeedLayout () {
+  if (!laneSpeedMarkers.length) return
+  const bounds = currentBoundsBox()
+  for (const m of laneSpeedMarkers) {
+    const range = visibleRangeOnLine(m.best, bounds)
+    const el = m.marker.getElement()
+    if (!range) {
+      el.style.visibility = 'hidden'
+      continue
+    }
+    el.style.visibility = ''
+    const wanted = Math.max(range.min, Math.min(range.max, m.basePosition))
+    const coords = coordAtDistance(m.best, wanted)
+    if (coords) m.marker.setLngLat(coords)
+  }
+}
+
+function currentBoundsBox () {
+  const b = map.getBounds()
+  return { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() }
+}
+
+// Find the point on `geometry` closest to `target`, and the running distances
+// (metres) needed to walk to any other point along the same line.
+function projectPointOnLine (geometry, target) {
   const lines = geometry.type === 'LineString'
     ? [geometry.coordinates]
     : geometry.type === 'MultiLineString' ? geometry.coordinates : []
@@ -758,8 +921,13 @@ function closestCoordinateOnLine (geometry, target, shiftMeters = 0) {
     }
   }
 
-  if (!best) return null
-  let wanted = Math.max(0, Math.min(best.total, best.position + shiftMeters))
+  return best
+}
+
+// Coordinate at `distance` metres along the line described by a
+// projectPointOnLine() result.
+function coordAtDistance (best, distance) {
+  let wanted = Math.max(0, Math.min(best.total, distance))
   for (let i = 0; i < best.lengths.length; i++) {
     if (wanted <= best.lengths[i] || i === best.lengths.length - 1) {
       const t = best.lengths[i] ? wanted / best.lengths[i] : 0
@@ -771,6 +939,29 @@ function closestCoordinateOnLine (geometry, target, shiftMeters = 0) {
     wanted -= best.lengths[i]
   }
   return null
+}
+
+// Range of along-line distance (metres) currently inside the viewport, using
+// vertex-level containment — dense WEGGEG vertex spacing makes this accurate
+// enough without a full line/bbox clip.
+function visibleRangeOnLine (best, bounds) {
+  const { line, lengths, total } = best
+  let cum = 0
+  let min = null
+  let max = null
+  for (let i = 0; i < line.length; i++) {
+    const [lng, lat] = line[i]
+    const inside = lng >= bounds.west && lng <= bounds.east && lat >= bounds.south && lat <= bounds.north
+    if (inside) {
+      if (min === null || cum < min) min = cum
+      if (max === null || cum > max) max = cum
+    }
+    if (i < lengths.length) cum += lengths[i]
+  }
+  if (min === null) return null
+  // Small inset so a label doesn't render half-cut on the viewport edge.
+  const pad = Math.min(20, (max - min) / 2)
+  return { min: Math.max(0, min + pad), max: Math.min(total, max - pad) }
 }
 
 // Keep fallback speed rows upright and offset them roadside using the bearing.
@@ -994,13 +1185,18 @@ function setLayerVisibility (layer, visible) {
     if (!visible) {
       for (const m of speedMarkers) m.marker.remove()
       speedMarkers = []
-      for (const marker of laneSpeedMarkers) marker.remove()
+      for (const m of laneSpeedMarkers) m.marker.remove()
       laneSpeedMarkers = []
       map.getSource('speed')?.setData(EMPTY_FC)
     }
     return
   }
   const vis = visible ? 'visible' : 'none'
+  if (layer.geomType === 'road-network') {
+    if (map.getLayer(`${layer.key}-casing`)) map.setLayoutProperty(`${layer.key}-casing`, 'visibility', vis)
+    if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
+    return
+  }
   if (layer.geomType === 'line') {
     if (map.getLayer(`${layer.key}-casing`)) map.setLayoutProperty(`${layer.key}-casing`, 'visibility', vis)
     if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
@@ -1064,6 +1260,9 @@ function updateZoomHint () {
   const hint = document.getElementById('zoom-hint')
   if (bboxTooLarge) {
     hint.textContent = 'Zoom in — area too large to load data'
+    hint.classList.remove('hidden')
+  } else if (nwbTruncated && enabled.has('nwb_roads')) {
+    hint.textContent = 'NWB viewport reached the feature cap — zoom in for complete road detail'
     hint.classList.remove('hidden')
   } else if (enabled.has('verkeersborden') && map.getZoom() < 13) {
     hint.textContent = 'Zoom in further to see traffic signs (zoom 13+)'

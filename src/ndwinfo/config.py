@@ -12,7 +12,14 @@ class Settings(BaseSettings):
     api_max_limit: int = 2000
     poller_idle_timeout_s: int = 300
     poller_max_workers: int = 8  # run due feeds concurrently, up to this many at once
-    disabled_feeds: str = ""  # comma-separated feed names to skip, e.g. "verkeersborden_csv,msi_shapefiles"
+    # comma-separated names to skip, e.g. "verkeersborden_csv,msi_shapefiles"
+    disabled_feeds: str = ""
+    nwb_wegvakken_url: str = (
+        "https://downloads.rijkswaterstaatdata.nl/nwb-wegen/geogegevens/"
+        "geopackage/NWB-dagelijks/Wegvakken/Wegvakken.gpkg"
+    )
+    nwb_max_features: int = 5000  # per-viewport row cap for /api/nwb/roads
+    nwb_diagnostic_mode: bool = False
 
 
 settings = Settings()
