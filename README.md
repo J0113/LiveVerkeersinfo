@@ -47,7 +47,6 @@ All list endpoints require `?bbox=minLon,minLat,maxLon,maxLat`. Max area: 25 deg
 | `GET /api/emission-zones` | Low-emission zones | daily |
 | `GET /api/verkeersborden?rvvCode=` | Traffic signs (bbox required; best above zoom 13) | daily |
 | `GET /api/nwb/roads?bbox=&zoom=` | Normalized NWB road sections for the viewport | monthly |
-| `GET /api/nwb/lane-speeds?bbox=&zoom=` | WEGGEG lane configuration + matched current NDW speeds | monthly + 60 s |
 | `GET /api/feeds/status` | Last run per feed — status, time, rows upserted | — |
 
 All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (default 500, max 2000).
@@ -98,11 +97,3 @@ python -m ndwinfo.poller
 | `NWB_CACHE_MAX_ENTRIES` | `128` | Server-side NWB LRU cache size |
 | `NWB_MAX_FEATURES` | `5000` | Per-viewport NWB feature cap |
 | `NWB_DIAGNOSTIC_MODE` | `false` | Enable clickable NWB metadata diagnostics |
-| `WEGGEG_PDOK_URL` | official `wegvak_rijstroken/items` URL | RWS lane-configuration endpoint |
-| `WEGGEG_CACHE_TTL_S` | `86400` | Successful lane-reference cache lifetime |
-| `WEGGEG_CACHE_MAX_ENTRIES` | `128` | Server-side WEGGEG LRU cache size |
-| `WEGGEG_MAX_FEATURES` | `5000` | Per-viewport WEGGEG feature cap |
-| `LANE_SPEED_MIN_ZOOM` | `13` | Minimum zoom for lane speed API output |
-| `LANE_MATCH_MAX_DISTANCE_M` | `45` | Maximum sensor-to-road match distance |
-| `LANE_MATCH_MAX_HEADING_DIFFERENCE` | `50` | Maximum heading difference in degrees |
-| `LANE_SPEED_MAX_AGE_S` | `600` | Maximum age for colouring a lane measurement |

@@ -23,17 +23,6 @@ class Settings(BaseSettings):
     nwb_cache_max_entries: int = 128
     nwb_max_features: int = 5000
     nwb_diagnostic_mode: bool = False
-    weggeg_pdok_url: str = (
-        "https://api.pdok.nl/rws/weggegevens/ogc/v1/"
-        "collections/wegvak_rijstroken/items"
-    )
-    weggeg_cache_ttl_s: int = 86400
-    weggeg_cache_max_entries: int = 128
-    weggeg_max_features: int = 5000
-    lane_speed_min_zoom: int = 13
-    lane_match_max_distance_m: float = 45.0
-    lane_match_max_heading_difference: float = 50.0
-    lane_speed_max_age_s: int = 600
 
 
 settings = Settings()

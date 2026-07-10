@@ -34,38 +34,6 @@ const LAYERS = [
 
   // ── Traffic ────────────────────────────────────────────────────────────────
   {
-    key: 'lane_speeds', label: 'Speed per Lane', group: 'traffic',
-    endpoint: '/nwb/lane-speeds', geomType: 'lane-network', minZoom: 13,
-    legendColor: '#41d67d', promoteId: 'lane_feature_id',
-    paint: {
-      offset: ['interpolate', ['linear'], ['zoom'],
-        13, ['*', ['get', 'lane_offset_index'], 2.2],
-        16, ['*', ['get', 'lane_offset_index'], 4.2],
-        19, ['*', ['get', 'lane_offset_index'], 7.0]],
-      glow: {
-        'line-color': ['case', ['==', ['get', 'speed_kmh'], null], '#26394b', '#23d5ab'],
-        'line-width': ['interpolate', ['linear'], ['zoom'], 13, 5, 16, 9, 19, 14],
-        'line-opacity': ['case', ['==', ['get', 'speed_kmh'], null], 0.12, 0.22]
-      },
-      casing: {
-        'line-color': '#07131e',
-        'line-width': ['interpolate', ['linear'], ['zoom'], 13, 3.6, 16, 6.2, 19, 10],
-        'line-opacity': 0.92
-      },
-      line: {
-        'line-color': ['case',
-          ['==', ['get', 'speed_kmh'], null], '#627587',
-          ['interpolate', ['linear'], ['get', 'speed_kmh'],
-            0, '#dc2946', 25, '#ef3e3e', 45, '#ff8a32', 65, '#ffd43b',
-            85, '#7bd65c', 105, '#20c997', 130, '#33c7e8'
-          ]
-        ],
-        'line-width': ['interpolate', ['linear'], ['zoom'], 13, 2.1, 16, 3.8, 19, 6.5],
-        'line-opacity': ['case', ['==', ['get', 'speed_kmh'], null], 0.5, 0.98]
-      }
-    }
-  },
-  {
     key: 'speed', label: 'Traffic Speed', group: 'traffic',
     endpoint: '/traffic/speed', geomType: 'speed', legendColor: '#00cc44',
   },
@@ -225,7 +193,7 @@ const GROUPS = [
 
 // The legacy site boxes remain available, but default off: showing them over
 // the road-following lane layer creates dense duplicate speed information.
-const DEFAULT_ENABLED = new Set(['nwb_roads', 'lane_speeds', 'matrix', 'drips'])
+const DEFAULT_ENABLED = new Set(['nwb_roads', 'matrix', 'drips'])
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
 let nwbTruncated = false
@@ -317,17 +285,6 @@ map.on('load', () => {
         minzoom: layer.minZoom
       })
       setupNwbDiagnostic(layer.key)
-    } else if (layer.geomType === 'lane-network') {
-      for (const [suffix, paint] of [['glow', layer.paint.glow], ['casing', layer.paint.casing], ['', layer.paint.line]]) {
-        map.addLayer({
-          id: suffix ? `${layer.key}-${suffix}` : layer.key,
-          type: 'line', source: layer.key,
-          paint: { ...paint, 'line-offset': layer.paint.offset },
-          layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' },
-          minzoom: layer.minZoom
-        })
-      }
-      setupLaneSpeedPopup(layer.key)
     } else if (layer.geomType === 'polygon') {
       map.addLayer({ id: `${layer.key}-fill`, type: 'fill', source: layer.key, paint: layer.paint.fill, layout: { visibility: vis } })
       map.addLayer({ id: `${layer.key}-line`, type: 'line', source: layer.key, paint: layer.paint.line, layout: { visibility: vis } })
@@ -367,7 +324,6 @@ map.on('load', () => {
   fetchPublicConfig()
   fetchAll()
   fetchFeedStatus()
-  updateLaneLegend()
 
   // ─── Geolocation Source & Layers ───────────────────────────────────────────
   map.addSource('user-accuracy', { type: 'geojson', data: EMPTY_FC })
@@ -408,7 +364,6 @@ map.on('zoom', () => {
   updateZoomHint()
   updateMatrixLayout()
   updateSpeedLayout()
-  updateLaneLegend()
   // If verkeersborden just crossed zoom 13, trigger a fetch
   const layer = LAYERS.find(l => l.key === 'verkeersborden')
   if (layer && enabled.has('verkeersborden')) fetchLayer(layer)
@@ -430,7 +385,6 @@ function fetchLayer (layer) {
   if (layer.geomType === 'msi') { fetchMatrixSigns(); return }
   if (layer.geomType === 'speed') { fetchSpeedMarkers(); return }
   if (layer.geomType === 'road-network') { fetchNwbRoads(layer); return }
-  if (layer.geomType === 'lane-network') { fetchLaneSpeeds(layer); return }
 
   if (layer.minZoom && map.getZoom() < layer.minZoom) {
     map.getSource(layer.key)?.setData(EMPTY_FC)
@@ -463,75 +417,6 @@ function fetchLayer (layer) {
       if (e.isBboxError) { setBboxTooLargeHint(true); return }
       console.warn(`[${layer.key}]`, e.message)
     })
-}
-
-function fetchLaneSpeeds (layer) {
-  if (map.getZoom() < layer.minZoom) {
-    controllers[layer.key]?.abort()
-    map.getSource(layer.key)?.setData(EMPTY_FC)
-    updateLaneLegend()
-    return
-  }
-  controllers[layer.key]?.abort()
-  const ctrl = new AbortController()
-  controllers[layer.key] = ctrl
-  const b = map.getBounds()
-  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
-    .map(v => v.toFixed(5)).join(',')
-  fetch(`/api${layer.endpoint}?bbox=${bbox}&zoom=${map.getZoom().toFixed(2)}`, { signal: ctrl.signal })
-    .then(r => {
-      if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
-      return r.json()
-    })
-    .then(data => {
-      map.getSource(layer.key)?.setData(data)
-      updateLaneLegend(data.metadata)
-    })
-    .catch(e => {
-      if (e.name !== 'AbortError') console.warn('[lane_speeds]', e.message)
-    })
-}
-
-function setupLaneSpeedPopup (layerId) {
-  map.on('click', layerId, e => {
-    if (!e.features?.length) return
-    const p = e.features[0].properties
-    if (activePopup) activePopup.remove()
-    const speed = p.speed_kmh == null ? 'Geen actuele meting' : `${Math.round(p.speed_kmh)} km/h`
-    const flow = p.flow_veh_h == null ? '—' : `${Math.round(p.flow_veh_h)} voertuigen/uur`
-    const reliability = p.match_confidence === 'high' ? 'hoog' : p.match_confidence === 'medium' ? 'gemiddeld' : '—'
-    const variable = p.lane_count_variable === true || p.lane_count_variable === 'true'
-    activePopup = new maplibregl.Popup({ maxWidth: '330px' })
-      .setLngLat(e.lngLat)
-      .setHTML(
-        `<div class="lane-popup-speed">${esc(speed)}</div>` +
-        `<div class="diagnostic-title">${esc(p.road_number || 'Rijksweg')} · rijstrook ${esc(p.lane_number)}</div>` +
-        buildPopupHtml({
-          rijbaan: p.carriageway_position || '—',
-          doorstroming: flow,
-          gemeten: p.measured_at || '—',
-          meetpunten: p.input_count || p.measurement_count || '—',
-          koppeling: reliability,
-          NWB_wegvak: p.nwb_road_section_id,
-          rijstroken: variable ? `${p.lane_count_start} → ${p.lane_count_end}` : p.lane_count,
-          geometrie: 'schematische offset op officiële wegas'
-        })
-      )
-      .addTo(map)
-  })
-  map.on('mouseenter', layerId, () => { map.getCanvas().style.cursor = 'pointer' })
-  map.on('mouseleave', layerId, () => { map.getCanvas().style.cursor = '' })
-}
-
-function updateLaneLegend (metadata) {
-  const legend = document.getElementById('lane-speed-legend')
-  if (!legend) return
-  const visible = enabled.has('lane_speeds') && map.getZoom() >= 13
-  legend.classList.toggle('hidden', !visible)
-  if (metadata) {
-    const measured = metadata.measuredLanes || 0
-    legend.querySelector('.lane-legend-count').textContent = `${measured} rijstroken met actuele meting`
-  }
 }
 
 function fetchNwbRoads (layer) {
@@ -1042,13 +927,6 @@ function setLayerVisibility (layer, visible) {
   if (layer.geomType === 'road-network') {
     if (map.getLayer(`${layer.key}-casing`)) map.setLayoutProperty(`${layer.key}-casing`, 'visibility', vis)
     if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
-    return
-  }
-  if (layer.geomType === 'lane-network') {
-    for (const id of [`${layer.key}-glow`, `${layer.key}-casing`, layer.key]) {
-      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis)
-    }
-    updateLaneLegend()
     return
   }
   if (layer.geomType === 'line') {

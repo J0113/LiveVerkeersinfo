@@ -91,35 +91,3 @@ or a joined live source keyed by `segment_id`, allowing MapLibre styling to
 change without replacing the NWB geometry architecture. NDW's per-lane sensor
 values must remain observations attached to a road section unless a separate,
 authoritative lane geometry source is introduced.
-
-## Lane configuration and current speed rendering
-
-The high-zoom **Speed per Lane** layer uses the official RWS WEGGEG OGC API
-Features collection [`wegvak_rijstroken`](https://api.pdok.nl/rws/weggegevens/ogc/v1/collections/wegvak_rijstroken/items?f=html).
-WEGGEG is monthly, CC0, requires no authentication, and currently covers
-Rijkswegen. Its `wvk_id` is joined directly to NWB `wvk_id`; descriptions such
-as `2 -> 2` or `3 -> 4` supply the number of lanes at the beginning and end of
-the section.
-
-Crucially, WEGGEG repeats the road-section line and does **not** publish a
-surveyed line for each painted lane. At zoom 13+ the UI therefore creates
-parallel MapLibre line offsets solely for legibility. Every feature says
-`geometry_kind=schematic-lane-offset`; variable configurations retain both
-counts and are never presented as surveyed lane geometry. NDW lane 1 is shown
-nearest the median (far left in the travel direction), following the official
-[NDW lane numbering](https://docs.ndw.nu/locatiereferentie/locatiereferentie-aanvullend/).
-
-Current NDW measurements are attached conservatively. A candidate must have
-the same normalized road number and compatible carriageway, lie within 45 m,
-and (when a bearing is available) differ by at most 50 degrees from the road
-direction. Each site is assigned to only its best candidate. Concurrent values
-on one lane are averaged using `n_inputs` as weight. Measurements older than
-ten minutes do not colour the road. The popup exposes match confidence,
-distance, NWB id, timestamp, sample count, and the schematic-geometry caveat.
-
-This is the most accurate representation the current open sources support. A
-future true lane geometry source can replace the visual offsets while keeping
-the stable `wvk_id`/lane feature ids and the NDW matching layer. Further
-production hardening should add OpenLR decoding or kilometre-chainage matching,
-calibrate thresholds against labelled matches, and retain short time windows
-if a rolling rather than current-snapshot average is desired.

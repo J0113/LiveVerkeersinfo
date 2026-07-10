@@ -363,42 +363,6 @@ input[type="checkbox"] {
   text-transform: uppercase;
 }
 
-.lane-popup-speed {
-  color: #f4fbff;
-  font-size: 24px;
-  font-weight: 750;
-  letter-spacing: -0.03em;
-  margin-bottom: 3px;
-}
-
-.lane-speed-legend {
-  position: absolute;
-  z-index: 3;
-  right: 14px;
-  bottom: 30px;
-  width: 228px;
-  padding: 12px 13px 10px;
-  border: 1px solid rgba(126, 164, 190, 0.28);
-  border-radius: 12px;
-  background: rgba(7, 19, 30, 0.86);
-  box-shadow: 0 12px 38px rgba(0, 0, 0, 0.3);
-  color: #dceaf3;
-  font-size: 10px;
-  backdrop-filter: blur(12px);
-}
-
-.lane-legend-title { font-size: 11px; font-weight: 700; margin-bottom: 8px; }
-.lane-legend-gradient {
-  height: 6px;
-  border-radius: 4px;
-  background: linear-gradient(90deg, #dc2946 0%, #ff8a32 35%, #ffd43b 52%, #7bd65c 69%, #20c997 84%, #33c7e8 100%);
-  box-shadow: 0 0 9px rgba(32, 201, 151, 0.28);
-}
-.lane-legend-labels { display: flex; justify-content: space-between; margin-top: 4px; color: #8ba2b1; }
-.lane-legend-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: #9bafbc; }
-.lane-legend-empty { width: 16px; height: 3px; border-radius: 2px; background: #627587; opacity: 0.65; }
-.lane-legend-count { margin-top: 4px; color: #6f899a; }
-
 body.nwb-diagnostic #map::after {
   content: 'NWB diagnostics';
   position: absolute;

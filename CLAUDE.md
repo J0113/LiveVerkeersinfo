@@ -90,7 +90,6 @@ Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
 - [x] Mobile driving HUD (`/drive`) — GPS heading filters signs/speed to travel direction only
 - [x] NWB road-network rendering foundation (viewport loading, zoom detail,
   caching, stable ids, opt-in diagnostics)
-- [x] WEGGEG lane-configuration rendering with conservative per-lane NDW speed matching
 - [x] Containerization (Docker Compose: db + app + poller)
 
 ## Directory structure & key files
