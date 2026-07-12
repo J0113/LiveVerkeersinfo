@@ -56,6 +56,7 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 
 - Dark MapLibre map centred on the Netherlands (zoom 7)
 - Layer toggles (top-left panel): NWB road network, traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs
+- A pinned driving-information HUD shows traffic speed by numbered lane and the nearest DRIP/VMS message; speed data is accepted only for the exact NWB/WEGGEG road and L/R carriageway, never from the opposite direction
 - Panning or zooming refetches all enabled layers for the new bbox (300 ms debounce)
 - Auto-refreshes every 60 seconds
 - Feed status panel (bottom-right): last update time and status per feed
@@ -89,6 +90,10 @@ python -m ndwinfo.poller
 | `DATABASE_URL` | `postgresql+psycopg://ndwinfo:ndwinfo@localhost:5432/ndwinfo` | SQLAlchemy connection string |
 | `NDW_BASE_URL` | `https://opendata.ndw.nu` | Base URL for NDW downloads |
 | `DATA_DIR` | `./data` | Scratch directory for downloaded files |
+| `DB_POOL_SIZE` | `4` | Persistent database connections per process |
+| `DB_MAX_OVERFLOW` | `2` | Temporary connections above the pool size |
+| `DB_POOL_RECYCLE_S` | `1800` | Recycle age for database connections |
+| `POLLER_MAX_WORKERS` | `3` | Concurrent feed ingests; lower values reduce peak memory |
 | `MAX_BBOX_AREA` | `25.0` | Maximum bbox area in deg² for API requests |
 | `API_DEFAULT_LIMIT` | `500` | Default feature limit per endpoint |
 | `API_MAX_LIMIT` | `2000` | Hard cap on feature limit |
@@ -106,3 +111,8 @@ python -m ndwinfo.poller
 | `LANE_MATCH_MAX_DISTANCE_M` | `45` | Maximum sensor-to-road match distance |
 | `LANE_MATCH_MAX_HEADING_DIFFERENCE` | `50` | Maximum heading difference in degrees |
 | `LANE_SPEED_MAX_AGE_S` | `600` | Maximum age for colouring a lane measurement |
+| `LANE_RESPONSE_CACHE_TTL_S` | `10` | Short cache for identical live lane responses |
+
+The Docker build uses separate `app`, `migrate`, and `poller` stages. The API
+image intentionally excludes GeoPandas, Pyogrio, pandas, and the GDAL import
+toolchain; those are installed only in the poller image.

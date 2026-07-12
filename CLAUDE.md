@@ -91,6 +91,10 @@ Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
 - [x] NWB road-network rendering foundation (viewport loading, zoom detail,
   caching, stable ids, opt-in diagnostics)
 - [x] WEGGEG lane-configuration rendering with conservative per-lane NDW speed matching
+- [x] Runtime optimization (split Docker targets, gzip/live cache, spatial matcher,
+  visibility-aware browser scheduling, responsive map UI)
+- [x] Zoom-consistent schematic lane widths and buffered, single-flight viewport loading
+- [x] Pinned driving HUD for numbered-lane traffic speeds and nearby DRIP/VMS messages
 - [x] Containerization (Docker Compose: db + app + poller)
 
 ## Directory structure & key files

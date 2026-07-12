@@ -49,16 +49,42 @@
 
   <div id="zoom-hint" class="hint hidden">Zoom in further to see traffic signs (zoom 13+)</div>
 
+  <aside id="driving-hud" class="driving-hud hidden" aria-live="polite">
+    <section id="traffic-speed-panel" class="driving-hud-panel speed-hud-panel hidden">
+      <div class="speed-overlay-header">
+        <div>
+          <div class="speed-overlay-kicker">Actuele verkeerssnelheid</div>
+          <div id="speed-overlay-road" class="speed-overlay-road">Meetpunt zoeken…</div>
+        </div>
+        <div id="speed-overlay-meta" class="speed-overlay-meta"></div>
+      </div>
+      <div id="speed-overlay-lanes" class="speed-overlay-lanes"></div>
+      <div id="speed-overlay-empty" class="speed-overlay-empty hidden">Geen actuele rijstrookmeting in beeld</div>
+    </section>
+    <section id="drip-hud-panel" class="driving-hud-panel drip-hud-panel hidden">
+      <div class="drip-hud-topline">
+        <span class="drip-hud-badge">DRIP / VMS</span>
+        <span id="drip-hud-meta" class="drip-hud-meta"></span>
+      </div>
+      <div id="drip-hud-road" class="drip-hud-road">Informatiepaneel zoeken…</div>
+      <div id="drip-hud-message" class="drip-hud-message">Geen bericht in beeld</div>
+      <img id="drip-hud-image" class="drip-hud-image hidden" alt="Actuele weergave van het DRIP-paneel">
+    </section>
+  </aside>
+
   <div id="lane-speed-legend" class="lane-speed-legend hidden">
     <div class="lane-legend-title">Gemiddelde snelheid per rijstrook</div>
     <div class="lane-legend-gradient"></div>
     <div class="lane-legend-labels"><span>0</span><span>50</span><span>80</span><span>130 km/h</span></div>
-    <div class="lane-legend-foot"><span class="lane-legend-empty"></span><span>geen meting</span></div>
-    <div class="lane-legend-count">0 rijstroken met actuele meting</div>
+    <div class="lane-legend-foot">
+      <span class="lane-legend-estimated"></span><span>geschat</span>
+      <span class="lane-legend-empty"></span><span>geen meting</span>
+    </div>
+    <div class="lane-legend-count">Actuele dekking laden…</div>
   </div>
 
   <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
   <script src="lib.js"></script>
-  <script src="app.js?v=lane-speed-2"></script>
+  <script src="app.js?v=speed-hud-1"></script>
 </body>
 </html>

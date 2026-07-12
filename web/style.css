@@ -1,9 +1,21 @@
+:root {
+  color-scheme: dark;
+  --panel: rgba(8, 18, 28, 0.88);
+  --panel-border: rgba(133, 177, 205, 0.22);
+  --text: #e7f1f7;
+  --muted: #8ca3b2;
+  --accent: #36d7a5;
+  --shadow: 0 18px 55px rgba(4, 12, 19, 0.3);
+}
+
 *, *::before, *::after { box-sizing: border-box; }
 
 body {
   margin: 0;
-  background: #111;
-  font-family: system-ui, -apple-system, sans-serif;
+  background: #08121c;
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-rendering: optimizeLegibility;
 }
 
 #map {
@@ -15,26 +27,28 @@ body {
 
 .panel {
   position: absolute;
-  background: rgba(12, 12, 22, 0.93);
-  color: #d8d8e8;
-  border: 1px solid #2a2a40;
-  border-radius: 8px;
+  background: linear-gradient(145deg, rgba(12, 27, 40, 0.94), var(--panel));
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
   font-size: 13px;
   line-height: 1.5;
   z-index: 10;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(16px) saturate(130%);
+  -webkit-backdrop-filter: blur(16px) saturate(130%);
+  overflow: hidden;
 }
 
 #layer-panel {
   top: 10px;
   left: 10px;
-  min-width: 195px;
-  max-width: 250px;
+  min-width: 210px;
+  max-width: 270px;
 }
 
 #status-panel {
-  bottom: 36px;
+  bottom: 18px;
   right: 10px;
   min-width: 215px;
   max-width: 270px;
@@ -45,16 +59,17 @@ body {
   width: 100%;
   background: none;
   border: none;
-  color: #d8d8e8;
+  color: var(--text);
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.02em;
   cursor: pointer;
   text-align: left;
   padding: 9px 12px;
-  border-radius: 8px;
+  border-radius: 13px;
+  transition: background-color 160ms ease, color 160ms ease;
 }
-.panel-btn:hover { background: rgba(255, 255, 255, 0.07); }
+.panel-btn:hover { background: rgba(255, 255, 255, 0.07); color: #fff; }
 
 .hidden { display: none !important; }
 
@@ -71,7 +86,7 @@ body {
 }
 
 .group + .group {
-  border-top: 1px solid #22223a;
+  border-top: 1px solid rgba(130, 170, 195, 0.13);
   padding-top: 6px;
 }
 
@@ -80,7 +95,7 @@ body {
   align-items: center;
   gap: 7px;
   font-weight: 600;
-  color: #8888aa;
+  color: var(--muted);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -95,13 +110,14 @@ body {
   gap: 7px;
   padding: 3px 2px;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 7px;
+  transition: background-color 140ms ease, transform 140ms ease;
 }
-.layer-row:hover { background: rgba(255, 255, 255, 0.05); }
+.layer-row:hover { background: rgba(255, 255, 255, 0.055); transform: translateX(1px); }
 .layer-row.indented { padding-left: 16px; }
 
 input[type="checkbox"] {
-  accent-color: #5599ff;
+  accent-color: var(--accent);
   cursor: pointer;
   flex-shrink: 0;
   width: 14px;
@@ -120,9 +136,9 @@ input[type="checkbox"] {
   display: inline-block;
   font-size: 10px;
   color: #667;
-  background: #1e1e30;
-  border: 1px solid #333;
-  border-radius: 3px;
+  background: rgba(63, 91, 108, 0.22);
+  border: 1px solid rgba(132, 171, 194, 0.18);
+  border-radius: 5px;
   padding: 0 3px;
   vertical-align: middle;
   margin-left: 2px;
@@ -176,16 +192,17 @@ input[type="checkbox"] {
 /* ── MapLibre popup overrides ────────────────────────────────────────────── */
 
 .maplibregl-popup-content {
-  background: rgba(12, 12, 22, 0.96) !important;
-  color: #d8d8e8 !important;
-  border: 1px solid #2a2a40 !important;
-  border-radius: 6px !important;
-  padding: 10px 12px !important;
+  background: rgba(8, 19, 29, 0.96) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--panel-border) !important;
+  border-radius: 12px !important;
+  padding: 12px 14px !important;
   max-width: 290px;
   max-height: 320px;
   overflow-y: auto;
   font-size: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6) !important;
+  box-shadow: var(--shadow) !important;
+  backdrop-filter: blur(14px);
 }
 
 .maplibregl-popup-close-button {
@@ -328,32 +345,6 @@ input[type="checkbox"] {
 /* Blank / sign off: nearly invisible dark square */
 .msi-lane.blank { background: #080808; border-color: #111; }
 
-/* ── Traffic speed site markers ─────────────────────────────────────────── */
-
-.speed-site {
-  display: flex;
-  gap: 2px;
-  background: rgba(0,0,0,0.7);
-  padding: 2px;
-  border-radius: 3px;
-  border: 1px solid #555;
-  cursor: pointer;
-  transform-origin: center center;
-}
-.speed-site:hover { border-color: #aaa; }
-
-.speed-lane {
-  width: 24px;
-  height: 24px;
-  border-radius: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: bold;
-  user-select: none;
-}
-
 .diagnostic-title {
   margin-bottom: 6px;
   color: #5ba4d6;
@@ -371,17 +362,183 @@ input[type="checkbox"] {
   margin-bottom: 3px;
 }
 
+/* ── Pinned driving-information HUD ─────────────────────────────────────── */
+
+.driving-hud {
+  position: absolute;
+  z-index: 9;
+  top: max(10px, env(safe-area-inset-top));
+  left: 50%;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  width: min(860px, calc(100vw - 600px));
+  min-width: 520px;
+  transform: translateX(-50%);
+}
+
+.driving-hud-panel {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(125, 179, 207, 0.28);
+  border-radius: 16px;
+  color: #eef8fc;
+  background: linear-gradient(145deg, rgba(11, 29, 42, 0.96), rgba(5, 16, 25, 0.91));
+  box-shadow: 0 20px 60px rgba(2, 10, 16, 0.38);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+.speed-hud-panel { flex: 1.65 1 480px; }
+.drip-hud-panel { flex: 1 1 280px; }
+
+.speed-overlay-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 0 2px 10px;
+}
+
+.speed-overlay-kicker {
+  color: #72e2bf;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.speed-overlay-road {
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.speed-overlay-meta {
+  flex: 0 0 auto;
+  color: #89a5b6;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed-overlay-lanes {
+  display: grid;
+  grid-template-columns: repeat(var(--lane-count, 1), minmax(76px, 1fr));
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.speed-overlay-lane {
+  position: relative;
+  min-width: 76px;
+  padding: 9px 8px 8px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--lane-color) 42%, rgba(132, 167, 188, 0.22));
+  border-radius: 11px;
+  background: linear-gradient(155deg, color-mix(in srgb, var(--lane-color) 19%, rgba(15, 31, 43, 0.94)), rgba(8, 20, 30, 0.88));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  text-align: center;
+}
+
+.speed-overlay-lane::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: var(--lane-color);
+  box-shadow: 0 0 12px var(--lane-color);
+}
+.speed-overlay-lane.is-estimated { opacity: 0.84; }
+.speed-overlay-lane.is-estimated::after {
+  content: 'geschat';
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  color: #9fb4c0;
+  font-size: 7px;
+  letter-spacing: 0.04em;
+}
+
+.speed-overlay-lane-number,
+.speed-overlay-unit,
+.speed-overlay-flow { display: block; }
+.speed-overlay-lane-number { color: #9db2bf; font-size: 9px; font-weight: 650; }
+.speed-overlay-value { display: inline-block; margin-top: 2px; font-size: 24px; line-height: 1; font-variant-numeric: tabular-nums; }
+.speed-overlay-unit { margin-top: 2px; color: #a8bdc9; font-size: 9px; }
+.speed-overlay-flow { margin-top: 5px; color: #718d9e; font-size: 8px; white-space: nowrap; }
+.speed-overlay-empty { padding: 12px 6px 8px; color: #8ca3b2; font-size: 11px; text-align: center; }
+
+.drip-hud-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.drip-hud-badge {
+  padding: 3px 6px;
+  border: 1px solid rgba(255, 196, 64, 0.42);
+  border-radius: 6px;
+  color: #ffd15a;
+  background: rgba(255, 183, 0, 0.09);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+}
+.drip-hud-meta { color: #8ba2b1; font-size: 10px; font-variant-numeric: tabular-nums; }
+.drip-hud-road {
+  margin: 7px 1px 6px;
+  overflow: hidden;
+  color: #adc1cd;
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drip-hud-message {
+  display: flex;
+  min-height: 62px;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 11px;
+  overflow: hidden;
+  border: 1px solid #3b3a2a;
+  border-radius: 9px;
+  color: #ffd84d;
+  background: #050604;
+  box-shadow: inset 0 0 20px rgba(255, 196, 43, 0.04), 0 0 16px rgba(255, 196, 43, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: clamp(13px, 1.25vw, 18px);
+  font-weight: 800;
+  line-height: 1.18;
+  text-align: center;
+  text-transform: uppercase;
+  white-space: pre-line;
+}
+.drip-hud-message.is-empty { color: #73745e; font-size: 11px; font-weight: 650; text-transform: none; }
+.drip-hud-image {
+  width: 100%;
+  max-height: 70px;
+  margin-top: 6px;
+  object-fit: contain;
+  border-radius: 7px;
+  background: #000;
+  image-rendering: pixelated;
+}
+
 .lane-speed-legend {
   position: absolute;
   z-index: 3;
-  right: 14px;
-  bottom: 30px;
-  width: 228px;
+  left: 50%;
+  bottom: 18px;
+  width: min(280px, calc(100vw - 32px));
+  transform: translateX(-50%);
   padding: 12px 13px 10px;
   border: 1px solid rgba(126, 164, 190, 0.28);
-  border-radius: 12px;
-  background: rgba(7, 19, 30, 0.86);
-  box-shadow: 0 12px 38px rgba(0, 0, 0, 0.3);
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(10, 26, 39, 0.94), rgba(6, 17, 27, 0.88));
+  box-shadow: var(--shadow);
   color: #dceaf3;
   font-size: 10px;
   backdrop-filter: blur(12px);
@@ -396,8 +553,9 @@ input[type="checkbox"] {
 }
 .lane-legend-labels { display: flex; justify-content: space-between; margin-top: 4px; color: #8ba2b1; }
 .lane-legend-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: #9bafbc; }
+.lane-legend-estimated { width: 16px; height: 3px; border-radius: 2px; background: #20c997; opacity: 0.82; }
 .lane-legend-empty { width: 16px; height: 3px; border-radius: 2px; background: #627587; opacity: 0.65; }
-.lane-legend-count { margin-top: 4px; color: #6f899a; }
+.lane-legend-count { margin-top: 5px; color: #91a8b6; font-variant-numeric: tabular-nums; }
 
 body.nwb-diagnostic #map::after {
   content: 'NWB diagnostics';
@@ -692,3 +850,46 @@ body.drive {
 }
 
 #hud-passed { margin-top: 4px; }
+
+@media (max-width: 720px) {
+  #layer-panel {
+    top: max(8px, env(safe-area-inset-top));
+    left: 8px;
+    min-width: 0;
+    max-width: calc(100vw - 72px);
+  }
+  #panel-body { max-height: 58vh; }
+  #status-panel { display: none; }
+  #map-controls { top: max(8px, env(safe-area-inset-top)); right: 8px; }
+  .driving-hud {
+    top: calc(max(8px, env(safe-area-inset-top)) + 52px);
+    display: flex;
+    flex-direction: column;
+    width: calc(100vw - 16px);
+    min-width: 0;
+  }
+  .driving-hud-panel { padding: 10px; }
+  .speed-hud-panel, .drip-hud-panel { flex-basis: auto; }
+  .speed-overlay-header { align-items: start; margin-bottom: 8px; }
+  .speed-overlay-road { font-size: 13px; }
+  .speed-overlay-meta { padding-top: 12px; }
+  .lane-speed-legend { bottom: max(10px, env(safe-area-inset-bottom)); }
+  .hint { bottom: 88px; max-width: calc(100vw - 24px); white-space: normal; text-align: center; }
+}
+
+@media (min-width: 721px) and (max-width: 1100px) {
+  .driving-hud {
+    top: 62px;
+    width: min(860px, calc(100vw - 32px));
+    min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

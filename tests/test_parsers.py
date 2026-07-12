@@ -12,11 +12,20 @@ SAMPLES = Path("data/samples")
 DATA = Path("data")
 
 
+def requires_sample(filename: str):
+    """Skip optional integration fixtures instead of failing a clean checkout."""
+    return pytest.mark.skipif(
+        not (SAMPLES / filename).exists(),
+        reason=f"optional parser sample {filename} not downloaded",
+    )
+
+
 # ---------------------------------------------------------------------------
 # DATEX v2
 # ---------------------------------------------------------------------------
 
 
+@requires_sample("trafficspeed.xml.gz")
 def test_parse_trafficspeed():
     from ndwinfo.parsers.datex_v2 import parse_trafficspeed
 
@@ -34,6 +43,7 @@ def test_parse_trafficspeed():
     assert len(non_null) > 0, "all values are null — check -1 sentinel handling"
 
 
+@requires_sample("traveltime.xml.gz")
 def test_parse_traveltime():
     from ndwinfo.parsers.datex_v2 import parse_traveltime
 
@@ -72,6 +82,7 @@ def test_parse_truckparking_table():
 # ---------------------------------------------------------------------------
 
 
+@requires_sample("actueel_beeld.xml.gz")
 def test_parse_situations_actueel_beeld():
     from ndwinfo.parsers.datex_v3 import parse_situations
 
@@ -85,6 +96,7 @@ def test_parse_situations_actueel_beeld():
     assert r["record_type"], "record_type required"
 
 
+@requires_sample("veiligheidsgerelateerde_berichten_srti.xml.gz")
 def test_parse_situations_srti():
     from ndwinfo.parsers.datex_v3 import parse_situations
 
@@ -97,6 +109,7 @@ def test_parse_situations_srti():
         assert r["id"]
 
 
+@requires_sample("planningsfeed_brugopeningen.xml.gz")
 def test_parse_situations_bridge_openings():
     from ndwinfo.parsers.datex_v3 import parse_situations
 
@@ -109,6 +122,7 @@ def test_parse_situations_bridge_openings():
     assert r["valid_from"] is not None, "bridge openings must have validity start"
 
 
+@requires_sample("tijdelijke_verkeersmaatregelen_afsluitingen.xml.gz")
 def test_parse_situations_closures():
     from ndwinfo.parsers.datex_v3 import parse_situations
 
@@ -120,6 +134,7 @@ def test_parse_situations_closures():
     assert r["id"]
 
 
+@requires_sample("tijdelijke_verkeersmaatregelen_maximum_snelheden.xml.gz")
 def test_parse_situations_speed_limits():
     from ndwinfo.parsers.datex_v3 import parse_situations
 
@@ -129,11 +144,14 @@ def test_parse_situations_speed_limits():
     assert len(rows) > 0
     r = rows[0]
     assert r["id"]
-    assert r["record_type"] == "SpeedManagement", f"expected SpeedManagement, got {r['record_type']}"
+    assert r["record_type"] == "SpeedManagement", (
+        f"expected SpeedManagement, got {r['record_type']}"
+    )
     with_limit = [x for x in rows if x["speed_limit_kmh"] is not None]
     assert len(with_limit) > 0, "no speed_limit_kmh values found"
 
 
+@requires_sample("dynamische_route_informatie_paneel.xml.gz")
 def test_parse_drip():
     from ndwinfo.parsers.datex_v3 import parse_drip
 
@@ -148,6 +166,7 @@ def test_parse_drip():
     assert r["geom"].startswith("POINT("), f"unexpected geom: {r['geom']}"
 
 
+@requires_sample("emissiezones.xml.gz")
 def test_parse_emission_zones():
     from ndwinfo.parsers.datex_v3 import parse_emission_zones
 
@@ -182,6 +201,7 @@ def test_parse_parking_status():
 # ---------------------------------------------------------------------------
 
 
+@requires_sample("Matrixsignaalinformatie.xml.gz")
 def test_parse_matrix_signs():
     from ndwinfo.parsers.ndw_vms import parse_matrix_signs
 

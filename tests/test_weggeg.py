@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from ndwinfo.weggeg import (
+    _estimate_lane_speed_gaps,
     attach_nwb_metadata,
     build_lane_speed_features,
     transform_lane_configuration,
@@ -60,6 +61,8 @@ def _prepared_configuration(description="2 -> 2"):
                     "nwb_road_section_id": 42,
                     "road_number": "A4",
                     "carriageway_position": "R",
+                    "carriageway_type": "HR",
+                    "form_of_way": 1,
                 }
             }
         ],
@@ -129,3 +132,70 @@ def test_multiple_observations_use_input_weighted_average():
     )
     assert features[0]["properties"]["speed_kmh"] == 50.0
     assert features[0]["properties"]["input_count"] == 4
+
+
+def test_short_gap_is_interpolated_only_within_same_route_lane():
+    def config(
+        identifier: str,
+        position: float,
+        carriageway: str = "R",
+        carriageway_type: str = "HR",
+    ):
+        return {
+            "type": "Feature",
+            "id": identifier,
+            "geometry": {"type": "MultiLineString", "coordinates": [[[4.0, 52.0], [4.01, 52.0]]]},
+            "properties": {
+                "weggeg_id": identifier,
+                "road_number": "A4",
+                "carriageway_position": carriageway,
+                "carriageway_type": carriageway_type,
+                "form_of_way": 1,
+                "lane_count": 1,
+                "route_begin_km": position,
+                "route_end_km": position,
+                "road_section_length_m": 100.0,
+                "begin_distance_m": 0.0,
+                "end_distance_m": 100.0,
+            },
+        }
+
+    configurations = [config("before", 10.0), config("gap", 11.0), config("after", 12.0)]
+    direct = {
+        ("before", 1): {
+            "speed_kmh": 60.0,
+            "flow_veh_h": 800,
+            "measured_at": "2026-07-10T10:00:00Z",
+        },
+        ("after", 1): {
+            "speed_kmh": 100.0,
+            "flow_veh_h": 1000,
+            "measured_at": "2026-07-10T10:00:30Z",
+        },
+    }
+    estimates = _estimate_lane_speed_gaps(
+        configurations,
+        direct,
+        max_interpolation_span_km=5.0,
+        max_extrapolation_distance_km=0.75,
+    )
+
+    assert estimates[("gap", 1)]["speed_kmh"] == 80.0
+    assert estimates[("gap", 1)]["flow_veh_h"] == 900
+    assert estimates[("gap", 1)]["estimation_method"] == "linear-between-current-measurements"
+
+    other_side = config("other-side", 11.0, "L")
+    assert ("other-side", 1) not in _estimate_lane_speed_gaps(
+        [config("before", 10.0), other_side, config("after", 12.0)],
+        direct,
+        max_interpolation_span_km=5.0,
+        max_extrapolation_distance_km=0.75,
+    )
+
+    parallel = config("parallel", 11.0, carriageway_type="PST")
+    assert ("parallel", 1) not in _estimate_lane_speed_gaps(
+        [config("before", 10.0), parallel, config("after", 12.0)],
+        direct,
+        max_interpolation_span_km=5.0,
+        max_extrapolation_distance_km=0.75,
+    )

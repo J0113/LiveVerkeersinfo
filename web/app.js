@@ -38,18 +38,31 @@ const LAYERS = [
     endpoint: '/nwb/lane-speeds', geomType: 'lane-network', minZoom: 13,
     legendColor: '#41d67d', promoteId: 'lane_feature_id',
     paint: {
-      offset: ['interpolate', ['linear'], ['zoom'],
-        13, ['*', ['get', 'lane_offset_index'], 2.2],
-        16, ['*', ['get', 'lane_offset_index'], 4.2],
-        19, ['*', ['get', 'lane_offset_index'], 7.0]],
+      // Approximate a 3.5 m physical lane at Dutch latitudes. Above z15 the
+      // pixel spacing doubles per zoom level, so the ribbon grows with the road
+      // instead of keeping a nearly fixed screen width.
+      offset: ['interpolate', ['exponential', 2], ['zoom'],
+        13, ['*', ['get', 'lane_offset_index'], 1.1],
+        15, ['*', ['get', 'lane_offset_index'], 1.2],
+        16, ['*', ['get', 'lane_offset_index'], 2.3],
+        17, ['*', ['get', 'lane_offset_index'], 4.7],
+        18, ['*', ['get', 'lane_offset_index'], 9.4],
+        19, ['*', ['get', 'lane_offset_index'], 18.8],
+        20, ['*', ['get', 'lane_offset_index'], 37.6]],
       glow: {
         'line-color': ['case', ['==', ['get', 'speed_kmh'], null], '#26394b', '#23d5ab'],
-        'line-width': ['interpolate', ['linear'], ['zoom'], 13, 5, 16, 9, 19, 14],
-        'line-opacity': ['case', ['==', ['get', 'speed_kmh'], null], 0.12, 0.22]
+        'line-width': ['interpolate', ['exponential', 2], ['zoom'],
+          13, 3.2, 15, 3.4, 16, 4.5, 17, 6.8, 18, 11.5, 19, 20.8, 20, 39.8],
+        'line-opacity': ['case',
+          ['==', ['get', 'speed_kmh'], null], 0.08,
+          ['==', ['get', 'speed_estimated'], true], 0.12,
+          0.18],
+        'line-blur': ['interpolate', ['linear'], ['zoom'], 13, 0.5, 18, 1.5, 20, 2.5]
       },
       casing: {
         'line-color': '#07131e',
-        'line-width': ['interpolate', ['linear'], ['zoom'], 13, 3.6, 16, 6.2, 19, 10],
+        'line-width': ['interpolate', ['exponential', 2], ['zoom'],
+          13, 2.0, 15, 2.1, 16, 3.1, 17, 5.5, 18, 10.2, 19, 19.6, 20, 38.4],
         'line-opacity': 0.92
       },
       line: {
@@ -60,14 +73,18 @@ const LAYERS = [
             85, '#7bd65c', 105, '#20c997', 130, '#33c7e8'
           ]
         ],
-        'line-width': ['interpolate', ['linear'], ['zoom'], 13, 2.1, 16, 3.8, 19, 6.5],
-        'line-opacity': ['case', ['==', ['get', 'speed_kmh'], null], 0.5, 0.98]
+        'line-width': ['interpolate', ['exponential', 2], ['zoom'],
+          13, 1.1, 15, 1.2, 16, 2.1, 17, 4.3, 18, 8.6, 19, 17.2, 20, 34.4],
+        'line-opacity': ['case',
+          ['==', ['get', 'speed_kmh'], null], 0.5,
+          ['==', ['get', 'speed_estimated'], true], 0.82,
+          0.98]
       }
     }
   },
   {
     key: 'speed', label: 'Traffic Speed', group: 'traffic',
-    endpoint: '/traffic/speed', geomType: 'speed', legendColor: '#00cc44',
+    endpoint: '/nwb/lane-speeds', geomType: 'speed', minZoom: 13, legendColor: '#00cc44',
   },
   {
     // Segment line (start→end), coloured by delay = duration_s / ref_duration_s
@@ -223,9 +240,9 @@ const GROUPS = [
   { key: 'reference',    label: 'Reference' }
 ]
 
-// The legacy site boxes remain available, but default off: showing them over
-// the road-following lane layer creates dense duplicate speed information.
-const DEFAULT_ENABLED = new Set(['nwb_roads', 'lane_speeds', 'matrix', 'drips'])
+// Traffic speed is presented in the pinned driving HUD, so it can remain on by
+// default without adding marker clutter above the road-following lane layer.
+const DEFAULT_ENABLED = new Set(['nwb_roads', 'lane_speeds', 'speed', 'drips'])
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
 let nwbTruncated = false
@@ -235,11 +252,17 @@ let nwbTruncated = false
 const enabled = new Set(DEFAULT_ENABLED)
 const controllers = {}  // key → AbortController
 let debounceTimer = null
+let liveRefreshTimer = null
+let layoutFrame = null
+let lastLiveRefresh = 0
+let responsivePanelIsMobile = false
 let activePopup = null
 let selectedFeature = null  // { source, id } currently highlighted (feature-state)
 let msiMarkers = []    // { marker, el, bearing } for MSI gantries
-let speedMarkers = []  // maplibregl.Marker instances for traffic speed sites
+let latestLaneCollection = EMPTY_FC
+let latestDripCollection = EMPTY_FC
 const nwbCache = new Map() // viewport/profile key → { expires, data }
+const loadedViewports = new Map() // layer key → buffered successful request bounds
 const NWB_BROWSER_CACHE_TTL_MS = 5 * 60_000
 let publicConfig = { nwbDiagnosticMode: false }
 
@@ -323,7 +346,9 @@ map.on('load', () => {
           id: suffix ? `${layer.key}-${suffix}` : layer.key,
           type: 'line', source: layer.key,
           paint: { ...paint, 'line-offset': layer.paint.offset },
-          layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' },
+          // Butt caps make adjacent WEGGEG sections meet without rounded
+          // bulges; round joins keep offsets smooth through bends.
+          layout: { visibility: vis, 'line-cap': 'butt', 'line-join': 'round' },
           minzoom: layer.minZoom
         })
       }
@@ -364,6 +389,8 @@ map.on('load', () => {
 
   buildLayerPanel()
   setupPanelToggles()
+  syncResponsivePanel()
+  window.addEventListener('resize', syncResponsivePanel)
   fetchPublicConfig()
   fetchAll()
   fetchFeedStatus()
@@ -394,8 +421,7 @@ map.on('load', () => {
 
   initGPS()
 
-  setInterval(fetchAll, 60_000)
-  setInterval(fetchFeedStatus, 60_000)
+  startRefreshTimers()
 })
 
 map.on('moveend', () => {
@@ -406,31 +432,109 @@ map.on('moveend', () => {
 // Re-evaluate verkeersborden hint + re-fetch on zoom change
 map.on('zoom', () => {
   updateZoomHint()
-  updateMatrixLayout()
-  updateSpeedLayout()
+  scheduleMarkerLayout()
   updateLaneLegend()
-  // If verkeersborden just crossed zoom 13, trigger a fetch
+})
+
+map.on('zoomend', () => {
+  // Fetch zoom-gated data once after the gesture, not on every animation frame.
   const layer = LAYERS.find(l => l.key === 'verkeersborden')
   if (layer && enabled.has('verkeersborden')) fetchLayer(layer)
 })
 
 // Keep roadside offsets correct while the map rotates (e.g. navigation mode).
-map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout() })
+map.on('rotate', scheduleMarkerLayout)
 
 // ─── Fetch ────────────────────────────────────────────────────────────────────
 
 function fetchAll () {
+  if (document.hidden) return
   bboxTooLarge = false
   for (const layer of LAYERS) {
     if (enabled.has(layer.key)) fetchLayer(layer)
   }
 }
 
-function fetchLayer (layer) {
+function fetchLiveLayers () {
+  if (document.hidden) return
+  lastLiveRefresh = Date.now()
+  bboxTooLarge = false
+  for (const layer of LAYERS) {
+    if (!enabled.has(layer.key) || isReferenceLayer(layer)) continue
+    fetchLayer(layer, true)
+  }
+  fetchFeedStatus()
+}
+
+function isReferenceLayer (layer) {
+  return layer.geomType === 'road-network' || layer.group === 'reference' ||
+    ['emission_zones', 'verkeersborden'].includes(layer.key)
+}
+
+function startRefreshTimers () {
+  clearInterval(liveRefreshTimer)
+  lastLiveRefresh = Date.now()
+  liveRefreshTimer = setInterval(fetchLiveLayers, 60_000)
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && Date.now() - lastLiveRefresh >= 60_000) fetchLiveLayers()
+  })
+}
+
+function syncResponsivePanel () {
+  // The centered driving HUD needs the horizontal space between the controls;
+  // collapse the large layer list on tablets as well as phones.
+  const isMobile = window.innerWidth <= 1100
+  if (isMobile === responsivePanelIsMobile) return
+  responsivePanelIsMobile = isMobile
+  const body = document.getElementById('panel-body')
+  const button = document.getElementById('panel-toggle')
+  if (!body || !button) return
+  body.classList.toggle('hidden', isMobile)
+  button.textContent = isMobile ? 'Layers ▸' : 'Layers ▾'
+}
+
+function scheduleMarkerLayout () {
+  if (layoutFrame !== null) return
+  layoutFrame = requestAnimationFrame(() => {
+    layoutFrame = null
+    updateMatrixLayout()
+  })
+}
+
+function bufferedViewportRequest (layerKey, profile, force = false) {
+  const b = map.getBounds()
+  const current = {
+    west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth()
+  }
+  const loaded = loadedViewports.get(layerKey)
+  const covered = loaded && loaded.profile === profile &&
+    current.west >= loaded.west && current.south >= loaded.south &&
+    current.east <= loaded.east && current.north <= loaded.north
+  if (covered) {
+    return { skip: !force, bbox: loaded.bbox, coverage: loaded }
+  }
+
+  // A 35% buffer on each side lets several small pans and zoom-ins reuse the
+  // same GeoJSON source. Data is replaced only after the visible map leaves it.
+  const padX = (current.east - current.west) * 0.35
+  const padY = (current.north - current.south) * 0.35
+  const coverage = {
+    profile,
+    west: current.west - padX,
+    south: current.south - padY,
+    east: current.east + padX,
+    north: current.north + padY
+  }
+  coverage.bbox = [coverage.west, coverage.south, coverage.east, coverage.north]
+    .map(v => v.toFixed(5)).join(',')
+  return { skip: false, bbox: coverage.bbox, coverage }
+}
+
+function fetchLayer (layer, force = false) {
   if (layer.geomType === 'msi') { fetchMatrixSigns(); return }
-  if (layer.geomType === 'speed') { fetchSpeedMarkers(); return }
-  if (layer.geomType === 'road-network') { fetchNwbRoads(layer); return }
-  if (layer.geomType === 'lane-network') { fetchLaneSpeeds(layer); return }
+  if (layer.geomType === 'speed') { fetchSpeedOverlay(layer, force); return }
+  if (layer.geomType === 'road-network') { fetchNwbRoads(layer, force); return }
+  if (layer.geomType === 'lane-network') { fetchLaneSpeeds(layer, force); return }
 
   if (layer.minZoom && map.getZoom() < layer.minZoom) {
     map.getSource(layer.key)?.setData(EMPTY_FC)
@@ -456,6 +560,10 @@ function fetchLayer (layer) {
     .then(data => {
       setBboxTooLargeHint(false)
       map.getSource(layer.key)?.setData(data)
+      if (layer.key === 'drips') {
+        latestDripCollection = data
+        renderDripHud(data)
+      }
       if (layer.promoteId) reapplySelection(layer.key)
     })
     .catch(e => {
@@ -465,27 +573,34 @@ function fetchLayer (layer) {
     })
 }
 
-function fetchLaneSpeeds (layer) {
+function fetchLaneSpeeds (layer, force = false) {
   if (map.getZoom() < layer.minZoom) {
     controllers[layer.key]?.abort()
     map.getSource(layer.key)?.setData(EMPTY_FC)
+    latestLaneCollection = EMPTY_FC
+    loadedViewports.delete(layer.key)
     updateLaneLegend()
     return
   }
+  const viewport = bufferedViewportRequest(layer.key, 'lane-detail', force)
+  if (viewport.skip) return
   controllers[layer.key]?.abort()
   const ctrl = new AbortController()
   controllers[layer.key] = ctrl
-  const b = map.getBounds()
-  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
-    .map(v => v.toFixed(5)).join(',')
+  const bbox = viewport.bbox
   fetch(`/api${layer.endpoint}?bbox=${bbox}&zoom=${map.getZoom().toFixed(2)}`, { signal: ctrl.signal })
     .then(r => {
       if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
       return r.json()
     })
     .then(data => {
+      latestLaneCollection = data
       map.getSource(layer.key)?.setData(data)
+      loadedViewports.set(layer.key, viewport.coverage)
       updateLaneLegend(data.metadata)
+      // The pinned HUD shares this exact segment response; refresh it only
+      // after geometry, facility type and current values are all available.
+      if (enabled.has('speed')) renderSpeedOverlay(latestLaneCollection)
     })
     .catch(e => {
       if (e.name !== 'AbortError') console.warn('[lane_speeds]', e.message)
@@ -499,7 +614,9 @@ function setupLaneSpeedPopup (layerId) {
     if (activePopup) activePopup.remove()
     const speed = p.speed_kmh == null ? 'Geen actuele meting' : `${Math.round(p.speed_kmh)} km/h`
     const flow = p.flow_veh_h == null ? '—' : `${Math.round(p.flow_veh_h)} voertuigen/uur`
-    const reliability = p.match_confidence === 'high' ? 'hoog' : p.match_confidence === 'medium' ? 'gemiddeld' : '—'
+    const reliability = p.speed_estimated === true || p.speed_estimated === 'true'
+      ? 'geschat tussen actuele meetpunten'
+      : p.match_confidence === 'high' ? 'hoog' : p.match_confidence === 'medium' ? 'gemiddeld' : '—'
     const variable = p.lane_count_variable === true || p.lane_count_variable === 'true'
     activePopup = new maplibregl.Popup({ maxWidth: '330px' })
       .setLngLat(e.lngLat)
@@ -512,6 +629,11 @@ function setupLaneSpeedPopup (layerId) {
           gemeten: p.measured_at || '—',
           meetpunten: p.input_count || p.measurement_count || '—',
           koppeling: reliability,
+          ...(p.speed_estimation_method ? {
+            schatting: p.speed_estimation_method === 'linear-between-current-measurements'
+              ? `lineair over ${p.interpolation_span_km} km`
+              : `korte uitloop · ${p.nearest_measurement_distance_m} m tot meting`
+          } : {}),
           NWB_wegvak: p.nwb_road_section_id,
           rijstroken: variable ? `${p.lane_count_start} → ${p.lane_count_end}` : p.lane_count,
           geometrie: 'schematische offset op officiële wegas'
@@ -530,30 +652,36 @@ function updateLaneLegend (metadata) {
   legend.classList.toggle('hidden', !visible)
   if (metadata) {
     const measured = metadata.measuredLanes || 0
-    legend.querySelector('.lane-legend-count').textContent = `${measured} rijstroken met actuele meting`
+    const estimated = metadata.estimatedLanes || 0
+    const total = metadata.totalLanes || 0
+    const coverage = metadata.coveragePct || 0
+    legend.querySelector('.lane-legend-count').textContent =
+      `${measured} gemeten + ${estimated} geschat van ${total} · ${coverage}% dekking`
   }
 }
 
-function fetchNwbRoads (layer) {
+function fetchNwbRoads (layer, force = false) {
   if (map.getZoom() < layer.minZoom) {
     controllers[layer.key]?.abort()
     map.getSource(layer.key)?.setData(EMPTY_FC)
+    loadedViewports.delete(layer.key)
     nwbTruncated = false
     updateZoomHint()
     return
   }
 
+  const zoom = map.getZoom()
+  const profile = zoom < 11 ? 'national' : zoom < 12 ? 'major' : 'detailed'
+  const viewport = bufferedViewportRequest(layer.key, profile, force)
+  if (viewport.skip) return
+  const bbox = viewport.bbox
   controllers[layer.key]?.abort()
   const ctrl = new AbortController()
   controllers[layer.key] = ctrl
-  const b = map.getBounds()
-  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
-    .map(v => v.toFixed(5)).join(',')
-  const zoom = map.getZoom()
-  const profile = zoom < 11 ? 'national' : zoom < 12 ? 'major' : 'detailed'
   const cacheKey = `${profile}:${bbox}`
   const cached = nwbCache.get(cacheKey)
   if (cached && cached.expires > Date.now()) {
+    loadedViewports.set(layer.key, viewport.coverage)
     renderNwbData(layer, cached.data)
     return
   }
@@ -567,6 +695,7 @@ function fetchNwbRoads (layer) {
       nwbCache.set(cacheKey, { expires: Date.now() + NWB_BROWSER_CACHE_TTL_MS, data })
       // Bound browser memory during long pan/zoom sessions.
       if (nwbCache.size > 40) nwbCache.delete(nwbCache.keys().next().value)
+      loadedViewports.set(layer.key, viewport.coverage)
       renderNwbData(layer, data)
     })
     .catch(e => {
@@ -730,120 +859,269 @@ function updateMatrixLayout () {
   }
 }
 
-// ─── Traffic speed HTML markers ───────────────────────────────────────────────
+// ─── Pinned traffic-speed HUD ────────────────────────────────────────────────
 
-function fetchSpeedMarkers () {
-  controllers['speed']?.abort()
-  const ctrl = new AbortController()
-  controllers['speed'] = ctrl
-
-  const b = map.getBounds()
-  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
-    .map(v => v.toFixed(6)).join(',')
-
-  fetch(`/api/traffic/speed?bbox=${bbox}`, { signal: ctrl.signal })
-    .then(r => {
-      if (r.status === 400) return r.json().then(body => Promise.reject(Object.assign(new Error(body.detail || 'Bad Request'), { isBboxError: /bbox area/i.test(body.detail || '') })))
-      if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
-      return r.json()
-    })
-    .then(fc => {
-      setBboxTooLargeHint(false)
-      renderSpeedMarkers(fc)
-    })
-    .catch(e => {
-      if (e.name === 'AbortError') return
-      if (e.isBboxError) { setBboxTooLargeHint(true); return }
-      console.warn('[speed]', e.message)
-    })
+function fetchSpeedOverlay (layer, force = false) {
+  if (map.getZoom() < layer.minZoom) {
+    renderSpeedOverlay(EMPTY_FC, 'Zoom verder in voor actuele rijstrooksnelheden')
+    return
+  }
+  renderSpeedOverlay(latestLaneCollection)
+  // When the map lane layer is off, the HUD still owns the shared lane request.
+  if (!enabled.has('lane_speeds')) {
+    const laneLayer = LAYERS.find(item => item.key === 'lane_speeds')
+    if (laneLayer) fetchLaneSpeeds(laneLayer, force)
+  }
 }
 
-function renderSpeedMarkers (fc) {
-  for (const m of speedMarkers) m.marker.remove()
-  speedMarkers = []
+function renderSpeedOverlay (fc, emptyMessage = 'Geen actuele rijstrookmeting in beeld') {
+  const hud = document.getElementById('driving-hud')
+  const panel = document.getElementById('traffic-speed-panel')
+  const road = document.getElementById('speed-overlay-road')
+  const meta = document.getElementById('speed-overlay-meta')
+  const lanesEl = document.getElementById('speed-overlay-lanes')
+  const empty = document.getElementById('speed-overlay-empty')
+  if (!hud || !panel || !road || !meta || !lanesEl || !empty) return
 
+  panel.classList.toggle('hidden', !enabled.has('speed'))
+  syncDrivingHudVisibility()
   if (!enabled.has('speed')) return
+  const roadContext = currentLaneRoadContext()
+  const segmentLanes = roadContext
+    ? [...roadContext.features]
+        .sort((a, b) => Number(a.properties?.lane_number) - Number(b.properties?.lane_number))
+    : []
+  const hasData = segmentLanes.some(feature => feature.properties?.speed_kmh != null)
+  if (!roadContext || !hasData) {
+    road.textContent = roadContext
+      ? formatRoadContext(roadContext)
+      : 'Geen wegsegment geselecteerd'
+    meta.textContent = ''
+    lanesEl.replaceChildren()
+    empty.textContent = roadContext ? 'Geen data beschikbaar voor dit segment' : emptyMessage
+    empty.classList.remove('hidden')
+    return
+  }
 
-  for (const f of fc.features) {
-    if (!f.geometry) continue
-    const p = f.properties
-    const lanes = p.lanes || []
-    if (!lanes.length) continue
+  const lanes = segmentLanes.map(feature => ({
+    lane: feature.properties.lane_number,
+    speed_kmh: feature.properties.speed_kmh,
+    flow_veh_h: feature.properties.flow_veh_h,
+    speed_estimated: feature.properties.speed_estimated,
+    measured_at: feature.properties.measured_at
+  }))
+  road.textContent = formatRoadContext(roadContext)
+  const timestamps = lanes.map(lane => lane.measured_at).filter(Boolean).sort()
+  const measured = timestamps.length ? new Date(timestamps[timestamps.length - 1]) : null
+  const time = measured && !Number.isNaN(measured.getTime())
+    ? measured.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : 'tijd onbekend'
+  const estimates = lanes.filter(lane => lane.speed_estimated === true).length
+  meta.textContent = estimates ? `${time} · ${estimates} geschat` : time
+  lanesEl.replaceChildren()
+  lanesEl.style.setProperty('--lane-count', Math.max(lanes.length, 1))
 
-    // Outer wrapper for maplibre positioning; inner row gets our rotate+scale.
-    const wrapper = document.createElement('div')
-    const el = document.createElement('div')
-    el.className = 'speed-site'
-    wrapper.appendChild(el)
+  for (const lane of lanes) {
+    const card = document.createElement('div')
+    card.className = 'speed-overlay-lane'
+    card.classList.toggle('is-estimated', lane.speed_estimated === true)
+    card.style.setProperty('--lane-color', speedColor(lane.speed_kmh))
+    const number = document.createElement('span')
+    number.className = 'speed-overlay-lane-number'
+    number.textContent = `Rijstrook ${lane.lane ?? '?'}`
+    const value = document.createElement('strong')
+    value.className = 'speed-overlay-value'
+    value.textContent = lane.speed_kmh == null ? '—' : `${Math.round(lane.speed_kmh)}`
+    const unit = document.createElement('span')
+    unit.className = 'speed-overlay-unit'
+    unit.textContent = 'km/h'
+    const flow = document.createElement('span')
+    flow.className = 'speed-overlay-flow'
+    flow.textContent = lane.flow_veh_h == null ? 'geen flowdata' : `${Math.round(lane.flow_veh_h)} voertuigen/u`
+    card.append(number, value, unit, flow)
+    lanesEl.appendChild(card)
+  }
+  empty.classList.add('hidden')
+}
 
-    for (const lane of lanes) {
-      const box = document.createElement('div')
-      const kmh = lane.speed_kmh
-      box.className = 'speed-lane'
-      box.style.background = speedColor(kmh)
-      box.style.color = speedTextColor(kmh)
-      box.textContent = kmh !== null ? Math.round(kmh) : '?'
-      box.title = `Lane ${lane.lane} · ${kmh !== null ? Math.round(kmh) + ' km/h' : 'no data'}${lane.flow_veh_h !== null ? ' · ' + Math.round(lane.flow_veh_h) + ' veh/h' : ''}`
-      el.appendChild(box)
-    }
+function renderDripHud (fc) {
+  const panel = document.getElementById('drip-hud-panel')
+  const road = document.getElementById('drip-hud-road')
+  const meta = document.getElementById('drip-hud-meta')
+  const message = document.getElementById('drip-hud-message')
+  const image = document.getElementById('drip-hud-image')
+  if (!panel || !road || !meta || !message || !image) return
+  panel.classList.toggle('hidden', !enabled.has('drips'))
+  syncDrivingHudVisibility()
+  if (!enabled.has('drips')) return
 
-    el.addEventListener('click', e => {
-      e.stopPropagation()
-      if (activePopup) activePopup.remove()
-      const roadLabel = p.road ? `${esc(p.road)} ${esc(p.carriageway || '')} km ${p.km ?? ''}` : esc(p.site_id)
-      const header = `<div style="font-size:11px;color:#6688aa;margin-bottom:6px">${roadLabel}</div>`
-      const meta = buildPopupHtml({
-        ...(p.road ? { road: p.road } : {}),
-        ...(p.carriageway ? { carriageway: p.carriageway } : {}),
-        ...(p.km != null ? { km: p.km } : {}),
-        ...(p.measured_at ? { measured: p.measured_at } : {}),
-        ...(p.bearing != null ? { bearing: p.bearing + '°' } : {}),
-        ...(p.side ? { side: p.side } : {}),
+  const selected = selectNearestRoadFeature(fc.features || [], false)
+  if (!selected) {
+    road.textContent = 'Geen DRIP/VMS in beeld'
+    meta.textContent = ''
+    message.textContent = 'Geen actueel bericht beschikbaar'
+    message.classList.add('is-empty')
+    image.classList.add('hidden')
+    image.removeAttribute('src')
+    return
+  }
+  const p = selected.feature.properties || {}
+  road.textContent = p.description || p.controller_id || 'Dynamisch informatiepaneel'
+  meta.textContent = `${Math.round(selected.distance)} m`
+  const displayText = String(p.display_text || '').trim().replace(/\\n/g, '\n').replace(/\s*\|\s*/g, '\n')
+  message.textContent = displayText || 'Paneel actief · geen tekstbericht'
+  message.classList.toggle('is-empty', !displayText)
+  const format = ['png', 'jpeg', 'jpg', 'gif', 'webp'].includes(String(p.image_format).toLowerCase())
+    ? String(p.image_format).toLowerCase()
+    : 'png'
+  if (p.image_b64) {
+    image.src = `data:image/${format};base64,${p.image_b64}`
+    image.classList.remove('hidden')
+  } else {
+    image.classList.add('hidden')
+    image.removeAttribute('src')
+  }
+}
+
+function syncDrivingHudVisibility () {
+  const hud = document.getElementById('driving-hud')
+  if (!hud) return
+  hud.classList.toggle('hidden', !enabled.has('speed') && !enabled.has('drips'))
+}
+
+function currentLaneRoadContext () {
+  const center = userCoords && gpsState !== GPS_STATES.OFF
+    ? userCoords
+    : [map.getCenter().lng, map.getCenter().lat]
+  return roadContextAtCoordinates(center)
+}
+
+function roadContextAtCoordinates (center) {
+  const contexts = new Map()
+  for (const feature of latestLaneCollection.features || []) {
+    const p = feature.properties || {}
+    const road = normalizeRoadId(p.road_number)
+    const carriageway = normalizeCarriageway(p.carriageway_position)
+    const weggegId = p.weggeg_id
+    const segmentId = Number(p.nwb_road_section_id)
+    const carriagewayType = normalizeCarriageway(p.carriageway_type)
+    const formOfWay = Number(p.form_of_way)
+    if (!road || !carriageway || !weggegId || !Number.isFinite(segmentId) || !carriagewayType) continue
+    const distance = distanceToRoadGeometryMeters(center, feature.geometry)
+    const hasData = p.speed_kmh != null
+    const key = String(weggegId)
+    const current = contexts.get(key)
+    if (!current) {
+      contexts.set(key, {
+        road, carriageway, weggegId, segmentId, carriagewayType,
+        formOfWay: Number.isFinite(formOfWay) ? formOfWay : null,
+        distance,
+        hasData,
+        features: [feature]
       })
-      const lanesHtml = lanes.map(l =>
-        `<b style="color:#6688aa;font-size:11px">Lane ${l.lane ?? '?'}</b>` +
-        buildPopupHtml({
-          speed_kmh: l.speed_kmh !== null ? Math.round(l.speed_kmh) + ' km/h' : '—',
-          flow_veh_h: l.flow_veh_h !== null ? Math.round(l.flow_veh_h) + ' veh/h' : '—',
-        })
-      ).join('<hr style="border-color:#2a2a40;margin:5px 0">')
-      activePopup = new maplibregl.Popup({ maxWidth: '300px', offset: [0, -8] })
-        .setLngLat(f.geometry.coordinates)
-        .setHTML(header + meta + lanesHtml)
-        .addTo(map)
-    })
-
-    const marker = new maplibregl.Marker({ element: wrapper, anchor: 'center' })
-      .setLngLat(f.geometry.coordinates)
-      .addTo(map)
-    speedMarkers.push({ marker, el, bearing: p.bearing })
-  }
-
-  updateSpeedLayout()
-}
-
-// Rotate speed-site rows to the road bearing and offset them roadside, scaled by
-// zoom — same treatment as MSI gantries. Recomputed on zoom/rotate, no refetch.
-function updateSpeedLayout () {
-  if (!speedMarkers.length) return
-  const z = map.getZoom()
-  const scale = Math.max(0.5, Math.min(1, 0.5 + (z - 11) * 0.125))
-  const mapBearing = map.getBearing()
-
-  for (const m of speedMarkers) {
-    if (m.bearing === null || m.bearing === undefined) {
-      m.el.style.transform = `scale(${scale})`
-      m.marker.setOffset([0, 0])
-      continue
+    } else {
+      current.distance = Math.min(current.distance, distance)
+      current.hasData ||= hasData
+      current.features.push(feature)
     }
-    m.el.style.transform = `rotate(${m.bearing - mapBearing}deg) scale(${scale})`
-    const screenAngle = ((m.bearing + 90 - mapBearing) * Math.PI) / 180
-    const dist = (m.el.offsetWidth * scale) / 2 + 3
-    m.marker.setOffset([Math.sin(screenAngle) * dist, -Math.cos(screenAngle) * dist])
   }
+  const nearest = [...contexts.values()].sort((a, b) =>
+    (a.distance - b.distance) || (Number(b.hasData) - Number(a.hasData)))
+  if (!nearest.length || nearest[0].distance > 60) return null
+  // Adjacent WEGGEG intervals can share an endpoint. That tie is safe within
+  // one NWB facility; a tie between different facilities remains ambiguous.
+  if (
+    nearest[1] && nearest[1].distance - nearest[0].distance < 1 &&
+    (nearest[1].segmentId !== nearest[0].segmentId ||
+      nearest[1].carriagewayType !== nearest[0].carriagewayType)
+  ) return null
+  const { distance, hasData, ...context } = nearest[0]
+  return context
 }
 
-// speedColor / speedTextColor moved to lib.js (shared with drive.js).
+function formatRoadContext (context) {
+  return `${context.road} · rijbaan ${context.carriageway} · ${carriagewayTypeLabel(context.carriagewayType)}`
+}
+
+function carriagewayTypeLabel (value) {
+  return {
+    HR: 'hoofdrijbaan',
+    PST: 'parallelbaan',
+    PKB: 'parallelbaan',
+    OPR: 'oprit',
+    AFR: 'afrit',
+    VBR: 'verbindingsbaan',
+    VBW: 'verbindingsweg',
+    RB: 'rotondebaan',
+    FP: 'fietspad'
+  }[value] || `baantype ${value}`
+}
+
+function distanceToRoadGeometryMeters (point, geometry) {
+  const lines = geometry?.type === 'MultiLineString'
+    ? geometry.coordinates
+    : geometry?.type === 'LineString' ? [geometry.coordinates] : []
+  const cosLatitude = Math.cos(point[1] * Math.PI / 180)
+  let minimum = Infinity
+  for (const line of lines) {
+    for (let i = 1; i < line.length; i++) {
+      const start = {
+        x: (line[i - 1][0] - point[0]) * 111320 * cosLatitude,
+        y: (line[i - 1][1] - point[1]) * 110540
+      }
+      const end = {
+        x: (line[i][0] - point[0]) * 111320 * cosLatitude,
+        y: (line[i][1] - point[1]) * 110540
+      }
+      minimum = Math.min(minimum, distanceFromOriginToSegment(start, end))
+    }
+  }
+  return minimum
+}
+
+function distanceFromOriginToSegment (start, end) {
+  const dx = end.x - start.x
+  const dy = end.y - start.y
+  const lengthSquared = dx * dx + dy * dy
+  if (lengthSquared === 0) return Math.hypot(start.x, start.y)
+  const ratio = Math.min(Math.max((-(start.x * dx + start.y * dy)) / lengthSquared, 0), 1)
+  return Math.hypot(start.x + ratio * dx, start.y + ratio * dy)
+}
+
+function normalizeRoadId (value) {
+  if (value === null || value === undefined) return null
+  let normalized = String(value).trim().toUpperCase().replace(/\s+/g, '')
+  if (/^RW\d+$/.test(normalized)) normalized = `A${Number(normalized.slice(2))}`
+  if (/^\d+$/.test(normalized)) normalized = String(Number(normalized))
+  return normalized || null
+}
+
+function normalizeCarriageway (value) {
+  if (value === null || value === undefined) return null
+  const normalized = String(value).trim().toUpperCase()
+  return normalized || null
+}
+
+function selectNearestRoadFeature (features, requireLanes) {
+  const center = userCoords && gpsState !== GPS_STATES.OFF
+    ? userCoords
+    : [map.getCenter().lng, map.getCenter().lat]
+  let best = null
+  for (const feature of features) {
+    if (feature.geometry?.type !== 'Point') continue
+    if (requireLanes && !(feature.properties?.lanes || []).length) continue
+    const distance = calculateDistance(center, feature.geometry.coordinates)
+    const bearing = feature.properties.bearing ?? feature.properties.openlr_bearing
+    let directionPenalty = 0
+    if (userHeading !== null && bearing !== null && bearing !== undefined) {
+      const difference = Math.abs(((Number(bearing) - userHeading + 540) % 360) - 180)
+      directionPenalty = difference > 90 ? 5000 : difference * 2
+    }
+    const score = distance + directionPenalty
+    if (!best || score < best.score) best = { feature, distance, score }
+  }
+  return best
+}
 
 function fetchFeedStatus () {
   fetch('/api/feeds')
@@ -957,7 +1235,7 @@ function makeGroupHeader (group, groupLayers) {
       if (cb.checked) {
         enabled.add(layer.key)
         setLayerVisibility(layer, true)
-        fetchLayer(layer)
+        fetchLayer(layer, true)
         if (childCb) childCb.checked = true
       } else {
         enabled.delete(layer.key)
@@ -988,7 +1266,7 @@ function makeLayerRow (layer, groupLayers, indented) {
     if (cb.checked) {
       enabled.add(layer.key)
       setLayerVisibility(layer, true)
-      fetchLayer(layer)
+      fetchLayer(layer, true)
     } else {
       enabled.delete(layer.key)
       setLayerVisibility(layer, false)
@@ -1034,10 +1312,6 @@ function setLayerVisibility (layer, visible) {
     if (!visible) { for (const m of msiMarkers) m.marker.remove(); msiMarkers = [] }
     return
   }
-  if (layer.geomType === 'speed') {
-    if (!visible) { for (const m of speedMarkers) m.marker.remove(); speedMarkers = [] }
-    return
-  }
   const vis = visible ? 'visible' : 'none'
   if (layer.geomType === 'road-network') {
     if (map.getLayer(`${layer.key}-casing`)) map.setLayoutProperty(`${layer.key}-casing`, 'visibility', vis)
@@ -1050,6 +1324,18 @@ function setLayerVisibility (layer, visible) {
     }
     updateLaneLegend()
     return
+  }
+  if (layer.geomType === 'speed') {
+    document.getElementById('traffic-speed-panel')?.classList.toggle('hidden', !visible)
+    if (visible) renderSpeedOverlay(latestLaneCollection)
+    syncDrivingHudVisibility()
+    return
+  }
+  if (layer.key === 'drips') {
+    document.getElementById('drip-hud-panel')?.classList.toggle('hidden', !visible)
+    if (visible) renderDripHud(latestDripCollection)
+    syncDrivingHudVisibility()
+    // Continue so the map point layer also follows the same toggle.
   }
   if (layer.geomType === 'line') {
     if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
@@ -1288,6 +1574,8 @@ function onGeolocationUpdate(position) {
   updateUserMarker()
   updateAccuracyCircle()
   updateCameraToUser()
+  if (enabled.has('speed')) renderSpeedOverlay(latestLaneCollection)
+  if (enabled.has('drips')) renderDripHud(latestDripCollection)
 }
 
 function onGeolocationError(err) {

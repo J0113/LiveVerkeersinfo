@@ -109,6 +109,26 @@ counts and are never presented as surveyed lane geometry. NDW lane 1 is shown
 nearest the median (far left in the travel direction), following the official
 [NDW lane numbering](https://docs.ndw.nu/locatiereferentie/locatiereferentie-aanvullend/).
 
+The visual offsets approximate a 3.5 metre lane at Dutch latitudes. From zoom
+15 upward, centre spacing and lane width grow approximately twofold per zoom
+level, matching Web Mercator ground resolution. Casing, colour and glow use the
+same curve. Butt caps remove rounded bulges between adjacent WEGGEG sections,
+while round joins keep bends continuous. The result stays centred on the
+official section line, but remains a schematic rendering rather than surveyed
+lane geometry.
+
+Short visual gaps may be filled with an explicitly marked estimate. Linear
+interpolation is allowed only between current measurements on the same road,
+carriageway, NWB carriageway type, form-of-way and numbered lane, with a maximum
+5 km anchor span. A 2.5 km server-side context around each viewport supplies
+nearby anchors, after which the response is clipped back to the requested area.
+This prevents estimates from crossing between a mainline,
+parallel lane, ramp, exit or connector. At viewport
+edges, a measured value may extend at most 750 m. Estimated sections have lower
+opacity, remain distinguishable in the legend and popup, and never count as a
+direct measurement. Missing route kilometrage, opposite carriageways and longer
+gaps remain grey.
+
 Current NDW measurements are attached conservatively. A candidate must have
 the same normalized road number and compatible carriageway, lie within 45 m,
 and (when a bearing is available) differ by at most 50 degrees from the road

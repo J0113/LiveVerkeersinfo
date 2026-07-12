@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
+from ndwinfo.api.deps import BBox
+from ndwinfo.api.routers import nwb as nwb_router
 from ndwinfo.nwb import (
     NwbDetailProfile,
     TtlLruCache,
@@ -59,6 +62,16 @@ def test_detail_profiles_limit_server_side_scope():
     assert detail_profile(11).manager_types == ("R", "P")
     assert detail_profile(12).manager_types == (None,)
     assert detail_profile(12, configured_max=77).max_features == 77
+
+
+def test_lane_matching_context_expands_around_viewport():
+    viewport = BBox(4.68, 52.25, 4.69, 52.26)
+    expanded = nwb_router._expanded_lane_bbox(viewport, 5.0)
+
+    assert expanded.min_lon < viewport.min_lon
+    assert expanded.min_lat < viewport.min_lat
+    assert expanded.max_lon > viewport.max_lon
+    assert expanded.max_lat > viewport.max_lat
 
 
 def test_build_query_params_uses_crs84_bbox_and_manager_filter():
@@ -185,3 +198,30 @@ def test_ttl_lru_cache_evicts_oldest_entry():
     assert cache.get("two") is None
     assert cache.get("one") == "1"
     assert cache.get("three") == "3"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_road_cache_miss_is_coalesced(monkeypatch):
+    calls = 0
+
+    async def fake_fetch(client, url, bbox, profile):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        return nwb_router.NwbFetchResult(
+            feature_collection={"type": "FeatureCollection", "features": []},
+            truncated=False,
+            invalid_features=0,
+        )
+
+    monkeypatch.setattr(nwb_router, "fetch_road_segments", fake_fetch)
+    profile = NwbDetailProfile("single-flight-test", 12, (None,), 10)
+    bbox = (4.12345, 52.12345, 4.12445, 52.12445)
+    async with httpx.AsyncClient() as client:
+        results = await asyncio.gather(
+            nwb_router._cached_roads(client, bbox, profile),
+            nwb_router._cached_roads(client, bbox, profile),
+        )
+
+    assert calls == 1
+    assert sorted(status for _, status in results) == ["HIT", "MISS"]

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
@@ -53,12 +54,14 @@ async def track_api_activity(request: Request, call_next):
             loop.run_in_executor(None, _write_activity)
     return response
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
 app.include_router(traffic.router, prefix="/api")
 app.include_router(situations.router, prefix="/api")

@@ -75,6 +75,21 @@ payloadPublication (MeasuredDataPublication)
 - Each site emits several indexed values (per lane × length class × flow/speed).
 - **Ingest tip**: stream-parse (SAX/iterparse); the decompressed doc is large.
 
+### Map driving HUD
+
+The `Traffic Speed` layer is rendered as a pinned, glanceable HUD instead of
+map markers. It reads directly from the same matched WEGGEG segment as the
+road-following per-lane layer, selected at the GPS position (or map centre), and
+keeps the official NDW lane numbers attached to their speed and flow values.
+The selected WEGGEG id, NWB road-section id and carriageway type therefore match
+the map geometry by construction. This
+separates `HR` main carriageways from `PST` parallel carriageways, `OPR` ramps,
+`AFR` exits and `VBR`/`VBW` connector roads, even when all carry the same A-road
+number and L/R direction. There is deliberately no fallback to an adjacent or
+opposite road. Ambiguous or missing context is shown as unavailable data.
+The adjacent DRIP/VMS panel uses the same selection rule and displays the
+nearest message without changing the road-following lane visualization.
+
 ### Postgres model
 `traffic_measurement` (site_id, index, measured_at, value_type, value) — append
 per cycle or upsert latest; partition/retain as needed.
