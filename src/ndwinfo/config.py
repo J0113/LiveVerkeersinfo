@@ -19,28 +19,12 @@ class Settings(BaseSettings):
     db_pool_recycle_s: int = 1800
     # comma-separated names to skip, e.g. "verkeersborden_csv,msi_shapefiles"
     disabled_feeds: str = ""
-    nwb_pdok_url: str = (
-        "https://api.pdok.nl/rws/nationaal-wegenbestand-wegen/ogc/v1/collections/wegvakken/items"
+    nwb_wegvakken_url: str = (
+        "https://downloads.rijkswaterstaatdata.nl/nwb-wegen/geogegevens/"
+        "geopackage/NWB-dagelijks/Wegvakken/Wegvakken.gpkg"
     )
-    nwb_request_timeout_s: float = 20.0
-    nwb_cache_ttl_s: int = 3600
-    nwb_cache_max_entries: int = 128
-    nwb_max_features: int = 5000
+    nwb_max_features: int = 5000  # per-viewport row cap for /api/nwb/roads
     nwb_diagnostic_mode: bool = False
-    weggeg_pdok_url: str = (
-        "https://api.pdok.nl/rws/weggegevens/ogc/v1/collections/wegvak_rijstroken/items"
-    )
-    weggeg_cache_ttl_s: int = 86400
-    weggeg_cache_max_entries: int = 128
-    weggeg_max_features: int = 5000
-    lane_speed_min_zoom: int = 13
-    lane_match_max_distance_m: float = 45.0
-    lane_match_max_heading_difference: float = 50.0
-    lane_speed_max_age_s: int = 600
-    lane_speed_max_interpolation_span_km: float = 5.0
-    lane_speed_max_extrapolation_distance_km: float = 0.75
-    lane_speed_context_radius_km: float = 2.5
-    lane_response_cache_ttl_s: int = 10
 
 
 settings = Settings()

@@ -29,6 +29,7 @@ services:
       DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
       NDW_BASE_URL: https://opendata.ndw.nu
       DATA_DIR: /app/data
+      NWB_WEGVAKKEN_URL: ${NWB_WEGVAKKEN_URL:-https://downloads.rijkswaterstaatdata.nl/nwb-wegen/geogegevens/geopackage/NWB-dagelijks/Wegvakken/Wegvakken.gpkg}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -42,20 +43,8 @@ services:
       DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
       NDW_BASE_URL: https://opendata.ndw.nu
       DATA_DIR: /app/data
-      NWB_PDOK_URL: ${NWB_PDOK_URL:-https://api.pdok.nl/rws/nationaal-wegenbestand-wegen/ogc/v1/collections/wegvakken/items}
-      NWB_REQUEST_TIMEOUT_S: ${NWB_REQUEST_TIMEOUT_S:-20}
-      NWB_CACHE_TTL_S: ${NWB_CACHE_TTL_S:-3600}
-      NWB_CACHE_MAX_ENTRIES: ${NWB_CACHE_MAX_ENTRIES:-128}
       NWB_MAX_FEATURES: ${NWB_MAX_FEATURES:-5000}
       NWB_DIAGNOSTIC_MODE: ${NWB_DIAGNOSTIC_MODE:-false}
-      WEGGEG_PDOK_URL: ${WEGGEG_PDOK_URL:-https://api.pdok.nl/rws/weggegevens/ogc/v1/collections/wegvak_rijstroken/items}
-      WEGGEG_CACHE_TTL_S: ${WEGGEG_CACHE_TTL_S:-86400}
-      WEGGEG_CACHE_MAX_ENTRIES: ${WEGGEG_CACHE_MAX_ENTRIES:-128}
-      WEGGEG_MAX_FEATURES: ${WEGGEG_MAX_FEATURES:-5000}
-      LANE_SPEED_MIN_ZOOM: ${LANE_SPEED_MIN_ZOOM:-13}
-      LANE_MATCH_MAX_DISTANCE_M: ${LANE_MATCH_MAX_DISTANCE_M:-45}
-      LANE_MATCH_MAX_HEADING_DIFFERENCE: ${LANE_MATCH_MAX_HEADING_DIFFERENCE:-50}
-      LANE_SPEED_MAX_AGE_S: ${LANE_SPEED_MAX_AGE_S:-600}
     ports:
       - "3500:3500"
     depends_on:

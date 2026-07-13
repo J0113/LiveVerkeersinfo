@@ -21,6 +21,7 @@ from ndwinfo.api.routers import (
     truckparking,
     verkeersborden,
     vild,
+    weggeg,
 )
 from ndwinfo.config import settings
 from ndwinfo.db import SessionLocal
@@ -73,6 +74,7 @@ app.include_router(emission.router, prefix="/api")
 app.include_router(feeds.router, prefix="/api")
 app.include_router(vild.router, prefix="/api")
 app.include_router(nwb.router, prefix="/api")
+app.include_router(weggeg.router, prefix="/api")
 
 
 @app.get("/api/config", tags=["configuration"])

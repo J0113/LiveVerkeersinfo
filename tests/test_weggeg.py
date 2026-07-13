@@ -1,201 +1,39 @@
-"""Focused tests for official lane configuration and NDW matching."""
+from shapely import from_wkt
+from shapely.geometry import LineString
 
-from __future__ import annotations
-
-from datetime import datetime, timezone
-
-from ndwinfo.weggeg import (
-    _estimate_lane_speed_gaps,
-    attach_nwb_metadata,
-    build_lane_speed_features,
-    transform_lane_configuration,
-)
+from ndwinfo.parsers.weggeg import lane_count, make_lane_rows
 
 
-def _configuration(description: str = "2 -> 2"):
-    return {
-        "type": "Feature",
-        "id": "weggeg-one",
-        "geometry": {
-            "type": "MultiLineString",
-            "coordinates": [[[4.0000, 52.0000], [4.0100, 52.0000]]],
-        },
-        "properties": {
-            "wvk_id": 42,
-            "omschr": description,
-            "izi_side": "R",
-            "kantcode": "R",
-            "begafstand": 0,
-            "endafstand": 700,
-            "wvk_begdat": "2026-01-01T00:00:00Z",
-        },
+def test_lane_count_uses_larger_end_of_transition():
+    assert lane_count({"OMSCHR": "2 -> 3"}) == 3
+    assert lane_count({"OMSCHR": None}) == 1
+
+
+def test_make_lane_rows_creates_centered_lane_features():
+    attrs = {
+        "FK_VELD4": "KLK123",
+        "OMSCHR": "2 -> 3",
+        "WEGNUMMER": "001",
+        "KANTCODE": "H",
+        "IZI_SIDE": "R",
     }
+    rows = make_lane_rows(attrs, LineString([(155000, 463000), (155100, 463000)]))
+
+    assert [row["id"] for row in rows] == ["KLK123:1", "KLK123:2", "KLK123:3"]
+    assert all(row["lane_count"] == 3 for row in rows)
+    latitudes = [from_wkt(row["geom"]).coords[0][1] for row in rows]
+    assert latitudes[0] > latitudes[1] > latitudes[2]
 
 
-def _observation(*, road="A4", carriageway="R", bearing=90, measured_at="2026-07-10T10:00:00Z"):
-    return {
-        "type": "Feature",
-        "geometry": {"type": "Point", "coordinates": [4.005, 52.0001]},
-        "properties": {
-            "site_id": "NDW_MONICA_1",
-            "road": road,
-            "carriageway": carriageway,
-            "bearing": bearing,
-            "measured_at": measured_at,
-            "lanes": [
-                {"lane": 1, "speed_kmh": 42.0, "flow_veh_h": 900, "n_inputs": 3},
-                {"lane": 2, "speed_kmh": 86.0, "flow_veh_h": 700, "n_inputs": 2},
-            ],
-        },
+def test_lane_one_stays_left_when_traffic_opposes_digitisation():
+    attrs = {
+        "FK_VELD4": "KLK456",
+        "OMSCHR": "3 -> 3",
+        "WEGNUMMER": "001",
+        "KANTCODE": "T",
+        "IZI_SIDE": "L",
     }
+    rows = make_lane_rows(attrs, LineString([(155000, 463000), (155100, 463000)]))
 
-
-def _prepared_configuration(description="2 -> 2"):
-    config = transform_lane_configuration(_configuration(description))
-    assert config is not None
-    attach_nwb_metadata(
-        [config],
-        [
-            {
-                "properties": {
-                    "nwb_road_section_id": 42,
-                    "road_number": "A4",
-                    "carriageway_position": "R",
-                    "carriageway_type": "HR",
-                    "form_of_way": 1,
-                }
-            }
-        ],
-    )
-    return config
-
-
-def test_lane_configuration_parses_variable_lane_count_without_inventing_geometry():
-    config = _prepared_configuration("3 -> 4")
-    assert config["properties"]["lane_count_start"] == 3
-    assert config["properties"]["lane_count_end"] == 4
-    assert config["properties"]["lane_count"] == 4
-    assert config["properties"]["lane_count_variable"] is True
-    assert config["geometry"] == _configuration("3 -> 4")["geometry"]
-
-
-def test_invalid_lane_description_is_rejected():
-    assert transform_lane_configuration(_configuration("unknown")) is None
-
-
-def test_matching_expands_lanes_and_preserves_lane_one_as_leftmost():
-    features = build_lane_speed_features(
-        [_prepared_configuration()],
-        [_observation()],
-        now=datetime(2026, 7, 10, 10, 1, tzinfo=timezone.utc),
-    )
-    assert [f["properties"]["speed_kmh"] for f in features] == [42.0, 86.0]
-    assert [f["properties"]["lane_offset_index"] for f in features] == [-0.5, 0.5]
-    assert all(f["properties"]["geometry_kind"] == "schematic-lane-offset" for f in features)
-    assert features[0]["properties"]["match_confidence"] == "high"
-
-
-def test_wrong_road_carriageway_or_heading_is_not_matched():
-    config = _prepared_configuration()
-    observations = [
-        _observation(road="A5"),
-        _observation(carriageway="L"),
-        _observation(bearing=270),
-    ]
-    features = build_lane_speed_features(
-        [config],
-        observations,
-        now=datetime(2026, 7, 10, 10, 1, tzinfo=timezone.utc),
-    )
-    assert all(f["properties"]["speed_kmh"] is None for f in features)
-
-
-def test_stale_measurement_is_not_coloured():
-    features = build_lane_speed_features(
-        [_prepared_configuration()],
-        [_observation(measured_at="2026-07-10T09:00:00Z")],
-        max_age_s=600,
-        now=datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc),
-    )
-    assert all(f["properties"]["speed_kmh"] is None for f in features)
-
-
-def test_multiple_observations_use_input_weighted_average():
-    first = _observation()
-    second = _observation()
-    first["properties"]["lanes"] = [{"lane": 1, "speed_kmh": 40, "n_inputs": 3}]
-    second["properties"]["lanes"] = [{"lane": 1, "speed_kmh": 80, "n_inputs": 1}]
-    features = build_lane_speed_features(
-        [_prepared_configuration()],
-        [first, second],
-        now=datetime(2026, 7, 10, 10, 1, tzinfo=timezone.utc),
-    )
-    assert features[0]["properties"]["speed_kmh"] == 50.0
-    assert features[0]["properties"]["input_count"] == 4
-
-
-def test_short_gap_is_interpolated_only_within_same_route_lane():
-    def config(
-        identifier: str,
-        position: float,
-        carriageway: str = "R",
-        carriageway_type: str = "HR",
-    ):
-        return {
-            "type": "Feature",
-            "id": identifier,
-            "geometry": {"type": "MultiLineString", "coordinates": [[[4.0, 52.0], [4.01, 52.0]]]},
-            "properties": {
-                "weggeg_id": identifier,
-                "road_number": "A4",
-                "carriageway_position": carriageway,
-                "carriageway_type": carriageway_type,
-                "form_of_way": 1,
-                "lane_count": 1,
-                "route_begin_km": position,
-                "route_end_km": position,
-                "road_section_length_m": 100.0,
-                "begin_distance_m": 0.0,
-                "end_distance_m": 100.0,
-            },
-        }
-
-    configurations = [config("before", 10.0), config("gap", 11.0), config("after", 12.0)]
-    direct = {
-        ("before", 1): {
-            "speed_kmh": 60.0,
-            "flow_veh_h": 800,
-            "measured_at": "2026-07-10T10:00:00Z",
-        },
-        ("after", 1): {
-            "speed_kmh": 100.0,
-            "flow_veh_h": 1000,
-            "measured_at": "2026-07-10T10:00:30Z",
-        },
-    }
-    estimates = _estimate_lane_speed_gaps(
-        configurations,
-        direct,
-        max_interpolation_span_km=5.0,
-        max_extrapolation_distance_km=0.75,
-    )
-
-    assert estimates[("gap", 1)]["speed_kmh"] == 80.0
-    assert estimates[("gap", 1)]["flow_veh_h"] == 900
-    assert estimates[("gap", 1)]["estimation_method"] == "linear-between-current-measurements"
-
-    other_side = config("other-side", 11.0, "L")
-    assert ("other-side", 1) not in _estimate_lane_speed_gaps(
-        [config("before", 10.0), other_side, config("after", 12.0)],
-        direct,
-        max_interpolation_span_km=5.0,
-        max_extrapolation_distance_km=0.75,
-    )
-
-    parallel = config("parallel", 11.0, carriageway_type="PST")
-    assert ("parallel", 1) not in _estimate_lane_speed_gaps(
-        [config("before", 10.0), parallel, config("after", 12.0)],
-        direct,
-        max_interpolation_span_km=5.0,
-        max_extrapolation_distance_km=0.75,
-    )
+    latitudes = [from_wkt(row["geom"]).coords[0][1] for row in rows]
+    assert latitudes[0] < latitudes[1] < latitudes[2]

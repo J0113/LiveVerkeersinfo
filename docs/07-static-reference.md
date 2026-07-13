@@ -49,3 +49,19 @@ Technisch Handboek VILD 6 20191101.pdf  — technical handbook
 - **Load**: usually only needed if you must resolve VILD location codes to
   geometry. Load `WGS84/vild_*.shp` into PostGIS if so. Read the PDFs/handbook
   for the code semantics.
+
+---
+
+## WEGGEG Rijstroken — national road lane reference
+
+- **Source**: [Rijkswaterstaat WEGGEG downloads](https://downloads.rijkswaterstaatdata.nl/weggeg/geogegevens/shapefile/weggeg_kenmerkniveau/).
+- **Format**: monthly, versioned ZIP package; `Rijstroken/rijstroken.shp` is
+  EPSG:28992 (RD). The poller resolves the newest `DD-MM-YYYY.zip` automatically.
+- **Content**: road-section centreline, road number (`WEGNUMMER`), direction
+  attributes, WEGGEG section key (`FK_VELD4`), and lane transition (`OMSCHR`,
+  e.g. `2 -> 3`).
+- **Storage**: `weggeg_lane` expands each section into one 3.5m-offset lane
+  centreline per lane, in EPSG:4326. IDs are `<FK_VELD4>:<lane>`; retain
+  `source_id`, `lane`, and `lane_count` for a later live-speed matcher.
+- **API/UI**: `GET /api/weggeg/lanes?bbox=…`; the **WEGGEG Lanes** reference
+  layer appears from zoom 14 to keep national-level views responsive.

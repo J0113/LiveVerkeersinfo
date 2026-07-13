@@ -1,102 +1,112 @@
-"""Focused tests for NWB request construction and GeoJSON normalization."""
+"""Unit tests for NWB Wegvakken GeoPackage parsing and matching helpers."""
 
 from __future__ import annotations
 
-import asyncio
-import json
-from urllib.parse import parse_qs
+import math
 
-import httpx
-import pytest
+import pandas as pd
+from shapely.geometry import LineString
 
-from ndwinfo.api.deps import BBox
-from ndwinfo.api.routers import nwb as nwb_router
-from ndwinfo.nwb import (
-    NwbDetailProfile,
-    TtlLruCache,
-    build_query_params,
-    detail_profile,
-    fetch_road_segments,
-    matching_keys,
-    transform_feature,
-)
+from ndwinfo.nwb import TrafficMatchObservation, matching_keys
+from ndwinfo.parsers.nwb_gpkg import _optional_float, _optional_int, _optional_str, _transform_row
+
+LINE = LineString([(4.88, 52.36), (4.89, 52.37)])
 
 
-def _raw_feature(feature_id: str = "stable-uuid", **overrides):
+def _props(**overrides):
     props = {
-        "wvk_id": 123456789,
-        "jte_id_beg": 10,
-        "jte_id_end": 11,
-        "wegnummer": "A10",
-        "stt_naam": "Ringweg",
-        "wegbehsrt": "R",
-        "wegbehnaam": "Rijkswaterstaat",
-        "rijrichtng": "H",
-        "admrichtng": "O",
-        "rpe_code": "R",
-        "pos_tv_wol": "R",
-        "bst_code": "HR",
-        "frc": "1",
-        "fow": "3",
-        "openlr": "encoded-openlr",
-        "beginkm": 3.2,
-        "eindkm": 3.5,
-        "st_lengthshape": 301.5,
-        "wvk_begdat": "2026-07-01T00:00:00Z",
+        "WVK_ID": 123456789,
+        "JTE_ID_BEG": 10,
+        "JTE_ID_END": 11,
+        "WEGBEHSRT": "R",
+        "WEGBEHNAAM": "Rijkswaterstaat",
+        "STT_NAAM": "Ringweg",
+        "RIJRICHTNG": "H",
+        "ADMRICHTNG": "O",
+        "RPE_CODE": "R",
+        "POS_TV_WOL": "R",
+        "BST_CODE": "HR",
+        "FRC": "1",
+        "FOW": 3,
+        "OPENLR": "encoded-openlr",
+        "BEGINKM": 3.2,
+        "EINDKM": 3.5,
+        "LENGTE_WVK": 301,
+        "BEGDAT_WRK": pd.Timestamp("2026-07-01"),
+        "STATUS": "Opengesteld",
+        "WEGNR_HMP": "A10",
+        "WEGNR_FRML": None,
+        "ROUTELTR": None,
+        "ROUTENR": None,
     }
     props.update(overrides)
-    return {
-        "type": "Feature",
-        "id": feature_id,
-        "geometry": {
-            "type": "MultiLineString",
-            "coordinates": [[[4.88, 52.36], [4.89, 52.37]]],
-        },
-        "properties": props,
+    return props
+
+
+def test_transform_row_maps_gpkg_fields_and_classifies_motorway():
+    row = _transform_row(_props(), LINE)
+    assert row is not None
+    assert row["wvk_id"] == 123456789
+    assert row["begin_junction_id"] == 10
+    assert row["end_junction_id"] == 11
+    assert row["road_manager_type"] == "R"
+    assert row["carriageway_position"] == "R"
+    assert row["carriageway_type"] == "HR"
+    assert row["road_class"] == "motorway"  # frc <= 2
+    assert row["road_number"] == "A10"
+    assert row["valid_from"] == pd.Timestamp("2026-07-01").date()
+    assert row["status"] == "Opengesteld"
+    assert row["geom"] == LINE.wkt
+
+
+def test_transform_row_classifies_primary_by_frc_and_by_manager_type():
+    assert _transform_row(_props(FRC="4", WEGBEHSRT="G"), LINE)["road_class"] == "primary"
+    assert _transform_row(_props(FRC="9", WEGBEHSRT="P"), LINE)["road_class"] == "primary"
+    assert _transform_row(_props(FRC="9", WEGBEHSRT="G"), LINE)["road_class"] == "local"
+
+
+def test_transform_row_road_number_falls_back_to_route_letter_and_number():
+    row = _transform_row(
+        _props(WEGNR_HMP=None, WEGNR_FRML=None, ROUTELTR="A", ROUTENR=10), LINE
+    )
+    assert row["road_number"] == "A10"
+
+    row = _transform_row(
+        _props(WEGNR_HMP=None, WEGNR_FRML=None, ROUTELTR=None, ROUTENR=None), LINE
+    )
+    assert row["road_number"] is None
+
+
+def test_transform_row_rejects_missing_id_or_degenerate_geometry():
+    assert _transform_row(_props(WVK_ID=None), LINE) is None
+    assert _transform_row(_props(), LineString()) is None  # empty geometry
+
+
+def test_optional_helpers_treat_pandas_na_as_none():
+    assert _optional_str(pd.NA) is None
+    assert _optional_str(float("nan")) is None
+    assert _optional_str("  A5  ") == "A5"
+    assert _optional_int(pd.NA) is None
+    assert _optional_int("7") == 7
+    assert _optional_float(pd.NaT) is None
+    assert _optional_float(math.inf) is None
+    assert _optional_float("3.5") == 3.5
+
+
+def test_matching_keys_extracts_identifiers_present_in_router_properties():
+    feature = {
+        "properties": {
+            "segment_id": "123456789",
+            "nwb_road_section_id": 123456789,
+            "openlr": "encoded-openlr",
+            "road_number": "A10",
+            "direction": "H",
+            "carriageway_position": "R",
+            "road_class": "motorway",  # not part of matching_keys' allow-list
+        }
     }
-
-
-def test_detail_profiles_limit_server_side_scope():
-    assert detail_profile(8.99) is None
-    assert detail_profile(9).manager_types == ("R",)
-    assert detail_profile(11).manager_types == ("R", "P")
-    assert detail_profile(12).manager_types == (None,)
-    assert detail_profile(12, configured_max=77).max_features == 77
-
-
-def test_lane_matching_context_expands_around_viewport():
-    viewport = BBox(4.68, 52.25, 4.69, 52.26)
-    expanded = nwb_router._expanded_lane_bbox(viewport, 5.0)
-
-    assert expanded.min_lon < viewport.min_lon
-    assert expanded.min_lat < viewport.min_lat
-    assert expanded.max_lon > viewport.max_lon
-    assert expanded.max_lat > viewport.max_lat
-
-
-def test_build_query_params_uses_crs84_bbox_and_manager_filter():
-    params = build_query_params((4.8, 52.3, 4.9, 52.4), "R", limit=5000)
-    assert params["bbox"] == "4.800000,52.300000,4.900000,52.400000"
-    assert params["limit"] == 1000
-    assert params["wegbehsrt"] == "R"
-    assert params["crs"].endswith("/CRS84")
-    assert params["bbox-crs"].endswith("/CRS84")
-
-    with pytest.raises(ValueError):
-        build_query_params((4.9, 52.3, 4.8, 52.4), None)
-
-
-def test_transform_feature_preserves_matching_and_carriageway_metadata():
-    result = transform_feature(_raw_feature())
-    assert result is not None
-    assert result["id"] == "stable-uuid"
-    assert result["geometry"]["type"] == "MultiLineString"
-    assert result["properties"]["nwb_road_section_id"] == 123456789
-    assert result["properties"]["road_class"] == "motorway"
-    assert result["properties"]["carriageway_position"] == "R"
-    assert result["properties"]["carriageway_type"] == "HR"
-    assert matching_keys(result) == {
-        "segment_id": "stable-uuid",
+    assert matching_keys(feature) == {
+        "segment_id": "123456789",
         "nwb_road_section_id": 123456789,
         "openlr": "encoded-openlr",
         "road_number": "A10",
@@ -105,123 +115,15 @@ def test_transform_feature_preserves_matching_and_carriageway_metadata():
     }
 
 
-def test_transform_feature_prefers_public_road_number():
-    result = transform_feature(_raw_feature(wegnummer="005", wegnr_aw="RW5", wegnr_hmp="A5"))
-    assert result["properties"]["road_number"] == "A5"
+def test_matching_keys_handles_missing_properties():
+    assert matching_keys({}) == {}
+    assert matching_keys({"properties": None}) == {}
 
 
-@pytest.mark.parametrize(
-    "geometry",
-    [
-        None,
-        {"type": "Point", "coordinates": [4.8, 52.3]},
-        {"type": "MultiLineString", "coordinates": [[[float("nan"), 52.3]]]},
-        {"type": "MultiLineString", "coordinates": [[[4.8, 95], [4.9, 52.4]]]},
-    ],
-)
-def test_transform_feature_rejects_invalid_geometry(geometry):
-    raw = _raw_feature()
-    raw["geometry"] = geometry
-    assert transform_feature(raw) is None
-
-
-@pytest.mark.asyncio
-async def test_fetch_road_segments_paginates_and_normalizes():
-    calls = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(request)
-        query = parse_qs(request.url.query.decode())
-        if "cursor" not in query:
-            payload = {
-                "type": "FeatureCollection",
-                "features": [_raw_feature("one")],
-                "links": [{"rel": "next", "href": "https://example.test/items?cursor=next"}],
-            }
-        else:
-            payload = {
-                "type": "FeatureCollection",
-                "features": [
-                    _raw_feature("two"),
-                    {"id": "bad", "properties": {}, "geometry": None},
-                ],
-                "links": [],
-            }
-        return httpx.Response(
-            200,
-            content=json.dumps(payload),
-            headers={"Content-Type": "application/geo+json"},
-        )
-
-    transport = httpx.MockTransport(handler)
-    profile = NwbDetailProfile("test", 12, (None,), 10)
-    async with httpx.AsyncClient(transport=transport) as client:
-        result = await fetch_road_segments(
-            client, "https://example.test/items", (4.8, 52.3, 4.9, 52.4), profile
-        )
-
-    assert len(calls) == 2
-    first_query = parse_qs(calls[0].url.query.decode())
-    assert first_query["bbox"] == ["4.800000,52.300000,4.900000,52.400000"]
-    assert result.invalid_features == 1
-    assert result.truncated is False
-    assert [f["id"] for f in result.feature_collection["features"]] == ["one", "two"]
-
-
-@pytest.mark.asyncio
-async def test_fetch_road_segments_marks_a_capped_viewport_as_truncated():
-    def handler(_: httpx.Request) -> httpx.Response:
-        payload = {
-            "type": "FeatureCollection",
-            "features": [_raw_feature("one"), _raw_feature("two")],
-            "links": [],
-        }
-        return httpx.Response(200, json=payload)
-
-    profile = NwbDetailProfile("capped", 12, (None,), 1)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        result = await fetch_road_segments(
-            client, "https://example.test/items", (4.8, 52.3, 4.9, 52.4), profile
-        )
-
-    assert len(result.feature_collection["features"]) == 1
-    assert result.truncated is True
-    assert result.feature_collection["metadata"]["truncated"] is True
-
-
-def test_ttl_lru_cache_evicts_oldest_entry():
-    cache: TtlLruCache[str] = TtlLruCache(ttl_s=60, max_entries=2)
-    cache.set("one", "1")
-    cache.set("two", "2")
-    assert cache.get("one") == "1"  # makes one most recently used
-    cache.set("three", "3")
-    assert cache.get("two") is None
-    assert cache.get("one") == "1"
-    assert cache.get("three") == "3"
-
-
-@pytest.mark.asyncio
-async def test_concurrent_road_cache_miss_is_coalesced(monkeypatch):
-    calls = 0
-
-    async def fake_fetch(client, url, bbox, profile):
-        nonlocal calls
-        calls += 1
-        await asyncio.sleep(0.01)
-        return nwb_router.NwbFetchResult(
-            feature_collection={"type": "FeatureCollection", "features": []},
-            truncated=False,
-            invalid_features=0,
-        )
-
-    monkeypatch.setattr(nwb_router, "fetch_road_segments", fake_fetch)
-    profile = NwbDetailProfile("single-flight-test", 12, (None,), 10)
-    bbox = (4.12345, 52.12345, 4.12445, 52.12445)
-    async with httpx.AsyncClient() as client:
-        results = await asyncio.gather(
-            nwb_router._cached_roads(client, bbox, profile),
-            nwb_router._cached_roads(client, bbox, profile),
-        )
-
-    assert calls == 1
-    assert sorted(status for _, status in results) == ["HIT", "MISS"]
+def test_traffic_match_observation_defaults_to_none():
+    obs = TrafficMatchObservation()
+    assert obs.nwb_road_section_id is None
+    assert obs.openlr is None
+    assert obs.road_number is None
+    assert obs.carriageway is None
+    assert obs.bearing is None

@@ -46,8 +46,8 @@ All list endpoints require `?bbox=minLon,minLat,maxLon,maxLat`. Max area: 25 deg
 | `GET /api/truckparking` | Truck parking sites + live occupancy | 60 s |
 | `GET /api/emission-zones` | Low-emission zones | daily |
 | `GET /api/verkeersborden?rvvCode=` | Traffic signs (bbox required; best above zoom 13) | daily |
-| `GET /api/nwb/roads?bbox=&zoom=` | Normalized NWB road sections for the viewport | monthly |
-| `GET /api/nwb/lane-speeds?bbox=&zoom=` | WEGGEG lane configuration + matched current NDW speeds | monthly + 60 s |
+| `GET /api/nwb/roads?bbox=&zoom=` | Normalized NWB road sections for the viewport (served from PostGIS) | daily |
+| `GET /api/weggeg/lanes` | WEGGEG-derived separate lane centrelines (bbox required; zoom 14+) | monthly |
 | `GET /api/feeds/status` | Last run per feed — status, time, rows upserted | — |
 
 All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (default 500, max 2000).
@@ -55,19 +55,24 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 ## Web UI
 
 - Dark MapLibre map centred on the Netherlands (zoom 7)
-- Layer toggles (top-left panel): NWB road network, traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs
-- A pinned driving-information HUD shows traffic speed by numbered lane and the nearest DRIP/VMS message; speed data is accepted only for the exact NWB/WEGGEG road and L/R carriageway, never from the opposite direction
+- Layer toggles (top-left panel): NWB road network, traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs, WEGGEG lanes
 - Panning or zooming refetches all enabled layers for the new bbox (300 ms debounce)
 - Auto-refreshes every 60 seconds
 - Feed status panel (bottom-right): last update time and status per feed
-- Traffic signs only fetched at zoom ≥ 13
+- Traffic signs only fetched at zoom ≥ 13; WEGGEG lanes only at zoom ≥ 14
+- At navigation zoom, live speeds are drawn directly on matched WEGGEG lanes;
+  unmatched measurements retain the existing roadside marker
 
 ## Data sources
 
 Full catalogue: [docs/README.md](docs/README.md). Live traffic data comes from
-[opendata.ndw.nu](https://opendata.ndw.nu); NWB road geometry comes from the
-official [PDOK OGC API Features service](https://api.pdok.nl/rws/nationaal-wegenbestand-wegen/ogc/v1).
-Neither requires authentication. See [NWB road-network foundation](docs/08-nwb-road-network.md).
+[opendata.ndw.nu](https://opendata.ndw.nu); NWB road geometry is ingested daily
+from RWS's [Wegvakken GeoPackage](https://downloads.rijkswaterstaatdata.nl/nwb-wegen/)
+and WEGGEG lane centrelines from the public
+[Rijkswaterstaat WEGGEG catalogue](https://downloads.rijkswaterstaatdata.nl/weggeg/) —
+both ingested into PostGIS and served from there, not proxied per request.
+Neither source requires authentication. See
+[NWB road-network foundation](docs/08-nwb-road-network.md).
 
 ## Local development (without Docker)
 
@@ -90,29 +95,9 @@ python -m ndwinfo.poller
 | `DATABASE_URL` | `postgresql+psycopg://ndwinfo:ndwinfo@localhost:5432/ndwinfo` | SQLAlchemy connection string |
 | `NDW_BASE_URL` | `https://opendata.ndw.nu` | Base URL for NDW downloads |
 | `DATA_DIR` | `./data` | Scratch directory for downloaded files |
-| `DB_POOL_SIZE` | `4` | Persistent database connections per process |
-| `DB_MAX_OVERFLOW` | `2` | Temporary connections above the pool size |
-| `DB_POOL_RECYCLE_S` | `1800` | Recycle age for database connections |
-| `POLLER_MAX_WORKERS` | `3` | Concurrent feed ingests; lower values reduce peak memory |
 | `MAX_BBOX_AREA` | `25.0` | Maximum bbox area in deg² for API requests |
 | `API_DEFAULT_LIMIT` | `500` | Default feature limit per endpoint |
 | `API_MAX_LIMIT` | `2000` | Hard cap on feature limit |
-| `NWB_PDOK_URL` | official PDOK `wegvakken/items` URL | NWB OGC API Features endpoint |
-| `NWB_REQUEST_TIMEOUT_S` | `20` | PDOK request timeout |
-| `NWB_CACHE_TTL_S` | `3600` | Successful viewport cache lifetime |
-| `NWB_CACHE_MAX_ENTRIES` | `128` | Server-side NWB LRU cache size |
-| `NWB_MAX_FEATURES` | `5000` | Per-viewport NWB feature cap |
+| `NWB_WEGVAKKEN_URL` | official RWS `Wegvakken.gpkg` URL | Daily bulk-download source (used by the poller) |
+| `NWB_MAX_FEATURES` | `5000` | Per-viewport NWB row cap |
 | `NWB_DIAGNOSTIC_MODE` | `false` | Enable clickable NWB metadata diagnostics |
-| `WEGGEG_PDOK_URL` | official `wegvak_rijstroken/items` URL | RWS lane-configuration endpoint |
-| `WEGGEG_CACHE_TTL_S` | `86400` | Successful lane-reference cache lifetime |
-| `WEGGEG_CACHE_MAX_ENTRIES` | `128` | Server-side WEGGEG LRU cache size |
-| `WEGGEG_MAX_FEATURES` | `5000` | Per-viewport WEGGEG feature cap |
-| `LANE_SPEED_MIN_ZOOM` | `13` | Minimum zoom for lane speed API output |
-| `LANE_MATCH_MAX_DISTANCE_M` | `45` | Maximum sensor-to-road match distance |
-| `LANE_MATCH_MAX_HEADING_DIFFERENCE` | `50` | Maximum heading difference in degrees |
-| `LANE_SPEED_MAX_AGE_S` | `600` | Maximum age for colouring a lane measurement |
-| `LANE_RESPONSE_CACHE_TTL_S` | `10` | Short cache for identical live lane responses |
-
-The Docker build uses separate `app`, `migrate`, and `poller` stages. The API
-image intentionally excludes GeoPandas, Pyogrio, pandas, and the GDAL import
-toolchain; those are installed only in the poller image.
