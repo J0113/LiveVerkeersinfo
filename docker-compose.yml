@@ -14,9 +14,7 @@ services:
       retries: 10
 
   migrate:
-    build:
-      context: .
-      target: migrate
+    build: .
     command: alembic upgrade head
     environment:
       DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
@@ -25,15 +23,12 @@ services:
         condition: service_healthy
 
   poller:
-    build:
-      context: .
-      target: poller
+    build: .
     command: sh -c "alembic upgrade head && python -m ndwinfo.poller"
     environment:
       DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
       NDW_BASE_URL: https://opendata.ndw.nu
       DATA_DIR: /app/data
-      POLLER_MAX_WORKERS: ${POLLER_MAX_WORKERS:-2}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-4}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
       DISABLED_FEEDS: ${DISABLED_FEEDS:-verkeersborden_csv}
@@ -45,9 +40,7 @@ services:
       - ./data:/app/data
 
   app:
-    build:
-      context: .
-      target: app
+    build: .
     command: uvicorn ndwinfo.api.main:app --host 0.0.0.0 --port 3500
     environment:
       DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo

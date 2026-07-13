@@ -5,22 +5,12 @@ scaled responsibilities.
 
 ## Containers and dependencies
 
-The multi-stage Dockerfile produces three targets:
-
-- `migrate`: database client, models, and Alembic only;
-- `app`: FastAPI/MapLibre API runtime without the nationwide import stack;
-- `poller`: streaming XML and geospatial import libraries, including the
-  Pyogrio wheel's bundled GDAL runtime.
-
-Do not add `libgdal-dev` to the runtime images. It pulls a large compiler and
-development dependency tree and is unnecessary for the Pyogrio manylinux
-wheel. Keep server-only packages in the `server` extra and import-only packages
-in `ingest`.
+A single Dockerfile builds one image, used by `migrate`, `poller`, and `app`
+with different commands (CI/CD pipelines expect one image to publish).
 
 The default database pool is four persistent connections with two overflow
-connections. The poller defaults to three concurrent feeds so several large
-national snapshots cannot multiply peak memory eightfold. These values can be
-overridden through the documented environment variables.
+connections. These values can be overridden through the documented
+environment variables.
 
 ## API and matching
 

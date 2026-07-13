@@ -11,9 +11,7 @@ class Settings(BaseSettings):
     api_default_limit: int = 500
     api_max_limit: int = 2000
     poller_idle_timeout_s: int = 300
-    # Two workers keep the large live feeds moving without tripling peak parser,
-    # database, and decompression memory on small local deployments.
-    poller_max_workers: int = 2
+    poller_max_workers: int = 8  # run due feeds concurrently, up to this many at once
     db_pool_size: int = 4
     db_max_overflow: int = 2
     db_pool_recycle_s: int = 1800
