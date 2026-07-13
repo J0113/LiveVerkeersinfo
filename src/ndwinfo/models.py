@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -196,6 +197,15 @@ class WeggegLane(Base):
         Index("ix_weggeg_lane_geom", "geom", postgresql_using="gist"),
         Index("ix_weggeg_lane_source_id", "source_id"),
         Index("ix_weggeg_lane_road_side_lane", "road_number", "carriageway_side", "lane"),
+        # Geography-cast GiST index: the speed-map WEGGEG fallback filters with
+        # ST_DWithin(geom::geography, …); without this the geometry index is
+        # unusable and the scan touches every lane=1 row (see migration
+        # b7c8d9e0f1a2). Expression must match the query's cast exactly.
+        Index(
+            "ix_weggeg_lane_geog",
+            text("(geom::geography)"),
+            postgresql_using="gist",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
