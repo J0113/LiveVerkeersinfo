@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import delete, text
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from ndwinfo.download import DownloadResult, open_feed
@@ -18,41 +18,37 @@ class ChargingGeojsonIngester(Ingester):
         total = 0
         cp_batch: list[dict] = []
         avail_rows: list[dict] = []
-        seen_cp_ids: list[str] = []
+
+        def flush_batch() -> None:
+            nonlocal total
+            if not cp_batch:
+                return
+            cp_ids = [row["id"] for row in cp_batch]
+            total += bulk_upsert(session, ChargePoint, cp_batch, ["id"])
+            # Availability replacement remains atomic because the outer session
+            # commits only after the complete feed succeeds. Flushing here keeps
+            # memory bounded to one batch instead of retaining the nationwide
+            # availability list (hundreds of thousands of dict values).
+            session.execute(
+                delete(ChargeAvailability).where(ChargeAvailability.cp_id.in_(cp_ids))
+            )
+            if avail_rows:
+                session.execute(ChargeAvailability.__table__.insert(), avail_rows)
+            session.flush()
+            cp_batch.clear()
+            avail_rows.clear()
 
         with open_feed(result.path) as f:
             for cp_dict, avail_dicts in parse_charging_geojson(f):
                 cp = json_safe(dict(cp_dict))
                 cp["geom"] = wkt_geom(cp.get("geom"))
                 cp_batch.append(cp)
-                seen_cp_ids.append(cp["id"])
                 avail_rows.extend(json_safe(a) for a in avail_dicts)
 
                 if len(cp_batch) >= BATCH_SIZE:
-                    total += bulk_upsert(session, ChargePoint, cp_batch, ["id"])
-                    session.flush()
-                    cp_batch.clear()
+                    flush_batch()
 
-        if cp_batch:
-            total += bulk_upsert(session, ChargePoint, cp_batch, ["id"])
-            session.flush()
-
-        # Replace availability for all seen charge points atomically
-        for i in range(0, len(seen_cp_ids), BATCH_SIZE):
-            batch = seen_cp_ids[i : i + BATCH_SIZE]
-            session.execute(
-                delete(ChargeAvailability).where(
-                    ChargeAvailability.cp_id.in_(batch)
-                )
-            )
-        if seen_cp_ids:
-            session.flush()
-
-            for i in range(0, len(avail_rows), BATCH_SIZE):
-                batch = avail_rows[i : i + BATCH_SIZE]
-                if batch:
-                    session.execute(ChargeAvailability.__table__.insert(), batch)
-                    session.flush()
+        flush_batch()
 
         return total
 

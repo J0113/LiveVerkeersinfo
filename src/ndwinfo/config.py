@@ -11,9 +11,9 @@ class Settings(BaseSettings):
     api_default_limit: int = 500
     api_max_limit: int = 2000
     poller_idle_timeout_s: int = 300
-    # Three workers keep nationwide XML/shapefile ingests from multiplying peak
-    # memory while still allowing the live feeds to progress concurrently.
-    poller_max_workers: int = 3
+    # Two workers keep the large live feeds moving without tripling peak parser,
+    # database, and decompression memory on small local deployments.
+    poller_max_workers: int = 2
     db_pool_size: int = 4
     db_max_overflow: int = 2
     db_pool_recycle_s: int = 1800

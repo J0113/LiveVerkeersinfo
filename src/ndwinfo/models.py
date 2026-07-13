@@ -507,6 +507,7 @@ class EmissionZone(Base):
 
 class FeedRun(Base):
     __tablename__ = "feed_run"
+    __table_args__ = (Index("ix_feed_run_feed_finished", "feed", "finished_at"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     feed: Mapped[str] = mapped_column(String)

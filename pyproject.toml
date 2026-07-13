@@ -11,9 +11,6 @@ dependencies = [
     "geoalchemy2",
     "psycopg[binary]",
     "pydantic-settings",
-    "httpx",
-    "shapely>=2",
-    "pyproj",
     "alembic",
 ]
 
@@ -23,6 +20,9 @@ server = [
     "uvicorn[standard]",
 ]
 ingest = [
+    "httpx",
+    "shapely>=2",
+    "pyproj",
     "lxml",
     "ijson",
     "pyogrio",
@@ -40,6 +40,8 @@ dev = [
     "ijson",
     "pyogrio",
     "geopandas",
+    "shapely>=2",
+    "pyproj",
 ]
 
 [tool.setuptools.packages.find]

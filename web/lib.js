@@ -170,6 +170,224 @@ function classifyFeature (device, featCoords, featBearing, opts) {
   }
 }
 
+// Group the lane-level matrix feed into physical gantries. Kept shared so the
+// map HUD and the dedicated /drive view use the same lane ordering and identity.
+function groupMatrixGantries (fc) {
+  const gantries = new Map()
+  for (const feature of (fc?.features || [])) {
+    if (!feature.geometry || !feature.properties) continue
+    const p = feature.properties
+    const key = `${p.road ?? ''}|${p.km ?? ''}|${p.carriageway ?? ''}`
+    if (!gantries.has(key)) {
+      gantries.set(key, {
+        coords: feature.geometry.coordinates,
+        bearing: p.bearing,
+        road: p.road,
+        km: p.km,
+        carriageway: p.carriageway,
+        lanesByNumber: new Map()
+      })
+    }
+    const lanes = gantries.get(key).lanesByNumber
+    const laneKey = p.lane ?? p.uuid
+    const current = lanes.get(laneKey)
+    // Defensive de-duplication: feeds occasionally contain two states for one
+    // physical lane. Prefer the most recently timestamped state.
+    if (!current || String(p.ts_state || '') >= String(current.ts_state || '')) lanes.set(laneKey, p)
+  }
+  for (const gantry of gantries.values()) {
+    gantry.lanes = [...gantry.lanesByNumber.values()]
+      .sort((a, b) => (a.lane ?? 0) - (b.lane ?? 0))
+    delete gantry.lanesByNumber
+  }
+  return [...gantries.values()]
+}
+
+function matrixLaneHasValue (lane) {
+  if (!lane) return false
+  if (lane.value !== null && lane.value !== undefined && lane.value !== '') return true
+  if (lane.aspect_type && lane.aspect_type !== 'blank') return true
+  return Array.isArray(lane.aspects) && lane.aspects.some(aspect =>
+    aspect && (
+      (aspect.type && aspect.type !== 'blank') ||
+      (aspect.value !== null && aspect.value !== undefined && aspect.value !== '')
+    ))
+}
+
+function dripHasValue (properties) {
+  if (!properties) return false
+  if (properties.working_status && String(properties.working_status).toLowerCase() !== 'working') return false
+  return Boolean(properties.image_b64 || String(properties.display_text || '').trim())
+}
+
+// Select exactly one upcoming gantry and one upcoming DRIP/VMS. A heading is
+// mandatory: showing an opposite-carriageway sign is worse than hiding the HUD
+// until the device has established direction of travel.
+function selectUpcomingRoadSigns (matrixFc, dripFc, device, maxDistanceM) {
+  const maxAhead = maxDistanceM ?? 2000
+  if (!device || !Array.isArray(device.coords) || !Number.isFinite(device.heading)) {
+    return { matrix: null, drip: null }
+  }
+
+  const classifyAhead = (coords, bearing) => {
+    const cls = classifyFeature(device, coords, bearing, {
+      directed: true,
+      maxAhead,
+      maxBehind: 0,
+      maxCross: 60
+    })
+    return cls?.status === 'ahead' ? cls : null
+  }
+
+  let matrix = null
+  for (const gantry of groupMatrixGantries(matrixFc)) {
+    if (!gantry.lanes.some(matrixLaneHasValue)) continue
+    const cls = classifyAhead(gantry.coords, gantry.bearing)
+    if (cls && (!matrix || cls.along < matrix.cls.along)) matrix = { data: gantry, cls }
+  }
+
+  let drip = null
+  for (const feature of (dripFc?.features || [])) {
+    if (!feature.geometry || !dripHasValue(feature.properties)) continue
+    const cls = classifyAhead(feature.geometry.coordinates, feature.properties?.bearing)
+    if (cls && (!drip || cls.along < drip.cls.along)) {
+      drip = { data: feature.properties, coords: feature.geometry.coordinates, cls }
+    }
+  }
+
+  return { matrix, drip }
+}
+
+// Shortest planar distance from a WGS84 point to a LineString/MultiLineString.
+// At HUD-scale distances the local metre projection is both stable and more
+// than accurate enough to decide which 3.5 m lane centreline contains the GPS.
+function distanceToLineGeometry (geometry, target) {
+  if (!geometry || !Array.isArray(target)) return Infinity
+  const lines = geometry.type === 'LineString'
+    ? [geometry.coordinates]
+    : geometry.type === 'MultiLineString' ? geometry.coordinates : []
+  const latScale = 110540
+  const lonScale = 111320 * Math.cos(target[1] * Math.PI / 180)
+  let bestSq = Infinity
+
+  for (const line of lines) {
+    if (!Array.isArray(line) || line.length < 2) continue
+    for (let i = 0; i < line.length - 1; i++) {
+      const ax = (line[i][0] - target[0]) * lonScale
+      const ay = (line[i][1] - target[1]) * latScale
+      const bx = (line[i + 1][0] - target[0]) * lonScale
+      const by = (line[i + 1][1] - target[1]) * latScale
+      const dx = bx - ax
+      const dy = by - ay
+      const denom = dx * dx + dy * dy
+      const t = denom ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / denom)) : 0
+      const px = ax + t * dx
+      const py = ay + t * dy
+      bestSq = Math.min(bestSq, px * px + py * py)
+    }
+  }
+  return Math.sqrt(bestSq)
+}
+
+// Pick the lane centreline nearest to the current GPS position. When a travel
+// heading exists, reject measurements from the opposite carriageway first.
+function selectCurrentLaneSpeed (laneFc, device, maxDistanceM) {
+  if (!device || !Array.isArray(device.coords)) return null
+  const maxDistance = maxDistanceM ?? 20
+  const hasHeading = Number.isFinite(device.heading)
+
+  let nearest = null
+  for (const feature of (laneFc?.features || [])) {
+    if (!feature.geometry || !feature.properties) continue
+    const bearing = Number(feature.properties.bearing)
+    if (hasHeading && Number.isFinite(bearing) && Math.abs(angleDiff(bearing, device.heading)) > 60) continue
+    const distance = distanceToLineGeometry(feature.geometry, device.coords)
+    if (distance <= maxDistance && (!nearest || distance < nearest.distance)) {
+      nearest = { data: feature.properties, distance }
+    }
+  }
+  return nearest
+}
+
+function matrixLaneBlocksRecommendation (lane) {
+  if (!lane) return false
+  const blockedTypes = new Set([
+    'lane_closed', 'lane_closed_ahead', 'merge_left', 'merge_right',
+    'red_cross', 'cross', 'closed'
+  ])
+  if (blockedTypes.has(String(lane.aspect_type || '').toLowerCase())) return true
+  return Array.isArray(lane.aspects) && lane.aspects.some(aspect =>
+    blockedTypes.has(String(aspect?.type || '').toLowerCase())
+  )
+}
+
+// Compare the matched current lane with adjacent lanes on the same physical
+// WEGGEG section. This returns traffic information, not a manoeuvre command;
+// the caller applies dwell time, hysteresis, and lane-change cooldown.
+function findLaneSpeedRecommendation (laneFc, currentSelection, matrixSelection, device, opts) {
+  const current = currentSelection?.data
+  if (!current?.source_id || !device || !Number.isFinite(device.heading)) return null
+
+  const o = Object.assign({
+    nowMs: Date.now(),
+    maxAgeMs: 120_000,
+    minDeltaKmh: 12,
+    minPercent: 0.15,
+    minTargetKmh: 25,
+    maxStdDev: 30
+  }, opts || {})
+  const currentLane = Number(current.lane)
+  const currentKmh = Number(current.speed_kmh)
+  if (!Number.isFinite(currentLane) || !Number.isFinite(currentKmh) || currentKmh < 5) return null
+
+  const isFresh = measuredAt => {
+    const measuredMs = Date.parse(measuredAt || '')
+    return Number.isFinite(measuredMs) && o.nowMs - measuredMs <= o.maxAgeMs && measuredMs - o.nowMs < 30_000
+  }
+  if (!isFresh(current.measured_at)) return null
+
+  const matrix = matrixSelection?.data
+  const matrixApplies = matrix && (
+    !matrix.road || !current.road || String(matrix.road) === String(current.road)
+  )
+  const blockedMatrixLanes = new Set(
+    matrixApplies
+      ? (matrix.lanes || []).filter(matrixLaneBlocksRecommendation).map(lane => Number(lane.lane))
+      : []
+  )
+
+  let best = null
+  for (const feature of (laneFc?.features || [])) {
+    const candidate = feature?.properties
+    if (!candidate || candidate.source_id !== current.source_id) continue
+    const targetLane = Number(candidate.lane)
+    const targetKmh = Number(candidate.speed_kmh)
+    if (!Number.isFinite(targetLane) || Math.abs(targetLane - currentLane) !== 1) continue
+    if (!Number.isFinite(targetKmh) || targetKmh < o.minTargetKmh || !isFresh(candidate.measured_at)) continue
+    if (blockedMatrixLanes.has(targetLane)) continue
+
+    const bearing = Number(candidate.bearing)
+    if (Number.isFinite(bearing) && Math.abs(angleDiff(bearing, device.heading)) > 60) continue
+    const stdDev = Number(candidate.std_dev)
+    if (Number.isFinite(stdDev) && stdDev > o.maxStdDev) continue
+
+    const deltaKmh = targetKmh - currentKmh
+    if (deltaKmh < o.minDeltaKmh || deltaKmh < currentKmh * o.minPercent) continue
+    const recommendation = {
+      key: `${current.source_id}|${currentLane}>${targetLane}`,
+      currentLane,
+      targetLane,
+      currentKmh,
+      targetKmh,
+      deltaKmh,
+      direction: targetLane < currentLane ? 'left' : 'right',
+      measuredAt: candidate.measured_at
+    }
+    if (!best || recommendation.deltaKmh > best.deltaKmh) best = recommendation
+  }
+  return best
+}
+
 // Build a forward-biased bbox string "minLon,minLat,maxLon,maxLat" around the
 // device, extending further ahead than behind/sideways. Falls back to a symmetric
 // box when heading is null. Distances in meters.
