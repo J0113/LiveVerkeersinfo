@@ -24,4 +24,7 @@ def make_fc(rows: list, geom_key: str, props_fn: Callable[[Any], dict]) -> dict:
 
 
 def geo_response(fc: dict) -> Response:
-    return Response(content=json.dumps(fc), media_type="application/geo+json")
+    return Response(
+        content=json.dumps(fc, ensure_ascii=False, separators=(",", ":")),
+        media_type="application/geo+json",
+    )

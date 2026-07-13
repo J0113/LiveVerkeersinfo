@@ -62,6 +62,23 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 - Traffic signs only fetched at zoom ≥ 13; WEGGEG lanes only at zoom ≥ 14
 - At navigation zoom, live speeds are drawn directly on matched WEGGEG lanes;
   unmatched measurements retain the existing roadside marker
+- Traffic-speed ribbons follow the 3.5 m WEGGEG lane spacing and scale
+  exponentially with zoom, keeping them road-aligned while zooming and panning
+- Matrix signs and DRIPs/VMS are HUD-only: with GPS and a travel heading, the
+  next relevant signs appear within 2 km with remaining distance; no sign
+  markers are plotted on the map and the HUD hides when it has no values
+- The minimalist driving HUD starts GPS follow mode automatically and keeps the
+  current lane's measured traffic speed beside the device's own GPS speed
+- A sustained speed advantage on an adjacent lane appears as a non-directive
+  lane-flow suggestion. Stale, opposite-direction, non-adjacent, and
+  matrix-restricted lanes are excluded; hysteresis and a post-change cooldown
+  prevent noisy or rapidly reversing suggestions
+- Detailed traffic-speed and WEGGEG lane overlays remain available in Layers,
+  but start disabled so the driving map stays uncluttered
+- Background tabs pause GPS and data refreshes; feed status is fetched only
+  while its panel is open, and unchanged HUD content is not rebuilt per GPS fix
+- Poller concurrency defaults to two workers, charging availability ingestion is
+  batch-bounded, and feed-run history is indexed and capped per feed
 
 ## Data sources
 

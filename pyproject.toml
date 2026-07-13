@@ -15,7 +15,7 @@ dependencies = [
     "pydantic-settings",
     "httpx",
     "lxml",
-    "shapely",
+    "shapely>=2",
     "pyproj",
     "alembic",
     "ijson",

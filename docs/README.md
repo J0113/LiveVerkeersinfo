@@ -94,6 +94,11 @@ schema, geographic scope, and how the feeds relate to each other.
 |---|---|---|---|
 | PDOK NWB Wegen `wegvakken` | OGC API Features / GeoJSON | viewport bbox | monthly |
 
+### Runtime performance → [09-performance.md](09-performance.md)
+
+Container dependency split, API compression/cache policy, spatial matching,
+browser scheduling, and operational resource tuning.
+
 > Sizes are compressed download sizes from the portal listing on 2026-05-29.
 > Decompressed sizes are much larger — e.g. `traveltime.xml.gz` 2.5M → ~73M XML,
 > `trafficspeed.xml.gz` 1.1M → ~52M XML.

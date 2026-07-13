@@ -8,7 +8,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from ndwinfo.config import settings
 from ndwinfo.db import SessionLocal
@@ -17,6 +17,8 @@ from ndwinfo.ingest import INGESTERS
 from ndwinfo.models import FeedRun, SystemState
 
 TICK_S = 10
+MAINTENANCE_INTERVAL_S = 3600
+FEED_RUNS_PER_FEED = 500
 UTC = timezone.utc
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,29 @@ def _api_idle(session) -> bool:
 
 _executor = ThreadPoolExecutor(max_workers=settings.poller_max_workers)
 _inflight: dict[str, Future] = {}
+_last_maintenance_at = 0.0
+
+
+def _prune_feed_runs(session) -> int:
+    """Bound operational history while retaining ample per-feed diagnostics."""
+    result = session.execute(
+        text(
+            """
+            DELETE FROM feed_run
+            WHERE id IN (
+                SELECT id FROM (
+                    SELECT id,
+                           row_number() OVER (PARTITION BY feed ORDER BY id DESC) AS rn
+                    FROM feed_run
+                ) ranked
+                WHERE rn > :keep
+            )
+            """
+        ),
+        {"keep": FEED_RUNS_PER_FEED},
+    )
+    session.commit()
+    return result.rowcount or 0
 
 
 def _run_feed(name: str) -> None:
@@ -49,7 +74,14 @@ def _run_feed(name: str) -> None:
 
 
 def run_once(wait: bool = False) -> None:
+    global _last_maintenance_at
     with SessionLocal() as session:
+        monotonic_now = time.monotonic()
+        if monotonic_now - _last_maintenance_at >= MAINTENANCE_INTERVAL_S:
+            pruned = _prune_feed_runs(session)
+            _last_maintenance_at = monotonic_now
+            if pruned:
+                logger.info("feed_run maintenance: pruned %d old rows", pruned)
         last = _last_finished_per_feed(session)
         idle = _api_idle(session)
 
@@ -83,7 +115,12 @@ def run_once(wait: bool = False) -> None:
         elapsed = (now - lf).total_seconds() if lf else float("inf")
 
         if elapsed >= feed["cadence_s"]:
-            logger.info("%s: due (elapsed %.0fs >= cadence %ds), running", name, elapsed, feed["cadence_s"])
+            logger.info(
+                "%s: due (elapsed %.0fs >= cadence %ds), running",
+                name,
+                elapsed,
+                feed["cadence_s"],
+            )
             _inflight[name] = _executor.submit(_run_feed, name)
         else:
             logger.debug("%s: not due yet (%.0fs remaining)", name, feed["cadence_s"] - elapsed)

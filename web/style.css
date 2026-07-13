@@ -15,33 +15,78 @@ body {
 
 .panel {
   position: absolute;
-  background: rgba(12, 12, 22, 0.93);
+  background: rgba(8, 14, 23, 0.94);
   color: #d8d8e8;
-  border: 1px solid #2a2a40;
-  border-radius: 8px;
+  border: 1px solid rgba(141, 181, 214, 0.22);
+  border-radius: 14px;
   font-size: 13px;
   line-height: 1.5;
-  z-index: 10;
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  z-index: 60;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(16px) saturate(135%);
+  -webkit-backdrop-filter: blur(16px) saturate(135%);
 }
 
-#layer-panel {
-  top: 10px;
-  left: 10px;
-  min-width: 195px;
-  max-width: 250px;
+#settings-panel {
+  position: fixed;
+  top: max(10px, env(safe-area-inset-top));
+  left: max(10px, env(safe-area-inset-left));
+  width: 44px;
+  height: 44px;
+  overflow: visible;
+  border-radius: 12px;
 }
 
-#status-panel {
-  bottom: 36px;
-  right: 10px;
-  min-width: 215px;
-  max-width: 270px;
+#settings-panel.open {
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.settings-toggle {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #eef5fb;
+  background: transparent;
+  border: 0;
+  border-radius: 11px;
+  cursor: pointer;
+}
+
+.settings-toggle:hover { background: rgba(255, 255, 255, 0.08); }
+
+.settings-body {
+  position: absolute;
+  top: 43px;
+  left: -1px;
+  width: min(310px, calc(100vw - 20px));
+  max-height: calc(100dvh - 70px - env(safe-area-inset-top));
+  overflow-y: auto;
+  background: rgba(8, 14, 23, 0.97);
+  border: 1px solid rgba(141, 181, 214, 0.22);
+  border-radius: 0 14px 14px 14px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.48);
+}
+
+.settings-heading {
+  padding: 13px 14px 8px;
+  color: #7f93a8;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.settings-section + .settings-section {
+  border-top: 1px solid rgba(141, 181, 214, 0.12);
 }
 
 .panel-btn {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   width: 100%;
   background: none;
   border: none;
@@ -51,18 +96,20 @@ body {
   letter-spacing: 0.02em;
   cursor: pointer;
   text-align: left;
-  padding: 9px 12px;
-  border-radius: 8px;
+  padding: 11px 14px;
+  border-radius: 0;
 }
 .panel-btn:hover { background: rgba(255, 255, 255, 0.07); }
+.panel-btn span { color: #71859a; transition: transform 160ms ease; }
+.panel-btn[aria-expanded="true"] span { transform: rotate(180deg); }
 
 .hidden { display: none !important; }
 
 /* ── Layer panel body ────────────────────────────────────────────────────── */
 
 #panel-body {
-  padding: 2px 8px 10px;
-  max-height: 72vh;
+  padding: 2px 12px 12px;
+  max-height: 48vh;
   overflow-y: auto;
 }
 
@@ -131,7 +178,9 @@ input[type="checkbox"] {
 /* ── Feed status panel ───────────────────────────────────────────────────── */
 
 #status-body {
-  padding: 4px 0 8px;
+  padding: 2px 0 12px;
+  max-height: 42vh;
+  overflow-y: auto;
 }
 
 .feed-row {
@@ -171,6 +220,243 @@ input[type="checkbox"] {
   z-index: 10;
   pointer-events: none;
   white-space: nowrap;
+}
+
+/* ── Upcoming road-sign HUD ─────────────────────────────────────────────── */
+
+.road-sign-hud {
+  position: fixed;
+  top: max(10px, env(safe-area-inset-top));
+  left: max(8px, env(safe-area-inset-left));
+  right: max(8px, env(safe-area-inset-right));
+  z-index: 30;
+  width: auto;
+  min-width: 0;
+  max-width: 980px;
+  margin-inline: auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    "speed speed"
+    "matrix drip";
+  gap: 7px;
+  pointer-events: none;
+}
+
+.road-sign-hud.road-sign-hud-count-1,
+.road-sign-hud.road-sign-hud-count-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); width: auto; }
+
+.road-sign-hud-tile {
+  min-width: 0;
+  overflow: hidden;
+  color: #f4f7fb;
+  background:
+    linear-gradient(145deg, rgba(20, 30, 43, 0.96), rgba(7, 13, 22, 0.94));
+  border: 1px solid rgba(141, 181, 214, 0.28);
+  border-radius: 16px;
+  padding: 12px 14px 13px;
+  box-shadow:
+    0 14px 40px rgba(0, 0, 0, 0.46),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px) saturate(135%);
+  -webkit-backdrop-filter: blur(18px) saturate(135%);
+}
+
+.road-sign-hud-matrix { grid-area: matrix; border-top: 2px solid #4c8dff; }
+.road-sign-hud-drip { grid-area: drip; border-top: 2px solid #1dd7b3; }
+.road-sign-hud-speed {
+  grid-area: speed;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(138px, 168px);
+  align-items: center;
+  column-gap: 12px;
+  padding-left: 62px;
+  border-top: 2px solid #8fb5d8;
+}
+
+.road-sign-hud-speed-header { margin-bottom: 0; }
+
+.road-sign-hud-speed-values {
+  display: grid;
+  grid-template-columns: 1fr 1px 1fr;
+  align-items: end;
+  gap: 12px;
+}
+
+.road-sign-hud-speed-value {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+}
+
+.road-sign-hud-speed-label {
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+  color: #8092a5;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.road-sign-hud-speed-value strong {
+  color: #f7fbff;
+  font-size: 32px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 780;
+  letter-spacing: -0.05em;
+  line-height: 0.95;
+}
+
+.road-sign-hud-speed-traffic strong { color: #78dca5; }
+.road-sign-hud-speed-value small { color: #75879a; font-size: 9px; font-weight: 700; }
+.road-sign-hud-speed-divider { width: 1px; height: 34px; background: rgba(143, 181, 216, 0.18); }
+
+.road-sign-hud-lane-recommendation {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 9px;
+  color: #bdf5d5;
+  background: rgba(51, 190, 118, 0.10);
+  border: 1px solid rgba(83, 220, 145, 0.22);
+  border-radius: 9px;
+  font-size: 10px;
+  font-weight: 720;
+  line-height: 1.25;
+}
+
+.road-sign-hud-lane-recommendation-arrow {
+  flex: 0 0 auto;
+  color: #67e39f;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 0.8;
+}
+
+.road-sign-hud-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.road-sign-hud-kicker {
+  margin-bottom: 2px;
+  color: #8295a8;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.road-sign-hud-title {
+  overflow: hidden;
+  color: #f7faff;
+  font-size: 13px;
+  font-weight: 720;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.road-sign-hud-distance {
+  flex: 0 0 auto;
+  min-width: 68px;
+  color: #091019;
+  background: linear-gradient(135deg, #ffe477, #ffbd3f);
+  border-radius: 999px;
+  padding: 6px 10px;
+  box-shadow: 0 5px 18px rgba(255, 189, 63, 0.22);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 850;
+  line-height: 1;
+  text-align: center;
+}
+
+.road-sign-hud-lanes {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 7px;
+  overflow-x: auto;
+  padding: 2px 1px 1px;
+}
+
+.road-sign-hud-lane {
+  flex: 0 0 auto;
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+}
+
+.road-sign-hud-lane-label {
+  color: #8fa2b6;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.road-sign-hud .msi-gantry {
+  gap: 0;
+  padding: 2px;
+  border: 1px solid #394654;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  cursor: default;
+}
+
+.road-sign-hud .msi-lane {
+  width: 42px;
+  height: 42px;
+  border-radius: 4px;
+}
+
+.road-sign-hud-drip-display {
+  min-height: 48px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #020507;
+  border: 1px solid #27343d;
+  border-radius: 9px;
+}
+
+.road-sign-hud-drip-image {
+  display: block;
+  max-width: 100%;
+  max-height: 84px;
+  image-rendering: pixelated;
+}
+
+.road-sign-hud-drip-text {
+  width: 100%;
+  padding: 10px;
+  color: #f7d874;
+  font: 750 13px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+  white-space: pre-line;
+}
+
+@media (max-width: 680px) {
+  .road-sign-hud-tile { border-radius: 12px; padding: 9px 10px; }
+  .road-sign-hud-speed { padding-left: 58px; }
+  .road-sign-hud-title { font-size: 12px; }
+  .road-sign-hud-distance { min-width: 0; padding: 5px 7px; font-size: 11px; }
+  .road-sign-hud-header { gap: 6px; margin-bottom: 7px; }
+  .road-sign-hud-matrix,
+  .road-sign-hud-drip { min-height: 104px; }
+  .road-sign-hud .msi-lane { width: 36px; height: 36px; }
+  .road-sign-hud .msi-speed-disc,
+  .road-sign-hud .msi-end-disc { width: 29px; height: 29px; }
+  .road-sign-hud-drip-text { padding: 7px; font-size: 10px; }
+  .hint { display: none !important; }
 }
 
 /* ── MapLibre popup overrides ────────────────────────────────────────────── */
@@ -406,12 +692,15 @@ body.nwb-diagnostic #map::after {
 /* ── Floating Map Controls ────────────────────────────────────────────────── */
 
 #map-controls {
-  top: 10px;
-  right: 10px;
+  position: fixed;
+  top: 50%;
+  right: max(10px, env(safe-area-inset-right));
+  z-index: 80;
   display: flex;
   flex-direction: column;
   gap: 6px;
   padding: 6px;
+  transform: translateY(-50%);
 }
 
 .control-btn {
@@ -459,42 +748,19 @@ body.nwb-diagnostic #map::after {
   transition: transform 0.15s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
 
-/* Re-center Pill Button */
+/* Re-center control stays in the center-right stack, above every HUD tile. */
 #recenter-btn {
-  position: absolute !important;
-  top: 15px !important;
-  bottom: auto !important;
-  height: auto !important;
-  pointer-events: auto !important;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  background: rgba(12, 12, 22, 0.95);
   color: #3897ff;
-  border: 1px solid #2a2a40;
-  border-radius: 20px;
-  padding: 8px 16px;
-  font-weight: 600;
-  font-size: 13px;
-  cursor: pointer;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  background: rgba(56, 151, 255, 0.1);
 }
 
 #recenter-btn:hover {
   background: rgba(56, 151, 255, 0.12);
-  border-color: #3897ff;
-  box-shadow: 0 4px 20px rgba(56, 151, 255, 0.25);
-  transform: translateX(-50%) translateY(-1px);
+  color: #7bbcff;
 }
 
-#recenter-btn:active {
-  transform: translateX(-50%) scale(0.96);
-}
+.maplibregl-ctrl-bottom-right { z-index: 20; }
+.maplibregl-ctrl-attrib.maplibregl-compact { margin: 0 8px 8px 0; }
 
 /* ── Pulse GPS User Marker ────────────────────────────────────────────────── */
 
