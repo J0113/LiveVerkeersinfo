@@ -317,6 +317,50 @@ const FOLLOW_BEARING_LERP = 0.18
 
 // ─── Map ──────────────────────────────────────────────────────────────────────
 
+// Selectable basemaps. Each is a raster tile source; switching swaps the
+// 'carto' source + 'basemap' layer while leaving all feed layers on top intact.
+const CARTO_ATTR = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attribution">CARTO</a>'
+const BASEMAPS = {
+  default: {
+    label: 'Standaard',
+    tiles: [
+      'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+      'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
+      'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png'
+    ],
+    tileSize: 256, maxzoom: 19, attribution: CARTO_ATTR
+  },
+  satellite: {
+    label: 'Satelliet',
+    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+    tileSize: 256, maxzoom: 19,
+    attribution: '© <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics'
+  },
+  light: {
+    label: 'Licht',
+    tiles: [
+      'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
+      'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png',
+      'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png'
+    ],
+    tileSize: 256, maxzoom: 19, attribution: CARTO_ATTR
+  },
+  dark: {
+    label: 'Donker',
+    tiles: [
+      'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+      'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png',
+      'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png'
+    ],
+    tileSize: 256, maxzoom: 19, attribution: CARTO_ATTR
+  }
+}
+
+const savedBasemap = (() => {
+  try { return localStorage.getItem('basemap') } catch { return null }
+})()
+let activeBasemap = BASEMAPS[savedBasemap] ? savedBasemap : 'default'
+
 const map = new maplibregl.Map({
   container: 'map',
   style: {
@@ -324,14 +368,10 @@ const map = new maplibregl.Map({
     sources: {
       carto: {
         type: 'raster',
-        tiles: [
-          'https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
-          'https://b.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png',
-          'https://c.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png'
-        ],
-        tileSize: 256,
-        maxzoom: 19,
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attribution">CARTO</a>'
+        tiles: BASEMAPS[activeBasemap].tiles,
+        tileSize: BASEMAPS[activeBasemap].tileSize,
+        maxzoom: BASEMAPS[activeBasemap].maxzoom,
+        attribution: BASEMAPS[activeBasemap].attribution
       }
     },
     layers: [{ id: 'basemap', type: 'raster', source: 'carto' }]
@@ -956,7 +996,10 @@ function fetchSpeedMarkers () {
     })
     .then(data => {
       setBboxTooLargeHint(false)
-      map.getSource('speed')?.setData(data.lanes || EMPTY_FC)
+      // Colour the section as a gradient between the sensors covering it; the
+      // raw lanes (one feature per section, with a `sensors` list) still drive
+      // labels and marker fallbacks.
+      map.getSource('speed')?.setData(buildGradientLanes(data.lanes || EMPTY_FC))
       renderSpeedMarkers(data.points || EMPTY_FC, data.lanes || EMPTY_FC)
     })
     .catch(e => {
@@ -1048,70 +1091,71 @@ function renderLaneSpeedLabels (laneFc) {
 
   for (const feature of laneFc.features || []) {
     const p = feature.properties || {}
-    if (!feature.geometry || p.speed_kmh === null || p.speed_kmh === undefined) continue
-    if (!Array.isArray(p.measurement_coords)) continue
+    if (!feature.geometry) continue
 
-    const best = projectPointOnLine(feature.geometry, p.measurement_coords)
-    if (!best) continue
+    // One label per sensor covering this section, so both readings show; fall
+    // back to the winning speed for sections with no per-sensor list.
+    const specs = (Array.isArray(p.sensors) && p.sensors.length)
+      ? p.sensors
+      : [{ measurement_coords: p.measurement_coords, speed_kmh: p.speed_kmh, flow_veh_h: p.flow_veh_h, measured_at: p.measured_at }]
 
-    // Stagger labels longitudinally so adjacent 3.5m lanes remain readable.
-    const centerLane = ((p.lane_count || 1) + 1) / 2
-    const shiftM = ((p.lane || 1) - centerLane) * 22
-    const basePosition = Math.max(0, Math.min(best.total, best.position + shiftM))
-    const range = visibleRangeOnLine(best, bounds)
-    if (!range) continue  // line doesn't currently cross the viewport at all
-    const wanted = Math.max(range.min, Math.min(range.max, basePosition))
-    const coords = coordAtDistance(best, wanted)
-    if (!coords) continue
+    for (const s of specs) {
+      const kmh = s.speed_kmh
+      if (kmh === null || kmh === undefined) continue
+      if (!Array.isArray(s.measurement_coords)) continue
 
-    const el = document.createElement('div')
-    el.className = 'lane-speed-label'
-    el.style.background = speedColor(p.speed_kmh)
-    el.style.color = speedTextColor(p.speed_kmh)
-    el.textContent = Math.round(p.speed_kmh)
-    el.title = `${p.road || p.road_number || ''} ${p.carriageway || ''} · lane ${p.lane} · ${Math.round(p.speed_kmh)} km/h`
+      const best = projectPointOnLine(feature.geometry, s.measurement_coords)
+      if (!best) continue
 
-    el.addEventListener('click', e => {
-      e.stopPropagation()
-      if (activePopup) activePopup.remove()
-      activePopup = new maplibregl.Popup({ maxWidth: '280px', offset: [0, -8] })
-        .setLngLat(marker.getLngLat())
-        .setHTML(buildPopupHtml({
-          road: p.road,
-          carriageway: p.carriageway,
-          km: p.km,
-          lane: p.lane,
-          speed_kmh: Math.round(p.speed_kmh) + ' km/h',
-          flow_veh_h: p.flow_veh_h != null ? Math.round(p.flow_veh_h) + ' veh/h' : '—',
-          measured: p.measured_at,
-        }))
-        .addTo(map)
-    })
+      // Stagger labels longitudinally so adjacent 3.5m lanes remain readable.
+      const centerLane = ((p.lane_count || 1) + 1) / 2
+      const shiftM = ((p.lane || 1) - centerLane) * 22
+      // Pin the label at the sensor's own position on the section. Do NOT slide
+      // it into the viewport: with several sensors per lane, clamping collapses
+      // them all onto one spot (stacked speeds). Off-screen labels are skipped;
+      // MapLibre re-positions the rest as the map pans.
+      const basePosition = Math.max(0, Math.min(best.total, best.position + shiftM))
+      const coords = coordAtDistance(best, basePosition)
+      if (!coords) continue
+      if (coords[0] < bounds.west || coords[0] > bounds.east ||
+          coords[1] < bounds.south || coords[1] > bounds.north) continue
 
-    const marker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(coords).addTo(map)
-    laneSpeedMarkers.push({ marker, best, basePosition })
-  }
-}
+      const el = document.createElement('div')
+      el.className = 'lane-speed-label'
+      el.style.background = speedColor(kmh)
+      el.style.color = speedTextColor(kmh)
+      el.textContent = Math.round(kmh)
+      el.title = `${p.road || p.road_number || ''} ${p.carriageway || ''} · lane ${p.lane} · ${Math.round(kmh)} km/h`
 
-// Slide already-rendered lane-speed labels along their line so they stay on
-// screen while panning/zooming, instead of sitting fixed at the sensor's
-// physical location (which can scroll out of view at high zoom).
-function updateLaneSpeedLayout () {
-  if (!laneSpeedMarkers.length) return
-  const bounds = currentBoundsBox()
-  for (const m of laneSpeedMarkers) {
-    const range = visibleRangeOnLine(m.best, bounds)
-    const el = m.marker.getElement()
-    if (!range) {
-      el.style.visibility = 'hidden'
-      continue
+      const flow = s.flow_veh_h
+      el.addEventListener('click', e => {
+        e.stopPropagation()
+        if (activePopup) activePopup.remove()
+        activePopup = new maplibregl.Popup({ maxWidth: '280px', offset: [0, -8] })
+          .setLngLat(marker.getLngLat())
+          .setHTML(buildPopupHtml({
+            road: p.road,
+            carriageway: p.carriageway,
+            km: p.km,
+            lane: p.lane,
+            speed_kmh: Math.round(kmh) + ' km/h',
+            flow_veh_h: flow != null ? Math.round(flow) + ' veh/h' : '—',
+            measured: s.measured_at || p.measured_at,
+          }))
+          .addTo(map)
+      })
+
+      const marker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(coords).addTo(map)
+      laneSpeedMarkers.push({ marker })
     }
-    el.style.visibility = ''
-    const wanted = Math.max(range.min, Math.min(range.max, m.basePosition))
-    const coords = coordAtDistance(m.best, wanted)
-    if (coords) m.marker.setLngLat(coords)
   }
 }
+
+// Lane-speed labels are pinned to their sensor's position (one per sensor), so
+// several sensors on a section no longer collapse onto one spot. MapLibre keeps
+// each marker anchored to its lng/lat during pan/zoom/rotate, so no per-frame
+// repositioning is needed; labels that scroll off-screen reappear on refetch.
+function updateLaneSpeedLayout () {}
 
 function currentBoundsBox () {
   const b = map.getBounds()
@@ -1180,27 +1224,95 @@ function coordAtDistance (best, distance) {
   return null
 }
 
-// Range of along-line distance (metres) currently inside the viewport, using
-// vertex-level containment — dense WEGGEG vertex spacing makes this accurate
-// enough without a full line/bbox clip.
-function visibleRangeOnLine (best, bounds) {
-  const { line, lengths, total } = best
+// Sub-linestring of `best.line` between along-line distances d0..d1 (metres):
+// the start point, every vertex strictly inside the span, then the end point.
+function sliceLineCoords (best, d0, d1) {
+  const start = Math.max(0, Math.min(best.total, d0))
+  const end = Math.max(start, Math.min(best.total, d1))
+  const out = [coordAtDistance(best, start)]
   let cum = 0
-  let min = null
-  let max = null
-  for (let i = 0; i < line.length; i++) {
-    const [lng, lat] = line[i]
-    const inside = lng >= bounds.west && lng <= bounds.east && lat >= bounds.south && lat <= bounds.north
-    if (inside) {
-      if (min === null || cum < min) min = cum
-      if (max === null || cum > max) max = cum
-    }
-    if (i < lengths.length) cum += lengths[i]
+  for (let i = 0; i < best.lengths.length; i++) {
+    cum += best.lengths[i]
+    if (cum > start && cum < end) out.push(best.line[i + 1])
   }
-  if (min === null) return null
-  // Small inset so a label doesn't render half-cut on the viewport edge.
-  const pad = Math.min(20, (max - min) / 2)
-  return { min: Math.max(0, min + pad), max: Math.min(total, max - pad) }
+  out.push(coordAtDistance(best, end))
+  const dedup = []
+  for (const c of out) {
+    if (!c) continue
+    const last = dedup[dedup.length - 1]
+    if (!last || last[0] !== c[0] || last[1] !== c[1]) dedup.push(c)
+  }
+  return dedup
+}
+
+// Turn each WEGGEG lane into a set of short pieces whose speed is interpolated
+// between the sensors covering the section, so line-color fades from one
+// sensor's speed to the next along the road. Sections with <2 usable sensors
+// (or non-LineString geometry) pass through unchanged.
+function buildGradientLanes (laneFc) {
+  const PIECES_PER_SPAN = 8
+  const out = []
+  for (const f of laneFc.features || []) {
+    const p = f.properties || {}
+    const geom = f.geometry
+    const sensors = (Array.isArray(p.sensors) ? p.sensors : []).filter(
+      s => s && s.speed_kmh !== null && s.speed_kmh !== undefined && Array.isArray(s.measurement_coords)
+    )
+    if (!geom || geom.type !== 'LineString' || geom.coordinates.length < 2 || sensors.length < 2) {
+      out.push(f)
+      continue
+    }
+
+    const placed = []
+    for (const s of sensors) {
+      const best = projectPointOnLine(geom, s.measurement_coords)
+      if (best) placed.push({ pos: best.position, speed: s.speed_kmh, best })
+    }
+    if (placed.length < 2) { out.push(f); continue }
+    placed.sort((a, b) => a.pos - b.pos)
+    // Merge sensors that project onto (nearly) the same point — averages the
+    // co-located-flip pair instead of drawing a zero-length span between them.
+    const nodes = [placed[0]]
+    for (let i = 1; i < placed.length; i++) {
+      const prev = nodes[nodes.length - 1]
+      if (placed[i].pos - prev.pos < 1) {
+        prev.speed = (prev.speed + placed[i].speed) / 2
+      } else {
+        nodes.push(placed[i])
+      }
+    }
+    if (nodes.length < 2) { out.push(f); continue }
+
+    const best = nodes[0].best  // same underlying line for every projection
+    const props = { ...p }
+    delete props.sensors  // keep per-piece features small
+    const pushPiece = (d0, d1, speed) => {
+      if (d1 - d0 < 0.5) return
+      const coords = sliceLineCoords(best, d0, d1)
+      if (coords.length < 2) return
+      out.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: coords },
+        properties: { ...props, speed_kmh: Math.round(speed * 10) / 10 },
+      })
+    }
+
+    pushPiece(0, nodes[0].pos, nodes[0].speed)  // head: constant to first sensor
+    for (let i = 0; i < nodes.length - 1; i++) {
+      const a = nodes[i]
+      const b = nodes[i + 1]
+      const span = b.pos - a.pos
+      for (let k = 0; k < PIECES_PER_SPAN; k++) {
+        const t0 = k / PIECES_PER_SPAN
+        const t1 = (k + 1) / PIECES_PER_SPAN
+        const speed = a.speed + (b.speed - a.speed) * ((t0 + t1) / 2)
+        pushPiece(a.pos + span * t0, a.pos + span * t1, speed)
+      }
+    }
+    const tail = nodes[nodes.length - 1]
+    pushPiece(tail.pos, best.total, tail.speed)  // tail: constant past last sensor
+  }
+  return { type: 'FeatureCollection', features: out }
 }
 
 // Keep fallback speed rows upright and offset them roadside using the bearing.
@@ -1494,6 +1606,46 @@ function setupPanelToggles () {
     document.getElementById('status-toggle').setAttribute('aria-expanded', String(!nowHidden))
     if (!nowHidden) fetchFeedStatus()
   })
+
+  document.getElementById('basemap-toggle').addEventListener('click', () => {
+    const body = document.getElementById('basemap-body')
+    const nowHidden = body.classList.toggle('hidden')
+    document.getElementById('basemap-toggle').setAttribute('aria-expanded', String(!nowHidden))
+  })
+  renderBasemapOptions()
+}
+
+// Swap the base raster tiles without disturbing feed layers on top. The basemap
+// layer is re-added beneath the first non-basemap layer so it stays at the bottom.
+function setBasemap (key) {
+  const bm = BASEMAPS[key]
+  if (!bm) return
+  activeBasemap = key
+  try { localStorage.setItem('basemap', key) } catch {}
+
+  if (map.getLayer('basemap')) map.removeLayer('basemap')
+  if (map.getSource('carto')) map.removeSource('carto')
+  map.addSource('carto', {
+    type: 'raster', tiles: bm.tiles, tileSize: bm.tileSize,
+    maxzoom: bm.maxzoom, attribution: bm.attribution
+  })
+  const firstOther = map.getStyle().layers.find(l => l.id !== 'basemap')
+  map.addLayer({ id: 'basemap', type: 'raster', source: 'carto' }, firstOther ? firstOther.id : undefined)
+
+  renderBasemapOptions()
+}
+
+function renderBasemapOptions () {
+  const body = document.getElementById('basemap-body')
+  if (!body) return
+  body.innerHTML = Object.entries(BASEMAPS).map(([key, bm]) => `
+    <label class="layer-row">
+      <input type="radio" name="basemap" value="${key}"${key === activeBasemap ? ' checked' : ''}>
+      <span>${esc(bm.label)}</span>
+    </label>`).join('')
+  for (const input of body.querySelectorAll('input[name="basemap"]')) {
+    input.addEventListener('change', () => setBasemap(input.value))
+  }
 }
 
 // ─── Feed status ──────────────────────────────────────────────────────────────
@@ -1724,6 +1876,12 @@ function followTick () {
   if (userMarker) userMarker.setLngLat(renderCoords)
 
   if (gpsState === GPS_STATES.OFF || isTrackingSuspended) return
+
+  // Blue "follow" mode highlights the location but leaves the camera under the
+  // user's control — pan and zoom stay free. Only snap to the user on entry or
+  // an explicit recenter (a one-shot pendingZoom). Green "navigation" mode
+  // re-locks the camera on the user every frame.
+  if (gpsState === GPS_STATES.FOLLOW && pendingZoom === null) return
 
   const cam = { center: renderCoords }
   if (pendingZoom !== null) { cam.zoom = pendingZoom; pendingZoom = null }

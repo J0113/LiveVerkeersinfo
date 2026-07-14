@@ -147,12 +147,17 @@ body {
 .layer-row:hover { background: rgba(255, 255, 255, 0.05); }
 .layer-row.indented { padding-left: 16px; }
 
-input[type="checkbox"] {
+input[type="checkbox"],
+input[type="radio"] {
   accent-color: #5599ff;
   cursor: pointer;
   flex-shrink: 0;
   width: 14px;
   height: 14px;
+}
+
+#basemap-body {
+  padding: 2px 12px 12px;
 }
 
 .dot {

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import Response
 from sqlalchemy import and_, case, func, select, text
 
-from ndwinfo.api.deps import BBoxDep, DbDep
+from ndwinfo.api.deps import BBox, BBoxDep, DbDep
 from ndwinfo.api.geo import geo_response, make_fc
 from ndwinfo.config import settings
 from ndwinfo.models import (
@@ -524,6 +524,21 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
         )
         point, lane_data = candidates[0] if candidates else (matched[row.source_id][0], {})
         point_props = point["properties"]
+        # Every sensor covering this lane, so the client can order them along the
+        # section and fade the colour between their speeds. The winner above
+        # still fills speed_kmh for labels and the single-sensor case.
+        sensors = [
+            {
+                "site_id": pt["properties"].get("site_id"),
+                "measurement_coords": pt["geometry"]["coordinates"],
+                "measured_at": pt["properties"].get("measured_at"),
+                "speed_kmh": ld.get("speed_kmh"),
+                "flow_veh_h": ld.get("flow_veh_h"),
+                "n_inputs": ld.get("n_inputs"),
+                "std_dev": ld.get("std_dev"),
+            }
+            for pt, ld in candidates
+        ]
         lane_features.append({
             "type": "Feature",
             "geometry": json.loads(row.geom_json) if row.geom_json else None,
@@ -545,6 +560,7 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
                 "flow_veh_h": lane_data.get("flow_veh_h"),
                 "n_inputs": lane_data.get("n_inputs"),
                 "std_dev": lane_data.get("std_dev"),
+                "sensors": sensors,
             },
         })
     return {"type": "FeatureCollection", "features": lane_features}
@@ -558,13 +574,30 @@ def get_speed_map(
     limit: Annotated[int, Query(ge=1, le=settings.api_max_limit)] = settings.api_default_limit,
 ):
     """Return matched WEGGEG speed lanes plus point fallbacks for the map."""
-    point_response = get_speed(b=b, db=db, limit=limit)
+    # Fetch sensors from a slightly wider area than the viewport so a sensor
+    # just outside the frame can still colour a section that reaches inside it.
+    # Without this, panning ~20m flips which of two co-located sensors is in the
+    # bbox and the section abruptly recolours instead of showing both.
+    margin = 0.004  # ≈350-500 m in NL latitudes
+    fetch_bbox = BBox(
+        b.min_lon - margin, b.min_lat - margin, b.max_lon + margin, b.max_lat + margin
+    )
+    point_response = get_speed(b=fetch_bbox, db=db, limit=limit)
     points = json.loads(point_response.body)
     lanes = (
         _lane_speed_feature_collection(db, points["features"], b)
         if include_lanes
         else {"type": "FeatureCollection", "features": []}
     )
+    # Clip point markers back to the requested viewport; the wider fetch exists
+    # only to feed lane matching, not to draw sensors outside the frame.
+    points["features"] = [
+        f
+        for f in points["features"]
+        if f.get("geometry")
+        and b.min_lon <= f["geometry"]["coordinates"][0] <= b.max_lon
+        and b.min_lat <= f["geometry"]["coordinates"][1] <= b.max_lat
+    ]
     return Response(
         content=json.dumps({"points": points, "lanes": lanes}),
         media_type="application/json",
