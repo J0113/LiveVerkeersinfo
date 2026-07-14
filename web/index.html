@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LiveVerkeersinfo</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css">
-  <link rel="stylesheet" href="style.css?v=20260713-7">
+  <link rel="stylesheet" href="style.css?v=20260714-6">
 </head>
 <body>
   <div id="map"></div>
@@ -60,27 +60,12 @@
     <section id="road-sign-hud-speed" class="road-sign-hud-tile road-sign-hud-speed hidden">
       <header class="road-sign-hud-header road-sign-hud-speed-header">
         <div>
-          <div class="road-sign-hud-kicker">Snelheid</div>
-          <div id="road-sign-hud-speed-lane" class="road-sign-hud-title">Huidige rijstrook</div>
+          <div class="road-sign-hud-kicker">Snelheid per rijstrook</div>
+          <div id="road-sign-hud-speed-lane" class="road-sign-hud-title">GPS-signaal zoeken</div>
         </div>
+        <div id="road-sign-hud-speed-distance" class="road-sign-hud-distance hidden"></div>
       </header>
-      <div class="road-sign-hud-speed-values">
-        <div class="road-sign-hud-speed-value road-sign-hud-speed-traffic">
-          <span class="road-sign-hud-speed-label">Verkeer</span>
-          <strong id="road-sign-hud-traffic-kmh">–</strong>
-          <small>km/u</small>
-        </div>
-        <div class="road-sign-hud-speed-divider"></div>
-        <div class="road-sign-hud-speed-value road-sign-hud-speed-gps">
-          <span class="road-sign-hud-speed-label">GPS</span>
-          <strong id="road-sign-hud-gps-kmh">–</strong>
-          <small>km/u</small>
-        </div>
-      </div>
-      <div id="road-sign-hud-lane-recommendation" class="road-sign-hud-lane-recommendation hidden">
-        <span id="road-sign-hud-lane-recommendation-arrow" class="road-sign-hud-lane-recommendation-arrow"></span>
-        <span id="road-sign-hud-lane-recommendation-text"></span>
-      </div>
+      <div id="road-sign-hud-speed-road" class="road-sign-hud-speed-road hidden"></div>
     </section>
 
     <section id="road-sign-hud-matrix" class="road-sign-hud-tile road-sign-hud-matrix hidden">
@@ -109,8 +94,15 @@
     </section>
   </aside>
 
+  <!-- Current-drive readouts: speed dial (bottom-left) + road name (bottom-centre) -->
+  <div id="gps-speed-badge" class="gps-speed-badge hidden">
+    <strong id="gps-speed-value">–</strong>
+    <span>km/h</span>
+  </div>
+  <div id="current-road-label" class="current-road-label hidden"></div>
+
   <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
-  <script src="lib.js?v=20260713-7"></script>
-  <script src="app.js?v=20260713-7"></script>
+  <script src="lib.js?v=20260714-6"></script>
+  <script src="app.js?v=20260714-6"></script>
 </body>
 </html>

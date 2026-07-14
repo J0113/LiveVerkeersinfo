@@ -258,135 +258,151 @@ function selectUpcomingRoadSigns (matrixFc, dripFc, device, maxDistanceM) {
   return { matrix, drip }
 }
 
-// Shortest planar distance from a WGS84 point to a LineString/MultiLineString.
-// At HUD-scale distances the local metre projection is both stable and more
-// than accurate enough to decide which 3.5 m lane centreline contains the GPS.
-function distanceToLineGeometry (geometry, target) {
-  if (!geometry || !Array.isArray(target)) return Infinity
-  const lines = geometry.type === 'LineString'
-    ? [geometry.coordinates]
-    : geometry.type === 'MultiLineString' ? geometry.coordinates : []
-  const latScale = 110540
-  const lonScale = 111320 * Math.cos(target[1] * Math.PI / 180)
-  let bestSq = Infinity
-
-  for (const line of lines) {
-    if (!Array.isArray(line) || line.length < 2) continue
-    for (let i = 0; i < line.length - 1; i++) {
-      const ax = (line[i][0] - target[0]) * lonScale
-      const ay = (line[i][1] - target[1]) * latScale
-      const bx = (line[i + 1][0] - target[0]) * lonScale
-      const by = (line[i + 1][1] - target[1]) * latScale
-      const dx = bx - ax
-      const dy = by - ay
-      const denom = dx * dx + dy * dy
-      const t = denom ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / denom)) : 0
-      const px = ax + t * dx
-      const py = ay + t * dy
-      bestSq = Math.min(bestSq, px * px + py * py)
-    }
-  }
-  return Math.sqrt(bestSq)
-}
-
-// Pick the lane centreline nearest to the current GPS position. When a travel
-// heading exists, reject measurements from the opposite carriageway first.
-function selectCurrentLaneSpeed (laneFc, device, maxDistanceM) {
-  if (!device || !Array.isArray(device.coords)) return null
-  const maxDistance = maxDistanceM ?? 20
-  const hasHeading = Number.isFinite(device.heading)
-
-  let nearest = null
-  for (const feature of (laneFc?.features || [])) {
-    if (!feature.geometry || !feature.properties) continue
-    const bearing = Number(feature.properties.bearing)
-    if (hasHeading && Number.isFinite(bearing) && Math.abs(angleDiff(bearing, device.heading)) > 60) continue
-    const distance = distanceToLineGeometry(feature.geometry, device.coords)
-    if (distance <= maxDistance && (!nearest || distance < nearest.distance)) {
-      nearest = { data: feature.properties, distance }
-    }
-  }
-  return nearest
-}
-
-function matrixLaneBlocksRecommendation (lane) {
-  if (!lane) return false
-  const blockedTypes = new Set([
-    'lane_closed', 'lane_closed_ahead', 'merge_left', 'merge_right',
-    'red_cross', 'cross', 'closed'
-  ])
-  if (blockedTypes.has(String(lane.aspect_type || '').toLowerCase())) return true
-  return Array.isArray(lane.aspects) && lane.aspects.some(aspect =>
-    blockedTypes.has(String(aspect?.type || '').toLowerCase())
-  )
-}
-
-// Compare the matched current lane with adjacent lanes on the same physical
-// WEGGEG section. This returns traffic information, not a manoeuvre command;
-// the caller applies dwell time, hysteresis, and lane-change cooldown.
-function findLaneSpeedRecommendation (laneFc, currentSelection, matrixSelection, device, opts) {
-  const current = currentSelection?.data
-  if (!current?.source_id || !device || !Number.isFinite(device.heading)) return null
-
-  const o = Object.assign({
-    nowMs: Date.now(),
-    maxAgeMs: 120_000,
-    minDeltaKmh: 12,
-    minPercent: 0.15,
-    minTargetKmh: 25,
-    maxStdDev: 30
-  }, opts || {})
-  const currentLane = Number(current.lane)
-  const currentKmh = Number(current.speed_kmh)
-  if (!Number.isFinite(currentLane) || !Number.isFinite(currentKmh) || currentKmh < 5) return null
-
-  const isFresh = measuredAt => {
-    const measuredMs = Date.parse(measuredAt || '')
-    return Number.isFinite(measuredMs) && o.nowMs - measuredMs <= o.maxAgeMs && measuredMs - o.nowMs < 30_000
-  }
-  if (!isFresh(current.measured_at)) return null
-
-  const matrix = matrixSelection?.data
-  const matrixApplies = matrix && (
-    !matrix.road || !current.road || String(matrix.road) === String(current.road)
-  )
-  const blockedMatrixLanes = new Set(
-    matrixApplies
-      ? (matrix.lanes || []).filter(matrixLaneBlocksRecommendation).map(lane => Number(lane.lane))
-      : []
-  )
+// Pick the nearest speed-measurement site AHEAD in the travel direction (the
+// "next upcoming sensor") whose lanes carry at least one speed reading. Point
+// features come from /traffic/speed/map (data.points), each carrying a `lanes`
+// array plus num_lanes / weggeg_lane_count for entry/exit detection.
+function selectUpcomingLaneSpeeds (pointFc, device, maxDistanceM) {
+  const maxAhead = maxDistanceM ?? 2000
+  if (!device || !Array.isArray(device.coords) || !Number.isFinite(device.heading)) return null
 
   let best = null
-  for (const feature of (laneFc?.features || [])) {
-    const candidate = feature?.properties
-    if (!candidate || candidate.source_id !== current.source_id) continue
-    const targetLane = Number(candidate.lane)
-    const targetKmh = Number(candidate.speed_kmh)
-    if (!Number.isFinite(targetLane) || Math.abs(targetLane - currentLane) !== 1) continue
-    if (!Number.isFinite(targetKmh) || targetKmh < o.minTargetKmh || !isFresh(candidate.measured_at)) continue
-    if (blockedMatrixLanes.has(targetLane)) continue
-
-    const bearing = Number(candidate.bearing)
-    if (Number.isFinite(bearing) && Math.abs(angleDiff(bearing, device.heading)) > 60) continue
-    const stdDev = Number(candidate.std_dev)
-    if (Number.isFinite(stdDev) && stdDev > o.maxStdDev) continue
-
-    const deltaKmh = targetKmh - currentKmh
-    if (deltaKmh < o.minDeltaKmh || deltaKmh < currentKmh * o.minPercent) continue
-    const recommendation = {
-      key: `${current.source_id}|${currentLane}>${targetLane}`,
-      currentLane,
-      targetLane,
-      currentKmh,
-      targetKmh,
-      deltaKmh,
-      direction: targetLane < currentLane ? 'left' : 'right',
-      measuredAt: candidate.measured_at
-    }
-    if (!best || recommendation.deltaKmh > best.deltaKmh) best = recommendation
+  for (const feature of (pointFc?.features || [])) {
+    if (!feature.geometry || !feature.properties) continue
+    const p = feature.properties
+    const hasSpeed = (p.lanes || []).some(l => l && l.speed_kmh !== null && l.speed_kmh !== undefined)
+    if (!hasSpeed) continue
+    const cls = classifyFeature(device, feature.geometry.coordinates, Number(p.bearing), {
+      directed: true,
+      maxAhead,
+      maxBehind: 0,
+      maxCross: 60
+    })
+    if (cls?.status !== 'ahead') continue
+    if (!best || cls.along < best.cls.along) best = { data: p, cls }
   }
   return best
 }
+
+// Split a site's lanes into main through-lanes and extra entry/exit/weave lanes.
+// NDW numbers lanes 1..N left→right; WEGGEG reports the count of main through
+// lanes. When more lanes are measured than WEGGEG's main count, the surplus
+// higher-numbered lanes are entry/exit ramps — grouped out so they render with
+// a visual gap and never crowd out the main lanes.
+function splitSpeedLaneGroups (props) {
+  const lanes = (props.lanes || [])
+    .filter(l => l && l.lane !== null && l.lane !== undefined)
+    .slice()
+    .sort((a, b) => Number(a.lane) - Number(b.lane))
+  const mainCount = Number(props.weggeg_lane_count)
+  if (!Number.isFinite(mainCount) || mainCount <= 0 || mainCount >= lanes.length) {
+    return { main: lanes, extra: [] }
+  }
+  return {
+    main: lanes.filter(l => Number(l.lane) <= mainCount),
+    extra: lanes.filter(l => Number(l.lane) > mainCount)
+  }
+}
+
+// Darken/lighten a "#rrggbb" toward black (pct<0) or white (pct>0); pct in -1..1.
+function shadeColor (color, pct) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(color)
+  if (!m) return color
+  const n = parseInt(m[1], 16)
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255
+  const target = pct < 0 ? 0 : 255
+  const p = Math.min(1, Math.abs(pct))
+  r = Math.round((target - r) * p) + r
+  g = Math.round((target - g) * p) + g
+  b = Math.round((target - b) * p) + b
+  return `rgb(${r},${g},${b})`
+}
+
+// Build a stylised "zoomed road" SVG: one tilted ribbon per lane coloured by its
+// speed, an upright speed pill on each, dashed lane markings, and an extra gap
+// separating entry/exit ramp lanes from the main carriageway.
+function buildLaneSpeedRoad (props) {
+  const NS = 'http://www.w3.org/2000/svg'
+  const { main, extra } = splitSpeedLaneGroups(props)
+  const groups = extra.length ? [main, extra] : [main]
+
+  const LANE_W = 46, GAP_W = 30, H = 96, PAD = 6
+  const shear = Math.round(H * Math.tan(15 * Math.PI / 180))
+
+  const boxes = []
+  let x = PAD
+  groups.forEach((group, gi) => {
+    if (gi > 0) x += GAP_W
+    group.forEach((lane, li) => {
+      boxes.push({ lane, x, first: li === 0, last: li === group.length - 1, ramp: gi > 0 })
+      x += LANE_W
+    })
+  })
+  const totalW = x + shear + PAD
+
+  const svg = document.createElementNS(NS, 'svg')
+  svg.setAttribute('viewBox', `0 0 ${totalW} ${H}`)
+  svg.setAttribute('width', String(totalW))
+  svg.setAttribute('height', String(H))
+  svg.setAttribute('class', 'lane-road-svg')
+
+  const line = (x1, y1, x2, y2, stroke, width, dash) => {
+    const el = document.createElementNS(NS, 'line')
+    el.setAttribute('x1', x1); el.setAttribute('y1', y1)
+    el.setAttribute('x2', x2); el.setAttribute('y2', y2)
+    el.setAttribute('stroke', stroke); el.setAttribute('stroke-width', width)
+    if (dash) el.setAttribute('stroke-dasharray', dash)
+    svg.appendChild(el)
+  }
+
+  for (const box of boxes) {
+    const kmh = box.lane.speed_kmh
+    const bl = box.x, br = box.x + LANE_W
+
+    const poly = document.createElementNS(NS, 'polygon')
+    poly.setAttribute('points', `${bl},${H} ${br},${H} ${br + shear},0 ${bl + shear},0`)
+    poly.setAttribute('fill', shadeColor(speedColor(kmh), -0.5))
+    svg.appendChild(poly)
+
+    // Right boundary: solid road edge on the group's outer lane, dashed between lanes.
+    if (box.last) line(br, H, br + shear, 0, 'rgba(255,255,255,0.85)', '2')
+    else line(br, H, br + shear, 0, 'rgba(255,255,255,0.5)', '2', '7 8')
+    if (box.first) line(bl, H, bl + shear, 0, 'rgba(255,255,255,0.85)', '2')
+
+    // Upright speed pill at the lane centre.
+    const cx = bl + LANE_W / 2 + shear / 2
+    const cy = H / 2
+    const pw = 40, ph = 26
+    const rect = document.createElementNS(NS, 'rect')
+    rect.setAttribute('x', cx - pw / 2); rect.setAttribute('y', cy - ph / 2)
+    rect.setAttribute('width', pw); rect.setAttribute('height', ph)
+    rect.setAttribute('rx', 8)
+    rect.setAttribute('fill', speedColor(kmh))
+    rect.setAttribute('stroke', '#ffffff'); rect.setAttribute('stroke-width', '2')
+    svg.appendChild(rect)
+
+    const txt = document.createElementNS(NS, 'text')
+    txt.setAttribute('x', cx); txt.setAttribute('y', cy + 1)
+    txt.setAttribute('text-anchor', 'middle')
+    txt.setAttribute('dominant-baseline', 'central')
+    txt.setAttribute('fill', speedTextColor(kmh))
+    txt.setAttribute('font-size', '15'); txt.setAttribute('font-weight', '800')
+    txt.textContent = (kmh !== null && kmh !== undefined) ? String(Math.round(kmh)) : '?'
+    svg.appendChild(txt)
+  }
+
+  return svg
+}
+
+// Stable signature of a lane-speed selection so the HUD only rebuilds the SVG
+// when the sensor, its lane speeds, or the rounded distance actually change.
+function laneSpeedRoadKey (selection) {
+  if (!selection) return null
+  const p = selection.data
+  const lanes = (p.lanes || []).map(l => `${l.lane}:${l.speed_kmh}`).join(',')
+  return [p.site_id, p.weggeg_lane_count, lanes, Math.round(selection.cls.along / 25)].join('|')
+}
+
 
 // Build a forward-biased bbox string "minLon,minLat,maxLon,maxLat" around the
 // device, extending further ahead than behind/sideways. Falls back to a symmetric

@@ -235,20 +235,11 @@ let laneSpeedMarkers = [] // upright numeric labels snapped to WEGGEG lanes
 const ROAD_SIGN_HUD_MAX_DISTANCE_M = 2000
 const ROAD_SIGN_HUD_REFETCH_DISTANCE_M = 100
 const ROAD_SIGN_HUD_REFETCH_MS = 15000
-const LANE_RECOMMENDATION_DWELL_MS = 8000
-const LANE_RECOMMENDATION_COOLDOWN_MS = 20000
-const roadSignHudCache = { matrix: EMPTY_FC, drips: EMPTY_FC, speedLanes: EMPTY_FC }
+const roadSignHudCache = { matrix: EMPTY_FC, drips: EMPTY_FC, speedPoints: EMPTY_FC }
 let roadSignHudLastFetchCoords = null
 let roadSignHudLastFetchAt = 0
 let roadSignHudLastFetchHeading = null
 const roadSignHudRenderState = { matrixKey: null, dripKey: null, speedKey: null }
-const laneRecommendationState = {
-  currentLaneKey: null,
-  pending: null,
-  pendingSince: 0,
-  active: null,
-  cooldownUntil: 0
-}
 
 // WEGGEG lane centrelines are 3.5 m apart. MapLibre line widths are expressed
 // in screen pixels, so a nearly linear zoom interpolation makes lanes look the
@@ -298,6 +289,22 @@ let userSpeedMps = null    // raw GPS speed in metres/second
 let userLocationStatus = 'off' // off | waiting | ready | denied | error
 let userMarker = null      // maplibregl.Marker
 const userHeadingHistory = []
+
+// Smooth-follow state. The GPS delivers a fix ~1×/s; a requestAnimationFrame
+// loop interpolates the displayed marker + camera toward the latest fix so
+// motion glides instead of jumping on each update.
+let renderCoords = null     // [lng, lat] currently displayed (smoothed toward userCoords)
+let renderBearing = 0       // map bearing currently displayed while navigating
+let followRaf = null        // requestAnimationFrame handle for the follow loop
+let pendingZoom = null      // one-shot zoom to snap to when (re)entering a follow state
+let deviceHeading = null    // compass heading (deg, clockwise from true north) from DeviceOrientation
+let orientationBound = false
+// How far below the map centre the user marker sits (fraction of viewport height),
+// so more of the road ahead is visible — like a car-navigation view.
+const FOLLOW_BOTTOM_RATIO = 0.30
+// Per-frame smoothing factors (0..1): higher = snappier, lower = smoother.
+const FOLLOW_POS_LERP = 0.18
+const FOLLOW_BEARING_LERP = 0.18
 
 // ─── Map ──────────────────────────────────────────────────────────────────────
 
@@ -480,8 +487,13 @@ map.on('load', () => {
   }, 60_000)
 })
 
-map.on('moveend', () => {
+map.on('moveend', (e) => {
   if (document.visibilityState !== 'visible') return
+  // The follow loop pans the camera every frame with programmatic jumpTo (no
+  // originalEvent). Refetching layers on those would hammer the API, so only
+  // user-driven moves trigger a refetch here; while auto-following, layers
+  // refresh on the 60s interval and the HUD refetches on each GPS fix.
+  if (gpsState !== GPS_STATES.OFF && !e.originalEvent && !isTrackingSuspended) return
   clearTimeout(debounceTimer)
   debounceTimer = setTimeout(fetchAll, 300)
 })
@@ -708,12 +720,12 @@ function fetchRoadSignHud (force = false) {
 }
 
 function fetchRoadSignHudSpeedSource (bbox, signal) {
-  return fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=true&limit=500`, { signal })
+  return fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=false&limit=500`, { signal })
     .then(response => {
       if (!response.ok) throw new Error(`speed: HTTP ${response.status}`)
       return response.json()
     })
-    .then(data => { roadSignHudCache.speedLanes = data.lanes || EMPTY_FC })
+    .then(data => { roadSignHudCache.speedPoints = data.points || EMPTY_FC })
 }
 
 function fetchRoadSignHudSource (source, bbox, signal) {
@@ -741,13 +753,10 @@ function renderRoadSignHud () {
         ROAD_SIGN_HUD_MAX_DISTANCE_M
       )
 
-  selected.speed = selectCurrentLaneSpeed(
-    roadSignHudCache.speedLanes,
-    { coords: userCoords, heading: userHeading },
-    Math.max(15, Math.min(userAccuracy || 15, 30))
-  )
   selected.gpsKmh = Number.isFinite(userSpeedMps) ? userSpeedMps * 3.6 : null
-  selected.recommendation = updateLaneRecommendation(selected.speed, selected.matrix)
+  selected.upcoming = userHeading === null
+    ? null
+    : selectUpcomingLaneSpeeds(roadSignHudCache.speedPoints, { coords: userCoords, heading: userHeading }, 2500)
 
   renderRoadSignHudSelection(selected)
 }
@@ -759,9 +768,10 @@ function renderRoadSignHudSelection (selected) {
   const dripTile = document.getElementById('road-sign-hud-drip')
   if (!hud || !speedTile || !matrixTile || !dripTile) return
 
-  renderSpeedHudTile(selected.speed, selected.gpsKmh, selected.recommendation)
+  renderSpeedHudTile(selected.upcoming)
   renderMatrixHudTile(selected.matrix)
   renderDripHudTile(selected.drip)
+  updateGpsSpeedBadge(selected.gpsKmh, selected.upcoming)
   const speedVisible = gpsState !== GPS_STATES.OFF
   const visibleCount = [speedVisible, selected.matrix, selected.drip].filter(Boolean).length
   const visible = visibleCount > 0
@@ -774,93 +784,47 @@ function renderRoadSignHudSelection (selected) {
   document.body.classList.toggle('road-sign-hud-visible', visible)
 }
 
-function renderSpeedHudTile (selection, gpsKmh, recommendation) {
-  const trafficValue = document.getElementById('road-sign-hud-traffic-kmh')
-  const gpsValue = document.getElementById('road-sign-hud-gps-kmh')
+function renderSpeedHudTile (upcoming) {
   const laneLabel = document.getElementById('road-sign-hud-speed-lane')
-  const recommendationRow = document.getElementById('road-sign-hud-lane-recommendation')
-  const recommendationArrow = document.getElementById('road-sign-hud-lane-recommendation-arrow')
-  const recommendationText = document.getElementById('road-sign-hud-lane-recommendation-text')
-  if (!trafficValue || !gpsValue || !laneLabel || !recommendationRow || !recommendationArrow || !recommendationText) return
+  const distance = document.getElementById('road-sign-hud-speed-distance')
+  const road = document.getElementById('road-sign-hud-speed-road')
+  if (!laneLabel || !distance || !road) return
 
-  const trafficKmh = selection?.data?.speed_kmh
-  setTextIfChanged(trafficValue, Number.isFinite(trafficKmh) ? Math.round(trafficKmh) : '–')
-  setTextIfChanged(gpsValue, Number.isFinite(gpsKmh) ? Math.round(gpsKmh) : '–')
-  const label = selection
-    ? [selection.data.road || selection.data.road_number, `rijstrook ${selection.data.lane ?? '?'}`]
-        .filter(Boolean).join(' · ')
+  const label = upcoming
+    ? [upcoming.data.road || upcoming.data.road_number, upcoming.data.carriageway,
+       upcoming.data.km != null ? `km ${upcoming.data.km}` : null].filter(Boolean).join(' · ') || 'Meetpunt'
     : !userCoords
         ? (userLocationStatus === 'denied' ? 'GPS-toegang nodig' : 'GPS-signaal zoeken')
-        : 'Rijstrookmeting zoeken'
-  if (roadSignHudRenderState.speedKey !== label) {
+        : 'Meetpunt zoeken'
+
+  // Rebuild the road SVG only when the sensor / speeds / distance change.
+  const roadKey = laneSpeedRoadKey(upcoming)
+  if (roadSignHudRenderState.speedKey !== roadKey) {
     setTextIfChanged(laneLabel, label)
-    roadSignHudRenderState.speedKey = label
-  }
-
-  recommendationRow.classList.toggle('hidden', !recommendation)
-  document.body.classList.toggle('lane-recommendation-visible', Boolean(recommendation))
-  if (recommendation) {
-    setTextIfChanged(recommendationArrow, recommendation.direction === 'left' ? '←' : '→')
-    setTextIfChanged(
-      recommendationText,
-      `Rijstrook ${recommendation.targetLane} rijdt ${Math.round(recommendation.deltaKmh)} km/u sneller`
-    )
+    setTextIfChanged(distance, upcoming ? formatDistance(Math.max(0, upcoming.cls.along)) : '')
+    distance.classList.toggle('hidden', !upcoming)
+    road.replaceChildren()
+    if (upcoming) road.appendChild(buildLaneSpeedRoad(upcoming.data))
+    road.classList.toggle('hidden', !upcoming)
+    roadSignHudRenderState.speedKey = roadKey
   }
 }
 
-function updateLaneRecommendation (currentSelection, matrixSelection, nowMs = Date.now()) {
-  const current = currentSelection?.data
-  const currentLaneKey = current?.source_id && Number.isFinite(Number(current.lane))
-    ? `${current.source_id}|${Number(current.lane)}`
-    : null
+// Circular GPS-speed badge (km/h) bottom-left, with the road we are on in the
+// centre-bottom label — shown only while tracking.
+function updateGpsSpeedBadge (gpsKmh, upcoming) {
+  const badge = document.getElementById('gps-speed-badge')
+  const value = document.getElementById('gps-speed-value')
+  const roadLabel = document.getElementById('current-road-label')
+  if (!badge || !value || !roadLabel) return
 
-  if (laneRecommendationState.currentLaneKey && currentLaneKey && currentLaneKey !== laneRecommendationState.currentLaneKey) {
-    laneRecommendationState.pending = null
-    laneRecommendationState.active = null
-    laneRecommendationState.cooldownUntil = nowMs + LANE_RECOMMENDATION_COOLDOWN_MS
-  }
-  laneRecommendationState.currentLaneKey = currentLaneKey
-  if (!currentLaneKey || nowMs < laneRecommendationState.cooldownUntil) return null
+  const tracking = gpsState !== GPS_STATES.OFF && Boolean(userCoords)
+  badge.classList.toggle('hidden', !tracking)
+  if (tracking) setTextIfChanged(value, Number.isFinite(gpsKmh) ? String(Math.round(gpsKmh)) : '–')
 
-  const active = laneRecommendationState.active
-  const candidate = findLaneSpeedRecommendation(
-    roadSignHudCache.speedLanes,
-    currentSelection,
-    matrixSelection,
-    { coords: userCoords, heading: userHeading },
-    active
-      ? { nowMs, minDeltaKmh: 6, minPercent: 0.08 }
-      : { nowMs }
-  )
-
-  if (!candidate || (active && candidate.key !== active.key)) {
-    laneRecommendationState.pending = null
-    laneRecommendationState.active = null
-    return null
-  }
-  if (active) {
-    laneRecommendationState.active = candidate
-    return candidate
-  }
-
-  if (laneRecommendationState.pending?.key !== candidate.key) {
-    laneRecommendationState.pending = candidate
-    laneRecommendationState.pendingSince = nowMs
-    return null
-  }
-  laneRecommendationState.pending = candidate
-  if (nowMs - laneRecommendationState.pendingSince < LANE_RECOMMENDATION_DWELL_MS) return null
-  laneRecommendationState.active = candidate
-  laneRecommendationState.pending = null
-  return candidate
-}
-
-function resetLaneRecommendation () {
-  laneRecommendationState.currentLaneKey = null
-  laneRecommendationState.pending = null
-  laneRecommendationState.pendingSince = 0
-  laneRecommendationState.active = null
-  laneRecommendationState.cooldownUntil = 0
+  const road = upcoming ? (upcoming.data.road || upcoming.data.road_number) : null
+  roadLabel.classList.toggle('hidden', !tracking || !road)
+  if (tracking && road) setTextIfChanged(roadLabel, road)
 }
 
 function renderMatrixHudTile (selection) {
@@ -959,11 +923,10 @@ function clearRoadSignHud () {
   controllers['road-sign-hud']?.abort()
   roadSignHudCache.matrix = EMPTY_FC
   roadSignHudCache.drips = EMPTY_FC
-  roadSignHudCache.speedLanes = EMPTY_FC
+  roadSignHudCache.speedPoints = EMPTY_FC
   roadSignHudLastFetchCoords = null
   roadSignHudLastFetchAt = 0
   roadSignHudLastFetchHeading = null
-  resetLaneRecommendation()
   renderRoadSignHud()
 }
 
@@ -1589,6 +1552,9 @@ function initGPS() {
     
     isTrackingSuspended = false
     recenterBtn.classList.add('hidden')
+    // This click is a user gesture — the only moment iOS Safari will grant
+    // DeviceOrientation (compass) permission, needed for heading-up rotation.
+    enableCompass()
     setGPSState(nextState)
   })
 
@@ -1618,15 +1584,20 @@ function initGPS() {
     document.getElementById('compass-needle').style.setProperty('--bearing', `${-bearing}deg`)
   })
 
-  // Map interaction events to detect user manual manipulation
-  map.on('dragstart', () => {
+  // Map interaction events to detect user manual manipulation.
+  // Guard on e.originalEvent so our own programmatic follow (jumpTo/easeTo)
+  // does not trip these — that was silently kicking navigation back to follow
+  // and cancelling tracking on every camera update.
+  map.on('dragstart', (e) => {
+    if (!e.originalEvent) return
     if (gpsState !== GPS_STATES.OFF) {
       isTrackingSuspended = true
       recenterBtn.classList.remove('hidden')
     }
   })
 
-  map.on('rotatestart', () => {
+  map.on('rotatestart', (e) => {
+    if (!e.originalEvent) return
     // If manually rotating while in dynamic Navigation mode, suspend dynamic auto-rotation
     // but keep following user's center position.
     if (gpsState === GPS_STATES.NAVIGATION) {
@@ -1657,41 +1628,124 @@ function setGPSState(state) {
     userHeading = null
     userAccuracy = 0
     userHeadingHistory.length = 0
+    renderCoords = null
+    renderBearing = 0
+    pendingZoom = null
+    stopFollowLoop()
+    setFollowPadding(false)
+    // Reset the heading-up rotation and 3D tilt back to a flat, north-up map.
+    map.easeTo({ bearing: 0, pitch: 0, duration: 500 })
     stopGPSWatcher()
     clearRoadSignHud()
   } else if (state === GPS_STATES.FOLLOW) {
     gpsBtn.classList.add('state-follow')
     if (isTrackingSuspended) recenterBtn.classList.remove('hidden')
     if (!userCoords && userLocationStatus !== 'denied') userLocationStatus = 'waiting'
+    pendingZoom = Math.max(map.getZoom(), 15)
+    setFollowPadding(true)
+    // Follow is north-up; drop any nav pitch/bearing left over from a previous state.
+    if (map.getPitch() !== 0) map.easeTo({ pitch: 0, duration: 400 })
     startGPSWatcher()
+    startFollowLoop()
     renderRoadSignHud()
-    
-    if (userCoords) {
-      map.easeTo({
-        center: userCoords,
-        bearing: 0,
-        pitch: 0,
-        zoom: Math.max(map.getZoom(), 15),
-        duration: 1000
-      })
-    }
   } else if (state === GPS_STATES.NAVIGATION) {
     gpsBtn.classList.add('state-navigation')
     if (isTrackingSuspended) recenterBtn.classList.remove('hidden')
     if (!userCoords && userLocationStatus !== 'denied') userLocationStatus = 'waiting'
+    pendingZoom = Math.max(map.getZoom(), 16)
+    renderBearing = deviceHeading ?? userHeading ?? map.getBearing()
+    setFollowPadding(true)
     startGPSWatcher()
+    startFollowLoop()
     renderRoadSignHud()
-    
-    if (userCoords) {
-      map.easeTo({
-        center: userCoords,
-        bearing: userHeading !== null ? userHeading : 0,
-        pitch: 55,
-        zoom: Math.max(map.getZoom(), 16),
-        duration: 1000
-      })
-    }
   }
+}
+
+// Reserve empty space at the top of the viewport so the followed point (the
+// user marker) sits low on screen, leaving the road ahead visible. Padding is
+// persistent, so easeTo/jumpTo re-centre respects it.
+function setFollowPadding (on) {
+  const h = map.getContainer().clientHeight || 0
+  const top = on ? Math.round(h * (FOLLOW_BOTTOM_RATIO * 2)) : 0
+  map.setPadding({ top, bottom: 0, left: 0, right: 0 })
+}
+
+function startFollowLoop () {
+  if (followRaf === null) followRaf = requestAnimationFrame(followTick)
+}
+
+function stopFollowLoop () {
+  if (followRaf !== null) {
+    cancelAnimationFrame(followRaf)
+    followRaf = null
+  }
+}
+
+// Interpolate the displayed marker + camera toward the latest GPS fix every
+// frame. Exponential smoothing self-corrects toward the newest position, so a
+// ~1 Hz fix stream renders as continuous glide rather than per-fix jumps.
+function followTick () {
+  followRaf = requestAnimationFrame(followTick)
+  if (!userCoords) return
+  if (!renderCoords) renderCoords = [...userCoords]
+
+  renderCoords[0] += (userCoords[0] - renderCoords[0]) * FOLLOW_POS_LERP
+  renderCoords[1] += (userCoords[1] - renderCoords[1]) * FOLLOW_POS_LERP
+  // Snap the last sub-metre so the marker settles exactly on a fix.
+  if (Math.abs(userCoords[0] - renderCoords[0]) < 1e-6) renderCoords[0] = userCoords[0]
+  if (Math.abs(userCoords[1] - renderCoords[1]) < 1e-6) renderCoords[1] = userCoords[1]
+
+  if (userMarker) userMarker.setLngLat(renderCoords)
+
+  if (gpsState === GPS_STATES.OFF || isTrackingSuspended) return
+
+  const cam = { center: renderCoords }
+  if (pendingZoom !== null) { cam.zoom = pendingZoom; pendingZoom = null }
+  if (gpsState === GPS_STATES.NAVIGATION) {
+    const targetBearing = deviceHeading ?? userHeading
+    if (targetBearing !== null && targetBearing !== undefined) {
+      renderBearing = lerpAngle(renderBearing, targetBearing, FOLLOW_BEARING_LERP)
+      cam.bearing = renderBearing
+    }
+    cam.pitch = 55
+  }
+  map.jumpTo(cam)
+}
+
+// Interpolate angle a→b along the shortest arc; handles the 0/360 wrap.
+function lerpAngle (a, b, t) {
+  const delta = ((b - a + 540) % 360) - 180
+  return (a + delta * t + 360) % 360
+}
+
+// ─── Device compass (heading-up on mobile) ────────────────────────────────────
+// iOS reports GPS heading only at speed; DeviceOrientation gives a live compass
+// so the map can rotate to face travel direction even when slow or stopped.
+function enableCompass () {
+  if (orientationBound) return
+  const bind = () => {
+    window.addEventListener('deviceorientationabsolute', onDeviceOrientation, true)
+    window.addEventListener('deviceorientation', onDeviceOrientation, true)
+    orientationBound = true
+  }
+  const D = window.DeviceOrientationEvent
+  if (D && typeof D.requestPermission === 'function') {
+    D.requestPermission().then(s => { if (s === 'granted') bind() }).catch(() => {})
+  } else if (D) {
+    bind()
+  }
+}
+
+function onDeviceOrientation (e) {
+  let h = null
+  if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+    h = e.webkitCompassHeading // iOS: degrees clockwise from true north
+  } else if (e.absolute && typeof e.alpha === 'number' && !isNaN(e.alpha)) {
+    h = (360 - e.alpha) % 360 // Android/absolute: alpha is counter-clockwise from north
+  }
+  if (h === null) return
+  deviceHeading = h
+  if (userHeading === null) userHeading = h
 }
 
 function startGPSWatcher() {
@@ -1749,6 +1803,9 @@ function onGeolocationUpdate(position) {
     if (dist > 2) {
       headingSample = calculateBearing(prevCoords, userCoords)
     }
+  } else if (deviceHeading !== null) {
+    // No GPS heading yet (common on iOS when slow/stopped) — fall back to compass.
+    headingSample = deviceHeading
   }
   if (headingSample !== null) {
     userHeadingHistory.push(headingSample)
@@ -1758,7 +1815,7 @@ function onGeolocationUpdate(position) {
 
   updateUserMarker()
   updateAccuracyCircle()
-  updateCameraToUser()
+  startFollowLoop()   // camera + marker are driven by the rAF follow loop
   renderRoadSignHud()
   fetchRoadSignHud()
 }
@@ -1784,11 +1841,12 @@ function circularMeanDegrees (headings) {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     if (gpsState !== GPS_STATES.OFF) pauseGPSWatcher()
+    stopFollowLoop()
     for (const controller of Object.values(controllers)) controller?.abort()
     return
   }
 
-  if (gpsState !== GPS_STATES.OFF) startGPSWatcher()
+  if (gpsState !== GPS_STATES.OFF) { startGPSWatcher(); startFollowLoop() }
   fetchAll()
   if (!document.getElementById('status-body').classList.contains('hidden')) fetchFeedStatus()
 })
@@ -1824,7 +1882,9 @@ function updateUserMarker() {
   const coneEl = document.getElementById('user-heading-cone-el')
   if (coneEl) {
     if (userHeading !== null && userHeading !== undefined) {
-      coneEl.style.setProperty('--heading', `${userHeading}deg`)
+      // Marker is screen-fixed, so subtract map bearing to keep the cone
+      // pointing at the true compass heading even when the map is rotated.
+      coneEl.style.setProperty('--heading', `${userHeading - map.getBearing()}deg`)
       coneEl.classList.add('visible')
     } else {
       coneEl.classList.remove('visible')
@@ -1843,21 +1903,15 @@ function updateAccuracyCircle() {
   }
 }
 
+// Recenter after the user manually panned away (tracking suspended). Clearing
+// the suspend flag lets the follow loop resume; snap the smoothing origin to
+// the current fix so it re-locks immediately instead of gliding across the map.
 function updateCameraToUser() {
-  if (!userCoords || gpsState === GPS_STATES.OFF || isTrackingSuspended) return
-
-  const targetBearing = gpsState === GPS_STATES.NAVIGATION && userHeading !== null ? userHeading : map.getBearing()
-  const targetPitch = gpsState === GPS_STATES.NAVIGATION ? 55 : map.getPitch()
-  const targetZoom = gpsState === GPS_STATES.NAVIGATION ? Math.max(map.getZoom(), 16) : Math.max(map.getZoom(), 15)
-
-  map.easeTo({
-    center: userCoords,
-    zoom: targetZoom,
-    bearing: targetBearing,
-    pitch: targetPitch,
-    duration: 1200,
-    essential: true
-  })
+  if (!userCoords || gpsState === GPS_STATES.OFF) return
+  isTrackingSuspended = false
+  renderCoords = [...userCoords]
+  pendingZoom = gpsState === GPS_STATES.NAVIGATION ? Math.max(map.getZoom(), 16) : Math.max(map.getZoom(), 15)
+  startFollowLoop()
 }
 
 // ─── Mathematical Geolocation Helpers ────────────────────────────────────────
