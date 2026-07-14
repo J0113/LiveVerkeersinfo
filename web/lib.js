@@ -117,6 +117,29 @@ function calculateBearing (coord1, coord2) {
   return (brng + 360) % 360
 }
 
+// Point reached by travelling `distMeters` from `coord` along `bearingDeg`
+// (0-360 from north). coords [lng, lat]. Used to dead-reckon the marker forward
+// between GPS fixes so motion glides instead of jumping.
+function destinationPoint (coord, bearingDeg, distMeters) {
+  const R = 6371000 // in meters
+  const [lng, lat] = coord
+  const brng = (bearingDeg * Math.PI) / 180
+  const dR = distMeters / R
+  const lat1 = (lat * Math.PI) / 180
+  const lng1 = (lng * Math.PI) / 180
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(dR) +
+      Math.cos(lat1) * Math.sin(dR) * Math.cos(brng)
+  )
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(brng) * Math.sin(dR) * Math.cos(lat1),
+      Math.cos(dR) - Math.sin(lat1) * Math.sin(lat2)
+    )
+  return [(((lng2 * 180) / Math.PI + 540) % 360) - 180, (lat2 * 180) / Math.PI]
+}
+
 // ─── Drive HUD: direction filtering ─────────────────────────────────────────────
 
 // Smallest signed angular difference a-b, normalized to (-180, 180].

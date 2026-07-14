@@ -299,6 +299,15 @@ let followRaf = null        // requestAnimationFrame handle for the follow loop
 let pendingZoom = null      // one-shot zoom to snap to when (re)entering a follow state
 let deviceHeading = null    // compass heading (deg, clockwise from true north) from DeviceOrientation
 let orientationBound = false
+let movementHeading = null  // heading derived from GPS motion only (no compass)
+let lastMovingAt = null     // timestamp (ms) of last detected motion; drives the 10 s compass switch
+let lastFixAt = null        // timestamp (ms) of the most recent GPS fix, for dead-reckoning
+// Standing still ≥ this long → orient by the compass; otherwise steer by the GPS
+// travel bearing. Below MOVING_SPEED_MPS / MOVING_DIST_M a fix counts as stopped.
+const STATIONARY_COMPASS_MS = 10000
+const MOVING_SPEED_MPS = 0.8   // ~2.9 km/h
+const MOVING_DIST_M = 3
+const DEAD_RECKON_MAX_MS = 2500 // cap forward prediction if fixes stop arriving
 // How far below the map centre the user marker sits (fraction of viewport height),
 // so more of the road ahead is visible — like a car-navigation view.
 const FOLLOW_BOTTOM_RATIO = 0.30
@@ -1626,6 +1635,9 @@ function setGPSState(state) {
     userCoords = null
     prevCoords = null
     userHeading = null
+    movementHeading = null
+    lastMovingAt = null
+    lastFixAt = null
     userAccuracy = 0
     userHeadingHistory.length = 0
     renderCoords = null
@@ -1653,7 +1665,7 @@ function setGPSState(state) {
     if (isTrackingSuspended) recenterBtn.classList.remove('hidden')
     if (!userCoords && userLocationStatus !== 'denied') userLocationStatus = 'waiting'
     pendingZoom = Math.max(map.getZoom(), 16)
-    renderBearing = deviceHeading ?? userHeading ?? map.getBearing()
+    renderBearing = currentHeading() ?? map.getBearing()
     setFollowPadding(true)
     startGPSWatcher()
     startFollowLoop()
@@ -1689,11 +1701,25 @@ function followTick () {
   if (!userCoords) return
   if (!renderCoords) renderCoords = [...userCoords]
 
-  renderCoords[0] += (userCoords[0] - renderCoords[0]) * FOLLOW_POS_LERP
-  renderCoords[1] += (userCoords[1] - renderCoords[1]) * FOLLOW_POS_LERP
-  // Snap the last sub-metre so the marker settles exactly on a fix.
-  if (Math.abs(userCoords[0] - renderCoords[0]) < 1e-6) renderCoords[0] = userCoords[0]
-  if (Math.abs(userCoords[1] - renderCoords[1]) < 1e-6) renderCoords[1] = userCoords[1]
+  // Keep the displayed heading (and cone) consistent with the moving/stopped
+  // policy every frame, so the 10 s compass switch happens without a new fix.
+  refreshHeading()
+
+  // Dead-reckon: while moving, advance the smoothing target forward from the
+  // last fix along the travel bearing, so the marker glides continuously
+  // between ~1 Hz fixes instead of lerping-then-waiting.
+  let target = userCoords
+  if (userSpeedMps !== null && userSpeedMps > MOVING_SPEED_MPS &&
+      movementHeading !== null && lastFixAt !== null) {
+    const elapsed = Math.min((Date.now() - lastFixAt) / 1000, DEAD_RECKON_MAX_MS / 1000)
+    target = destinationPoint(userCoords, movementHeading, userSpeedMps * elapsed)
+  }
+
+  renderCoords[0] += (target[0] - renderCoords[0]) * FOLLOW_POS_LERP
+  renderCoords[1] += (target[1] - renderCoords[1]) * FOLLOW_POS_LERP
+  // Snap the last sub-metre so a stationary marker settles exactly on target.
+  if (Math.abs(target[0] - renderCoords[0]) < 1e-6) renderCoords[0] = target[0]
+  if (Math.abs(target[1] - renderCoords[1]) < 1e-6) renderCoords[1] = target[1]
 
   if (userMarker) userMarker.setLngLat(renderCoords)
 
@@ -1702,7 +1728,7 @@ function followTick () {
   const cam = { center: renderCoords }
   if (pendingZoom !== null) { cam.zoom = pendingZoom; pendingZoom = null }
   if (gpsState === GPS_STATES.NAVIGATION) {
-    const targetBearing = deviceHeading ?? userHeading
+    const targetBearing = currentHeading()
     if (targetBearing !== null && targetBearing !== undefined) {
       renderBearing = lerpAngle(renderBearing, targetBearing, FOLLOW_BEARING_LERP)
       cam.bearing = renderBearing
@@ -1710,6 +1736,37 @@ function followTick () {
     cam.pitch = 55
   }
   map.jumpTo(cam)
+}
+
+// Heading to display/steer by. While moving — or within STATIONARY_COMPASS_MS of
+// the last motion — use the GPS-derived travel bearing; only after standing still
+// long enough fall back to the compass.
+function currentHeading () {
+  const stillMs = lastMovingAt === null ? Infinity : Date.now() - lastMovingAt
+  const stoodStill = stillMs >= STATIONARY_COMPASS_MS
+  if (!stoodStill && movementHeading !== null) return movementHeading
+  if (deviceHeading !== null) return deviceHeading
+  return movementHeading // no compass yet — best available
+}
+
+// Recompute the exposed heading (used by HUD, cone, nav bearing) from the policy.
+function refreshHeading () {
+  const h = currentHeading()
+  if (h !== null) userHeading = h
+  updateHeadingCone()
+}
+
+function updateHeadingCone () {
+  const coneEl = document.getElementById('user-heading-cone-el')
+  if (!coneEl) return
+  if (userHeading !== null && userHeading !== undefined) {
+    // Marker is screen-fixed, so subtract map bearing to keep the cone pointing
+    // at the true compass heading even when the map is rotated.
+    coneEl.style.setProperty('--heading', `${userHeading - map.getBearing()}deg`)
+    coneEl.classList.add('visible')
+  } else {
+    coneEl.classList.remove('visible')
+  }
 }
 
 // Interpolate angle a→b along the shortest arc; handles the 0/360 wrap.
@@ -1745,7 +1802,6 @@ function onDeviceOrientation (e) {
   }
   if (h === null) return
   deviceHeading = h
-  if (userHeading === null) userHeading = h
 }
 
 function startGPSWatcher() {
@@ -1794,24 +1850,29 @@ function onGeolocationUpdate(position) {
   userSpeedMps = Number.isFinite(speed) ? speed : null
   userLocationStatus = 'ready'
   
-  let headingSample = null
-  if (heading !== null && !isNaN(heading)) {
-    headingSample = heading
-  } else if (prevCoords) {
-    const dist = calculateDistance(prevCoords, userCoords)
-    // Suppress jitter by only calculating direction when moving > 2 meters
-    if (dist > 2) {
+  const now = Date.now()
+  const dist = prevCoords ? calculateDistance(prevCoords, userCoords) : 0
+  const isMoving = (userSpeedMps !== null && userSpeedMps > MOVING_SPEED_MPS) ||
+                   dist > MOVING_DIST_M
+
+  // Only feed the travel bearing while actually moving, so a stale GPS heading
+  // (or jitter) at standstill can't pollute movementHeading.
+  if (isMoving) {
+    lastMovingAt = now
+    let headingSample = null
+    if (heading !== null && !isNaN(heading)) {
+      headingSample = heading
+    } else if (prevCoords) {
       headingSample = calculateBearing(prevCoords, userCoords)
     }
-  } else if (deviceHeading !== null) {
-    // No GPS heading yet (common on iOS when slow/stopped) — fall back to compass.
-    headingSample = deviceHeading
+    if (headingSample !== null) {
+      userHeadingHistory.push(headingSample)
+      if (userHeadingHistory.length > 5) userHeadingHistory.shift()
+      movementHeading = circularMeanDegrees(userHeadingHistory)
+    }
   }
-  if (headingSample !== null) {
-    userHeadingHistory.push(headingSample)
-    if (userHeadingHistory.length > 5) userHeadingHistory.shift()
-    userHeading = circularMeanDegrees(userHeadingHistory)
-  }
+  lastFixAt = now
+  refreshHeading()
 
   updateUserMarker()
   updateAccuracyCircle()
@@ -1879,17 +1940,7 @@ function updateUserMarker() {
     userMarker.setLngLat(userCoords)
   }
 
-  const coneEl = document.getElementById('user-heading-cone-el')
-  if (coneEl) {
-    if (userHeading !== null && userHeading !== undefined) {
-      // Marker is screen-fixed, so subtract map bearing to keep the cone
-      // pointing at the true compass heading even when the map is rotated.
-      coneEl.style.setProperty('--heading', `${userHeading - map.getBearing()}deg`)
-      coneEl.classList.add('visible')
-    } else {
-      coneEl.classList.remove('visible')
-    }
-  }
+  updateHeadingCone()
 }
 
 function updateAccuracyCircle() {
