@@ -1,5 +1,7 @@
 # LiveVerkeersinfo
 
+<img src="docs/logo.png" alt="LiveVerkeersinfo logo" width="120">
+
 Real-time Dutch traffic data (NDW open data) stored in PostGIS and served as a spatial API with a MapLibre web map. Filter any feed by bounding box instead of downloading the full national file.
 
 ## Quickstart
