@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections import defaultdict
 from typing import Annotated
@@ -274,7 +275,8 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
                                least(candidate.fraction + 0.0001, 1)
                            )
                        )) + CASE WHEN candidate.direction = 'T' THEN 180 ELSE 0 END
-                   )::numeric, 360)::double precision AS bearing
+                   )::numeric, 360)::double precision AS bearing,
+                   opp.roadside_bearing
             FROM sites s
             CROSS JOIN LATERAL (
                 SELECT w.source_id,
@@ -299,6 +301,26 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
                 ORDER BY w.geom <-> s.point
                 LIMIT 1
             ) candidate
+            -- WEGGEG geometry direction is inconsistent, so travel bearing can't
+            -- reliably pick a roadside. Instead point the marker away from the
+            -- opposite carriageway (outward from the median) — robust regardless
+            -- of digitisation. Null on single-carriageway roads.
+            LEFT JOIN LATERAL (
+                SELECT mod(degrees(ST_Azimuth(
+                           ST_ClosestPoint(ST_LineMerge(w2.geom), s.point),
+                           s.point
+                       ))::numeric, 360)::double precision AS roadside_bearing
+                FROM weggeg_lane w2
+                WHERE w2.lane = 1
+                  AND w2.road_number = s.road_number
+                  AND w2.carriageway_side IN ('R', 'L')
+                  AND w2.carriageway_side <> s.carriageway
+                  AND ST_DWithin(w2.geom::geography, s.point::geography, 120)
+                  AND NOT ST_Equals(
+                      ST_ClosestPoint(ST_LineMerge(w2.geom), s.point), s.point)
+                ORDER BY w2.geom <-> s.point
+                LIMIT 1
+            ) opp ON true
             """
         ),
         {"sites": json.dumps(payload)},
@@ -314,6 +336,8 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
         if row.bearing is not None:
             props["bearing"] = round(float(row.bearing) % 360, 1)
             props["bearing_source"] = "weggeg"
+        if row.roadside_bearing is not None:
+            props["roadside_bearing"] = round(float(row.roadside_bearing) % 360, 1)
         matched_indices.add(row.i)
 
     # Exit and connector measurements sometimes retain their former road/km
@@ -470,6 +494,25 @@ def _attach_fallback_bearings(db, features: list[dict]) -> None:
         f["properties"]["bearing_source"] = "meetlocatie_vak"
 
 
+def _lane_start_point(geom_json: str | None) -> list[float] | None:
+    """Return the start [lon, lat] of a lane geometry (Line/MultiLine).
+
+    Lanes are parallel offset curves of the same base line, so their *start*
+    vertices are perpendicular offsets of the base start — reliably aligned
+    across lanes. A mid-vertex is not (offset curves get different vertex counts
+    on bends), which corrupts the cross-road projection on long/curved sections.
+    """
+    if not geom_json:
+        return None
+    geom = json.loads(geom_json)
+    coords = geom.get("coordinates")
+    if geom.get("type") == "MultiLineString":
+        coords = coords[0] if coords else None
+    if not coords:
+        return None
+    return coords[0]
+
+
 def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -> dict:
     """Project matched point measurements onto their separate WEGGEG lanes."""
     matched: dict[str, list[dict]] = defaultdict(list)
@@ -501,12 +544,51 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
         .limit(settings.api_max_limit)
     ).all()
 
+    # WEGGEG lane geometry is offset assuming the source line is digitised with
+    # increasing hectometres, but digitisation direction is inconsistent. When a
+    # section is digitised the "wrong" way, lane 1 (fast) ends up offset to the
+    # shoulder instead of the median, so speeds appear mirrored across the road.
+    # The *set* of parallel lane lines is still correct — only the lane→line
+    # labelling flips — so detect the mirror (using the point's roadside_bearing,
+    # which points outward toward the shoulder) and reverse the speed→lane lookup.
+    rows_by_source: dict[str, list] = defaultdict(list)
+    for row in rows:
+        rows_by_source[row.source_id].append(row)
+
+    mirrored_sources: set[str] = set()
+    for source_id, srows in rows_by_source.items():
+        outward = next(
+            (p["properties"].get("roadside_bearing")
+             for p in matched.get(source_id, [])
+             if p["properties"].get("roadside_bearing") is not None),
+            None,
+        )
+        if outward is None or len(srows) < 2:
+            continue
+        ordered = sorted(srows, key=lambda r: r.lane)
+        m1 = _lane_start_point(ordered[0].geom_json)
+        m_last = _lane_start_point(ordered[-1].geom_json)
+        if not m1 or not m_last:
+            continue
+        rad = math.radians(outward)
+        # Project (lowest-lane → highest-lane) onto the outward direction. If the
+        # highest lane is *less* outward, lane 1 sits on the shoulder → mirrored.
+        proj = (m_last[0] - m1[0]) * math.sin(rad) + (m_last[1] - m1[1]) * math.cos(rad)
+        if proj < 0:
+            mirrored_sources.add(source_id)
+
     lane_features = []
     for row in rows:
+        mirrored = row.source_id in mirrored_sources
+        effective_lane = (
+            row.lane_count + 1 - row.lane
+            if mirrored and row.lane_count
+            else row.lane
+        )
         candidates: list[tuple[dict, dict]] = []
         for point in matched[row.source_id]:
             lane = next(
-                (item for item in point["properties"].get("lanes", []) if item["lane"] == row.lane),
+                (item for item in point["properties"].get("lanes", []) if item["lane"] == effective_lane),
                 None,
             )
             if lane is not None:
@@ -545,7 +627,9 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
             "properties": {
                 "id": row.id,
                 "source_id": row.source_id,
-                "lane": row.lane,
+                # effective_lane so the shown lane number matches the speed after
+                # mirror correction; the geometry stays at its physical position.
+                "lane": effective_lane,
                 "lane_count": row.lane_count,
                 "road": point_props.get("road"),
                 "road_number": row.road_number,

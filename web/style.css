@@ -396,11 +396,18 @@ input[type="radio"] {
 
 .road-sign-hud-lanes {
   display: flex;
-  align-items: flex-start;
   justify-content: center;
-  gap: 7px;
-  overflow-x: auto;
+  overflow: hidden;
   padding: 2px 1px 1px;
+}
+
+/* Inner row scaled down by JS (fitMatrixLanes) so 4+ lanes fit the tile width
+   instead of overflowing — the HUD is pointer-events:none, so it can't scroll. */
+.road-sign-hud-lanes-track {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  transform-origin: top center;
 }
 
 .road-sign-hud-lane {

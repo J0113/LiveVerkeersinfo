@@ -34,8 +34,14 @@ const LAYERS = [
 
   // ── Traffic ────────────────────────────────────────────────────────────────
   {
-    key: 'speed', label: 'Traffic Speed', group: 'traffic',
+    key: 'speed', label: 'Traffic Speed Lanes', group: 'traffic',
     endpoint: '/traffic/speed', geomType: 'speed', legendColor: '#00cc44',
+  },
+  {
+    // Roadside speed markers. Own data source + toggle so points can stay on at
+    // any zoom, independently of the zoom-gated lane lines above.
+    key: 'speed_points', label: 'Traffic Speed Points', group: 'traffic',
+    endpoint: '/traffic/speed', geomType: 'speed-points', legendColor: '#00cc44',
   },
   {
     // Segment line (start→end), coloured by delay = duration_s / ref_duration_s
@@ -102,11 +108,12 @@ const LAYERS = [
   // ── Signs & VMS ────────────────────────────────────────────────────────────
   {
     key: 'matrix', label: 'Matrix Signs', group: 'signs',
-    endpoint: '/signs/matrix', geomType: 'msi', legendColor: '#4488ff', hudOnly: true,
+    endpoint: '/signs/matrix', geomType: 'msi', legendColor: '#4488ff',
   },
   {
     key: 'drips', label: 'DRIPs / VMS', group: 'signs',
-    endpoint: '/signs/drips', geomType: 'point', legendColor: '#00ccaa', hudOnly: true,
+    endpoint: '/signs/drips', geomType: 'point', legendColor: '#00ccaa',
+    paint: { 'circle-radius': 6, 'circle-color': '#00ccaa', 'circle-stroke-width': 1, 'circle-stroke-color': '#fff' }
   },
 
   // ── EV Charging ────────────────────────────────────────────────────────────
@@ -219,14 +226,47 @@ const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
 let nwbTruncated = false
 
+// GPS-relative top HUD tiles. Toggled independently of the map layers via the
+// "HUD" section at the top of the layer panel. Only shown while GPS tracks.
+const HUD_ITEMS = [
+  { key: 'hud_speed',  label: 'Driving speed', legendColor: '#00cc44' },
+  { key: 'hud_matrix', label: 'Matrix signs',  legendColor: '#4488ff' },
+  { key: 'hud_drips',  label: 'DRIP popups',   legendColor: '#00ccaa' }
+]
+const DEFAULT_HUD_ENABLED = new Set(['hud_speed', 'hud_matrix', 'hud_drips'])
+
+// Restore a previously saved toggle set from localStorage, keeping only keys
+// that still exist (drops renamed/removed layers). Falls back to the defaults
+// when nothing is stored yet.
+function loadSavedSet (storageKey, validKeys, fallback) {
+  try {
+    const raw = localStorage.getItem(storageKey)
+    if (raw) {
+      const arr = JSON.parse(raw)
+      if (Array.isArray(arr)) return new Set(arr.filter(k => validKeys.has(k)))
+    }
+  } catch {}
+  return new Set(fallback)
+}
+
+function persistLayers () {
+  try { localStorage.setItem('layers', JSON.stringify([...enabled])) } catch {}
+}
+function persistHud () {
+  try { localStorage.setItem('hudLayers', JSON.stringify([...hudEnabled])) } catch {}
+}
+
 // ─── Runtime state ────────────────────────────────────────────────────────────
 
-const enabled = new Set(DEFAULT_ENABLED)
+const enabled = loadSavedSet('layers', new Set(LAYERS.map(l => l.key)), DEFAULT_ENABLED)
+const hudEnabled = loadSavedSet('hudLayers', new Set(HUD_ITEMS.map(i => i.key)), DEFAULT_HUD_ENABLED)
 const controllers = {}  // key → AbortController
 let debounceTimer = null
 let activePopup = null
 let selectedFeature = null  // { source, id } currently highlighted (feature-state)
 let speedMarkers = []  // maplibregl.Marker instances for traffic speed sites
+let msiMarkers = []    // { marker, el, bearing } for MSI gantries (map render)
+const MATRIX_MIN_ZOOM = 11
 const nwbCache = new Map() // viewport/profile key → { expires, data }
 const NWB_BROWSER_CACHE_TTL_MS = 5 * 60_000
 let publicConfig = { nwbDiagnosticMode: false }
@@ -400,8 +440,8 @@ map.on('load', () => {
   addArrowImage()
 
   for (const layer of LAYERS) {
-    // Road signs are rendered only in the GPS-relative top HUD.
-    if (layer.hudOnly) continue
+    // MSI gantries and speed points are HTML markers, not MapLibre layers.
+    if (layer.geomType === 'msi' || layer.geomType === 'speed-points') continue
 
     const srcOpts = { type: 'geojson', data: EMPTY_FC }
     if (layer.promoteId) srcOpts.promoteId = layer.promoteId
@@ -554,6 +594,7 @@ map.on('move', updateLaneSpeedLayout)
 // Re-evaluate verkeersborden hint + re-fetch on zoom change
 map.on('zoom', () => {
   updateZoomHint()
+  updateMatrixLayout()
   updateSpeedLayout()
   updateLaneSpeedLayout()
   // If verkeersborden just crossed zoom 13, trigger a fetch
@@ -562,25 +603,28 @@ map.on('zoom', () => {
 })
 
 // Keep roadside offsets correct while the map rotates (e.g. navigation mode).
-map.on('rotate', () => { updateSpeedLayout(); updateLaneSpeedLayout() })
+map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout(); updateLaneSpeedLayout() })
+
+// Refit the HUD matrix lanes when the viewport width changes (rotate phone, resize).
+window.addEventListener('resize', () => fitMatrixLanes())
 
 // ─── Fetch ────────────────────────────────────────────────────────────────────
 
 function fetchAll () {
   bboxTooLarge = false
-  let needsRoadSignHud = false
   for (const layer of LAYERS) {
     if (!enabled.has(layer.key)) continue
-    if (layer.hudOnly) needsRoadSignHud = true
-    else fetchLayer(layer)
+    fetchLayer(layer)
   }
-  if (needsRoadSignHud || gpsState !== GPS_STATES.OFF) fetchRoadSignHud()
+  // Matrix/DRIPs also feed the GPS-relative HUD; refresh it while tracking.
+  if (gpsState !== GPS_STATES.OFF) fetchRoadSignHud()
   else renderRoadSignHud()
 }
 
 function fetchLayer (layer) {
-  if (layer.hudOnly) { fetchRoadSignHud(true); return }
-  if (layer.geomType === 'speed') { fetchSpeedMarkers(); return }
+  if (layer.geomType === 'msi') { fetchMatrixSigns(); return }
+  if (layer.geomType === 'speed') { fetchSpeedLanes(); return }
+  if (layer.geomType === 'speed-points') { fetchSpeedPoints(); return }
   if (layer.geomType === 'road-network') { fetchNwbRoads(layer); return }
 
   if (layer.minZoom && map.getZoom() < layer.minZoom) {
@@ -713,6 +757,123 @@ function viewportBbox (includeNearbyPoints = false) {
   return [west, south, east, north].map(v => v.toFixed(6)).join(',')
 }
 
+// ─── Matrix sign HTML markers (map render) ───────────────────────────────────
+
+function fetchMatrixSigns () {
+  if (map.getZoom() < MATRIX_MIN_ZOOM) {
+    for (const m of msiMarkers) m.marker.remove()
+    msiMarkers = []
+    return
+  }
+
+  controllers['matrix']?.abort()
+  const ctrl = new AbortController()
+  controllers['matrix'] = ctrl
+
+  const b = map.getBounds()
+  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
+    .map(v => v.toFixed(6)).join(',')
+
+  fetch(`/api/signs/matrix?bbox=${bbox}`, { signal: ctrl.signal })
+    .then(r => {
+      if (r.status === 400) return r.json().then(body => Promise.reject(Object.assign(new Error(body.detail || 'Bad Request'), { isBboxError: /bbox area/i.test(body.detail || '') })))
+      if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
+      return r.json()
+    })
+    .then(fc => {
+      setBboxTooLargeHint(false)
+      renderMatrixMarkers(fc)
+    })
+    .catch(e => {
+      if (e.name === 'AbortError') return
+      if (e.isBboxError) { setBboxTooLargeHint(true); return }
+      console.warn('[matrix]', e.message)
+    })
+}
+
+function renderMatrixMarkers (fc) {
+  for (const m of msiMarkers) m.marker.remove()
+  msiMarkers = []
+
+  if (!enabled.has('matrix')) return
+
+  // Group by road+km+carriageway = same physical gantry
+  const gantries = new Map()
+  for (const f of fc.features) {
+    if (!f.geometry) continue
+    const p = f.properties
+    const key = `${p.road ?? ''}|${p.km ?? ''}|${p.carriageway ?? ''}`
+    if (!gantries.has(key)) {
+      gantries.set(key, { coords: f.geometry.coordinates, bearing: p.bearing, lanes: [] })
+    }
+    gantries.get(key).lanes.push(p)
+  }
+
+  for (const [, gantry] of gantries) {
+    gantry.lanes.sort((a, b) => (a.lane ?? 0) - (b.lane ?? 0))
+
+    // Outer wrapper: maplibre owns its transform for positioning.
+    // Inner gantry: we apply scale + bearing rotation (won't be clobbered).
+    const wrapper = document.createElement('div')
+    const el = document.createElement('div')
+    el.className = 'msi-gantry'
+    wrapper.appendChild(el)
+
+    for (const lane of gantry.lanes) {
+      el.appendChild(buildMsiLane(lane))
+    }
+
+    el.addEventListener('click', e => {
+      e.stopPropagation()
+      if (activePopup) activePopup.remove()
+      const first = gantry.lanes[0] || {}
+      const header = `<div style="font-size:11px;color:#6688aa;margin-bottom:6px">${esc(first.road || '')} ${esc(first.carriageway || '')} km ${esc(String(first.km ?? ''))}</div>`
+      const lanesHtml = gantry.lanes.map(l => `<b style="color:#6688aa;font-size:11px">Lane ${l.lane ?? '?'}</b>${buildPopupHtml(l)}`).join('<hr style="border-color:#2a2a40;margin:5px 0">')
+      activePopup = new maplibregl.Popup({ maxWidth: '320px', offset: [0, -8] })
+        .setLngLat(gantry.coords)
+        .setHTML(header + lanesHtml)
+        .addTo(map)
+    })
+
+    const marker = new maplibregl.Marker({ element: wrapper, anchor: 'center' })
+      .setLngLat(gantry.coords)
+      .addTo(map)
+    msiMarkers.push({ marker, el, bearing: gantry.bearing })
+  }
+
+  updateMatrixLayout()
+}
+
+// Scale gantries with zoom and offset them to the roadside (perpendicular to the
+// road bearing) so the signs sit beside the carriageway instead of on top of it.
+// Recomputed on zoom and rotate; needs no refetch.
+function updateMatrixLayout () {
+  if (!msiMarkers.length) return
+  const z = map.getZoom()
+  // ~0.45 at z11 → 1.0 at z15+; keeps signs readable without swamping the map.
+  const scale = Math.max(0.45, Math.min(1, 0.45 + (z - 11) * 0.1375))
+  const mapBearing = map.getBearing()
+
+  for (const m of msiMarkers) {
+    if (m.bearing === null || m.bearing === undefined) {
+      m.el.style.transform = `scale(${scale})`
+      m.marker.setOffset([0, 0])
+      continue
+    }
+    // Rotate the lane row to the road bearing so it spans across the carriageway.
+    // Subtract map bearing so it stays road-aligned when the map rotates.
+    m.el.style.transform = `rotate(${m.bearing - mapBearing}deg) scale(${scale})`
+    // Shift outward (right of travel = roadside shoulder, NL drives on the right)
+    // by half the sign width so the inner edge meets the road centerline and the
+    // body extends to the outside. Opposite carriageways flip automatically.
+    const screenAngle = ((m.bearing + 90 - mapBearing) * Math.PI) / 180
+    const dist = (m.el.offsetWidth * scale) / 2 + 4
+    const dx = Math.sin(screenAngle) * dist
+    const dy = -Math.cos(screenAngle) * dist
+    m.marker.setOffset([dx, dy])
+  }
+}
+
 // ─── GPS-relative road-sign HUD ──────────────────────────────────────────────
 
 function fetchRoadSignHud (force = false) {
@@ -752,11 +913,12 @@ function fetchRoadSignHud (force = false) {
     side: 250
   })
   const requests = []
-  if (userHeading !== null && enabled.has('matrix')) requests.push(fetchRoadSignHudSource('matrix', bbox, ctrl.signal))
+  if (userHeading !== null && hudEnabled.has('hud_matrix')) requests.push(fetchRoadSignHudSource('matrix', bbox, ctrl.signal))
   else roadSignHudCache.matrix = EMPTY_FC
-  if (userHeading !== null && enabled.has('drips')) requests.push(fetchRoadSignHudSource('drips', bbox, ctrl.signal))
+  if (userHeading !== null && hudEnabled.has('hud_drips')) requests.push(fetchRoadSignHudSource('drips', bbox, ctrl.signal))
   else roadSignHudCache.drips = EMPTY_FC
-  requests.push(fetchRoadSignHudSpeedSource(speedBbox, ctrl.signal))
+  if (hudEnabled.has('hud_speed')) requests.push(fetchRoadSignHudSpeedSource(speedBbox, ctrl.signal))
+  else roadSignHudCache.speedPoints = EMPTY_FC
 
   Promise.allSettled(requests).then(results => {
     for (const result of results) {
@@ -796,14 +958,14 @@ function renderRoadSignHud () {
   const selected = userHeading === null
     ? { matrix: null, drip: null }
     : selectUpcomingRoadSigns(
-        enabled.has('matrix') ? roadSignHudCache.matrix : EMPTY_FC,
-        enabled.has('drips') ? roadSignHudCache.drips : EMPTY_FC,
+        hudEnabled.has('hud_matrix') ? roadSignHudCache.matrix : EMPTY_FC,
+        hudEnabled.has('hud_drips') ? roadSignHudCache.drips : EMPTY_FC,
         { coords: userCoords, heading: userHeading },
         ROAD_SIGN_HUD_MAX_DISTANCE_M
       )
 
   selected.gpsKmh = Number.isFinite(userSpeedMps) ? userSpeedMps * 3.6 : null
-  selected.upcoming = userHeading === null
+  selected.upcoming = (userHeading === null || !hudEnabled.has('hud_speed'))
     ? null
     : selectUpcomingLaneSpeeds(roadSignHudCache.speedPoints, { coords: userCoords, heading: userHeading }, 2500)
 
@@ -821,7 +983,7 @@ function renderRoadSignHudSelection (selected) {
   renderMatrixHudTile(selected.matrix)
   renderDripHudTile(selected.drip)
   updateGpsSpeedBadge(selected.gpsKmh, selected.upcoming)
-  const speedVisible = gpsState !== GPS_STATES.OFF
+  const speedVisible = gpsState !== GPS_STATES.OFF && hudEnabled.has('hud_speed')
   const visibleCount = [speedVisible, selected.matrix, selected.drip].filter(Boolean).length
   const visible = visibleCount > 0
   speedTile.classList.toggle('hidden', !speedVisible)
@@ -831,6 +993,9 @@ function renderRoadSignHudSelection (selected) {
   if (visible) document.body.classList.add(`road-sign-hud-count-${visibleCount}`)
   hud.classList.toggle('hidden', !visible)
   document.body.classList.toggle('road-sign-hud-visible', visible)
+  // First matrix build measures 0 width while the tile is hidden; refit once the
+  // HUD is shown and laid out.
+  if (visible && selected.matrix) requestAnimationFrame(fitMatrixLanes)
 }
 
 function renderSpeedHudTile (upcoming) {
@@ -907,6 +1072,8 @@ function renderMatrixHudTile (selection) {
   )
 
   lanes.replaceChildren()
+  const track = document.createElement('div')
+  track.className = 'road-sign-hud-lanes-track'
   for (const lane of gantry.lanes) {
     const column = document.createElement('div')
     column.className = 'road-sign-hud-lane'
@@ -914,9 +1081,25 @@ function renderMatrixHudTile (selection) {
     label.className = 'road-sign-hud-lane-label'
     label.textContent = `Rijstrook ${lane.lane ?? '?'}`
     column.append(label, buildMsiLane(lane))
-    lanes.appendChild(column)
+    track.appendChild(column)
   }
+  lanes.appendChild(track)
   roadSignHudRenderState.matrixKey = matrixKey
+  fitMatrixLanes()
+}
+
+// Scale the lane row down so wide gantries (4+ lanes) fit the fixed-width matrix
+// tile. Measures once laid out; skips while the tile is hidden (clientWidth 0).
+function fitMatrixLanes () {
+  const container = document.getElementById('road-sign-hud-lanes')
+  const track = container?.firstElementChild
+  if (!track) return
+  const avail = container.clientWidth
+  if (!avail) return
+  track.style.transform = 'scale(1)'
+  const natural = track.scrollWidth
+  const scale = natural > avail ? avail / natural : 1
+  track.style.transform = `scale(${scale})`
 }
 
 function renderDripHudTile (selection) {
@@ -981,14 +1164,23 @@ function clearRoadSignHud () {
 
 // ─── Traffic speed HTML markers ───────────────────────────────────────────────
 
-function fetchSpeedMarkers () {
+// ── Traffic speed — lanes (zoom-gated line source + per-lane labels) ──────────
+function fetchSpeedLanes () {
   controllers['speed']?.abort()
   const ctrl = new AbortController()
   controllers['speed'] = ctrl
 
-  const includeLanes = map.getZoom() >= 14
-  const bbox = viewportBbox(includeLanes)
-  fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=${includeLanes}`, { signal: ctrl.signal })
+  // Lane geometry only exists (and is only legible) when zoomed in. Below that,
+  // clear the source so the lanes toggle simply shows nothing until you zoom.
+  if (map.getZoom() < 14) {
+    map.getSource('speed')?.setData(EMPTY_FC)
+    for (const m of laneSpeedMarkers) m.marker.remove()
+    laneSpeedMarkers = []
+    return
+  }
+
+  const bbox = viewportBbox(false)
+  fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=true`, { signal: ctrl.signal })
     .then(r => {
       if (r.status === 400) return r.json().then(body => Promise.reject(Object.assign(new Error(body.detail || 'Bad Request'), { isBboxError: /bbox area/i.test(body.detail || '') })))
       if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
@@ -996,11 +1188,13 @@ function fetchSpeedMarkers () {
     })
     .then(data => {
       setBboxTooLargeHint(false)
-      // Colour the section as a gradient between the sensors covering it; the
-      // raw lanes (one feature per section, with a `sensors` list) still drive
-      // labels and marker fallbacks.
-      map.getSource('speed')?.setData(buildGradientLanes(data.lanes || EMPTY_FC))
-      renderSpeedMarkers(data.points || EMPTY_FC, data.lanes || EMPTY_FC)
+      // Colour the section as a gradient between the sensors covering it; the raw
+      // lanes (one feature per section, with a `sensors` list) drive the labels.
+      const laneFc = data.lanes || EMPTY_FC
+      map.getSource('speed')?.setData(buildGradientLanes(laneFc))
+      for (const m of laneSpeedMarkers) m.marker.remove()
+      laneSpeedMarkers = []
+      if (enabled.has('speed')) renderLaneSpeedLabels(laneFc)
     })
     .catch(e => {
       if (e.name === 'AbortError') return
@@ -1009,26 +1203,41 @@ function fetchSpeedMarkers () {
     })
 }
 
-function renderSpeedMarkers (fc, laneFc = EMPTY_FC) {
+// ── Traffic speed — points (roadside markers, shown at any zoom) ──────────────
+function fetchSpeedPoints () {
+  controllers['speed_points']?.abort()
+  const ctrl = new AbortController()
+  controllers['speed_points'] = ctrl
+
+  // Pad the query only when zoomed in (small viewport) so edge markers show;
+  // when zoomed out the raw viewport already covers a large area.
+  const bbox = viewportBbox(map.getZoom() >= 14)
+  fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=false`, { signal: ctrl.signal })
+    .then(r => {
+      if (r.status === 400) return r.json().then(body => Promise.reject(Object.assign(new Error(body.detail || 'Bad Request'), { isBboxError: /bbox area/i.test(body.detail || '') })))
+      if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
+      return r.json()
+    })
+    .then(data => {
+      setBboxTooLargeHint(false)
+      renderSpeedPoints(data.points || EMPTY_FC)
+    })
+    .catch(e => {
+      if (e.name === 'AbortError') return
+      if (e.isBboxError) { setBboxTooLargeHint(true); return }
+      console.warn('[speed-points]', e.message)
+    })
+}
+
+function renderSpeedPoints (fc) {
   for (const m of speedMarkers) m.marker.remove()
   speedMarkers = []
-  for (const m of laneSpeedMarkers) m.marker.remove()
-  laneSpeedMarkers = []
 
-  if (!enabled.has('speed')) return
-
-  renderLaneSpeedLabels(laneFc)
-
-  // A site is rendered as lane lines when WEGGEG matched and returned geometry.
-  // Sites without a usable WEGGEG section keep the original roadside marker.
-  const renderedSources = new Set(
-    (laneFc.features || []).map(f => f.properties?.source_id).filter(Boolean)
-  )
+  if (!enabled.has('speed_points')) return
 
   for (const f of fc.features) {
     if (!f.geometry) continue
     const p = f.properties
-    if (p.weggeg_source_id && renderedSources.has(p.weggeg_source_id)) continue
     const lanes = p.lanes || []
     if (!lanes.length) continue
 
@@ -1075,10 +1284,17 @@ function renderSpeedMarkers (fc, laneFc = EMPTY_FC) {
         .addTo(map)
     })
 
+    // Compass direction to offset the marker toward. Prefer roadside_bearing
+    // (points away from the opposite carriageway — reliable), else fall back to
+    // right-of-travel (bearing + 90). Null → sit centred on the sensor point.
+    const offsetCompass = p.roadside_bearing != null
+      ? p.roadside_bearing
+      : (p.bearing != null ? (p.bearing + 90) % 360 : null)
+
     const marker = new maplibregl.Marker({ element: wrapper, anchor: 'center' })
       .setLngLat(f.geometry.coordinates)
       .addTo(map)
-    speedMarkers.push({ marker, el, bearing: p.bearing })
+    speedMarkers.push({ marker, el, offsetCompass })
   }
 
   updateSpeedLayout()
@@ -1324,17 +1540,22 @@ function updateSpeedLayout () {
   const mapBearing = map.getBearing()
 
   for (const m of speedMarkers) {
-    if (m.bearing === null || m.bearing === undefined) {
-      m.el.style.transform = `scale(${scale})`
+    m.el.style.transform = `scale(${scale})`
+    if (m.offsetCompass === null || m.offsetCompass === undefined) {
       m.marker.setOffset([0, 0])
       continue
     }
-    // Keep speed text upright; bearing is only used to place the fallback
-    // marker beside the road rather than rotate its numbers.
-    m.el.style.transform = `scale(${scale})`
-    const screenAngle = ((m.bearing + 90 - mapBearing) * Math.PI) / 180
-    const dist = (m.el.offsetWidth * scale) / 2 + 3
-    m.marker.setOffset([Math.sin(screenAngle) * dist, -Math.cos(screenAngle) * dist])
+    // Numbers stay upright; only the marker's screen position shifts, toward
+    // offsetCompass. Offset by the box's half-extent *along that direction* so
+    // its edge sits at the sensor point (not half the full row width, which
+    // overshot across the median on steep roads).
+    const rel = ((m.offsetCompass - mapBearing) * Math.PI) / 180
+    const ox = Math.sin(rel)
+    const oy = -Math.cos(rel)
+    const halfW = (m.el.offsetWidth * scale) / 2
+    const halfH = (m.el.offsetHeight * scale) / 2
+    const dist = Math.abs(ox) * halfW + Math.abs(oy) * halfH + 3
+    m.marker.setOffset([ox * dist, oy * dist])
   }
 }
 
@@ -1422,6 +1643,10 @@ function buildPopupHtml (props) {
 function buildLayerPanel () {
   const panelBody = document.getElementById('panel-body')
 
+  // HUD tiles live at the very top — they control the GPS-relative overlay,
+  // independently of the map layers below.
+  panelBody.appendChild(buildHudSection())
+
   for (const group of GROUPS) {
     const groupLayers = LAYERS.filter(l => l.group === group.key)
     if (!groupLayers.length) continue
@@ -1440,6 +1665,71 @@ function buildLayerPanel () {
 
     panelBody.appendChild(section)
   }
+}
+
+function buildHudSection () {
+  const section = document.createElement('div')
+  section.className = 'group'
+
+  const header = document.createElement('label')
+  header.className = 'group-header'
+  const gcb = document.createElement('input')
+  gcb.type = 'checkbox'
+  gcb.dataset.group = 'hud'
+  syncHudGroupCb(gcb)
+  gcb.addEventListener('change', () => {
+    for (const item of HUD_ITEMS) {
+      if (gcb.checked) hudEnabled.add(item.key)
+      else hudEnabled.delete(item.key)
+      const childCb = document.getElementById(`cb-${item.key}`)
+      if (childCb) childCb.checked = gcb.checked
+    }
+    persistHud()
+    fetchRoadSignHud(true)
+  })
+  header.appendChild(gcb)
+  header.append(' HUD')
+  section.appendChild(header)
+
+  for (const item of HUD_ITEMS) section.appendChild(makeHudRow(item))
+  return section
+}
+
+function makeHudRow (item) {
+  const label = document.createElement('label')
+  label.className = 'layer-row indented'
+
+  const cb = document.createElement('input')
+  cb.type = 'checkbox'
+  cb.id = `cb-${item.key}`
+  cb.checked = hudEnabled.has(item.key)
+  cb.addEventListener('change', () => {
+    if (cb.checked) hudEnabled.add(item.key)
+    else hudEnabled.delete(item.key)
+    const parentCb = document.querySelector('input[data-group="hud"]')
+    if (parentCb) syncHudGroupCb(parentCb)
+    persistHud()
+    fetchRoadSignHud(true)
+  })
+
+  const dot = document.createElement('span')
+  dot.className = 'dot'
+  dot.style.background = item.legendColor
+
+  const nameSpan = document.createElement('span')
+  nameSpan.textContent = item.label
+
+  label.appendChild(cb)
+  label.appendChild(dot)
+  label.appendChild(nameSpan)
+  return label
+}
+
+function syncHudGroupCb (cb) {
+  const allOn = HUD_ITEMS.every(i => hudEnabled.has(i.key))
+  const anyOn = HUD_ITEMS.some(i => hudEnabled.has(i.key))
+  cb.checked = allOn
+  cb.indeterminate = anyOn && !allOn
 }
 
 function makeGroupHeader (group, groupLayers) {
@@ -1467,6 +1757,7 @@ function makeGroupHeader (group, groupLayers) {
         if (childCb) childCb.checked = false
       }
     }
+    persistLayers()
     updateZoomHint()
   })
 
@@ -1500,6 +1791,7 @@ function makeLayerRow (layer, groupLayers, indented) {
       const parentCb = document.querySelector(`input[data-group="${layer.group}"]`)
       if (parentCb) syncGroupCb(parentCb, groupLayers)
     }
+    persistLayers()
     updateZoomHint()
   })
 
@@ -1530,9 +1822,9 @@ function syncGroupCb (cb, groupLayers) {
 }
 
 function setLayerVisibility (layer, visible) {
-  if (layer.hudOnly) {
-    if (!visible) roadSignHudCache[layer.key] = EMPTY_FC
-    renderRoadSignHud()
+  if (layer.geomType === 'msi') {
+    // Enable path: the change handler calls fetchLayer → fetchMatrixSigns.
+    if (!visible) { for (const m of msiMarkers) m.marker.remove(); msiMarkers = [] }
     return
   }
   if (layer.geomType === 'speed') {
@@ -1540,11 +1832,16 @@ function setLayerVisibility (layer, visible) {
     if (map.getLayer('speed-lanes-casing')) map.setLayoutProperty('speed-lanes-casing', 'visibility', vis)
     if (map.getLayer('speed-lanes')) map.setLayoutProperty('speed-lanes', 'visibility', vis)
     if (!visible) {
-      for (const m of speedMarkers) m.marker.remove()
-      speedMarkers = []
       for (const m of laneSpeedMarkers) m.marker.remove()
       laneSpeedMarkers = []
       map.getSource('speed')?.setData(EMPTY_FC)
+    }
+    return
+  }
+  if (layer.geomType === 'speed-points') {
+    if (!visible) {
+      for (const m of speedMarkers) m.marker.remove()
+      speedMarkers = []
     }
     return
   }
