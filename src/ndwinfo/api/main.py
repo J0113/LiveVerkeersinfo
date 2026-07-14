@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
@@ -81,13 +80,6 @@ app.include_router(weggeg.router, prefix="/api")
 def public_config():
     """Public, non-secret browser feature flags."""
     return {"nwbDiagnosticMode": settings.nwb_diagnostic_mode}
-
-
-# Clean URL for the driving HUD. StaticFiles(html=True) maps "/drive/" to a
-# directory, not drive.html, so serve it explicitly (route wins over the mount).
-@app.get("/drive", include_in_schema=False)
-def drive_page():
-    return FileResponse("web/drive.html")
 
 
 if os.path.isdir("web") and any(os.scandir("web")):

@@ -1,7 +1,7 @@
 'use strict'
 
-// ─── Shared helpers used by both the map page (app.js) and drive HUD (drive.js) ──
-// Plain global script (no modules); load BEFORE app.js / drive.js.
+// ─── Shared helpers used by the map page (app.js) ───────────────────────────────
+// Plain global script (no modules); load BEFORE app.js.
 
 // ─── MSI sign rendering (pure DOM + CSS classes in style.css) ───────────────────
 
@@ -170,8 +170,7 @@ function classifyFeature (device, featCoords, featBearing, opts) {
   }
 }
 
-// Group the lane-level matrix feed into physical gantries. Kept shared so the
-// map HUD and the dedicated /drive view use the same lane ordering and identity.
+// Group the lane-level matrix feed into physical gantries.
 function groupMatrixGantries (fc) {
   const gantries = new Map()
   for (const feature of (fc?.features || [])) {

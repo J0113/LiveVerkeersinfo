@@ -88,7 +88,6 @@ Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
 - [x] Poller (conditional GET on cadence) + parsers (DATEX v2/v3, GeoJSON, OCPI, CSV, shapefile)
 - [x] Spatial API (FastAPI, bbox filter) — `src/ndwinfo/api/`
 - [x] Web UI (MapLibre, layer per feed, bbox = current viewport) — `web/`
-- [x] Mobile driving HUD (`/drive`) — GPS heading filters signs/speed to travel direction only
 - [x] NWB road-network rendering foundation (viewport loading, zoom detail,
   caching, stable ids, opt-in diagnostics)
 - [x] Containerization (Docker Compose: db + app + poller)
@@ -138,10 +137,8 @@ migrations/              # Alembic schema migrations (SQLAlchemy tracked)
 web/                    # Static frontend:
 ├── index.html          # MapLibre GL JS canvas (map page, served at /)
 ├── app.js              # Layer toggles, bbox picker, API fetch + render
-├── lib.js              # Shared helpers: MSI sign rendering, speed colors, geo math, drive direction-filter
-├── drive.html          # Mobile driving HUD (served at /drive)
-├── drive.js            # GPS heading → direction-filtered upcoming/passed signs + per-lane speed
-└── style.css           # Map + drive HUD styling
+├── lib.js              # Shared helpers: MSI sign rendering, speed colors, geo math
+└── style.css           # Map styling
 data/                   # Downloaded snapshots (gitignored)
 ├── .meta/              # Feed metadata JSON (last_modified, etag, download time)
 └── samples/            # (Optional) sample files for testing

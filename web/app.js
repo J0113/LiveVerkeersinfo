@@ -1217,7 +1217,7 @@ function updateSpeedLayout () {
   }
 }
 
-// speedColor / speedTextColor moved to lib.js (shared with drive.js).
+// speedColor / speedTextColor moved to lib.js.
 
 function fetchFeedStatus () {
   controllers['feed-status']?.abort()
@@ -1294,7 +1294,7 @@ function buildPopupHtml (props) {
   return imageHtml + (rows.length ? `<table class="popup-table"><tbody>${rows.join('')}</tbody></table>` : '')
 }
 
-// esc moved to lib.js (shared with drive.js).
+// esc moved to lib.js.
 
 // ─── Layer panel ──────────────────────────────────────────────────────────────
 
@@ -1974,4 +1974,4 @@ function makeCirclePolygon(lng, lat, radiusMeters) {
   }
 }
 
-// calculateDistance / calculateBearing moved to lib.js (shared with drive.js).
+// calculateDistance / calculateBearing moved to lib.js.
