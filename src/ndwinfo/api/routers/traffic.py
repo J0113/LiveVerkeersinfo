@@ -25,6 +25,9 @@ from ndwinfo.models import (
 
 router = APIRouter(prefix="/traffic", tags=["traffic"])
 
+WEGGEG_NEAR_MATCH_MAX_DISTANCE_M = 2.5
+WEGGEG_WIDE_MATCH_MAX_DISTANCE_M = 25
+
 
 @router.get("/speed")
 def get_speed(
@@ -217,35 +220,30 @@ def _normalized_road_number(value: str | None) -> str | None:
 def _attach_weggeg_matches(db, features: list[dict]) -> None:
     """Match speed locations to WEGGEG and attach a local travel bearing.
 
-    Road number, carriageway, and hectometre range make the semantic match;
-    distance (capped at 100m) disambiguates parallel/overlapping sections. The
-    WEGGEG geometry is digitised with increasing kilometre, so T/L carriageways
-    are reversed to obtain the actual travel direction. At interchanges, where
-    NDW can retain the old road identity after the physical lane has become a
-    different WEGGEG road, a tightly constrained geometry fallback is used.
+    First prefer physical lane geometry within 2.5m, using road and carriageway
+    only to rank multiple nearby candidates. For unmatched sites, widen to 25m,
+    require road/hectometre agreement, and rank carriageway then lane-count
+    agreement before distance. Bearing is derived after selection, never used
+    as a matching input.
     """
     payload = []
     for index, feature in enumerate(features):
         props = feature["properties"]
-        road_number = _normalized_road_number(props.get("road"))
-        carriageway = props.get("carriageway")
-        km = props.get("km")
-        if road_number is None or carriageway not in {"R", "L"} or km is None:
-            continue
         lon, lat = feature["geometry"]["coordinates"]
         payload.append({
             "i": index,
             "lon": lon,
             "lat": lat,
-            "road_number": road_number,
-            "carriageway": carriageway,
-            "km": km,
+            "road_number": _normalized_road_number(props.get("road")),
+            "carriageway": props.get("carriageway"),
+            "km": props.get("km"),
+            "num_lanes": props.get("num_lanes"),
         })
 
     if not payload:
         return
 
-    rows = db.execute(
+    near_rows = db.execute(
         text(
             """
             WITH sites AS (
@@ -257,54 +255,41 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
                     lat double precision,
                     road_number text,
                     carriageway text,
-                    km double precision
+                    km double precision,
+                    num_lanes integer
                 )
             )
             SELECT s.i,
-                   candidate.source_id,
-                   candidate.lane_count,
-                   candidate.distance_m,
+                   w.source_id,
+                   w.lane_count,
+                   w.road_number,
+                   w.carriageway_side,
+                   (w.road_number = s.road_number) AS road_match,
+                   (w.carriageway_side = s.carriageway) AS carriageway_match,
+                   (w.lane_count = s.num_lanes) AS lane_count_match,
+                   ST_Distance(s.point::geography, w.geom::geography) AS distance_m,
                    mod((
                        degrees(ST_Azimuth(
                            ST_LineInterpolatePoint(
-                               candidate.line,
-                               greatest(candidate.fraction - 0.0001, 0)
+                               merged.line,
+                               greatest(ST_LineLocatePoint(merged.line, s.point) - 0.0001, 0)
                            ),
                            ST_LineInterpolatePoint(
-                               candidate.line,
-                               least(candidate.fraction + 0.0001, 1)
+                               merged.line,
+                               least(ST_LineLocatePoint(merged.line, s.point) + 0.0001, 1)
                            )
-                       )) + CASE WHEN candidate.direction = 'T' THEN 180 ELSE 0 END
+                       )) + CASE WHEN w.direction = 'T' THEN 180 ELSE 0 END
                    )::numeric, 360)::double precision AS bearing,
                    opp.roadside_bearing
             FROM sites s
-            CROSS JOIN LATERAL (
-                SELECT w.source_id,
-                       w.lane_count,
-                       w.direction,
-                       merged.line,
-                       ST_Distance(s.point::geography, w.geom::geography) AS distance_m,
-                       ST_LineLocatePoint(merged.line, s.point) AS fraction
-                FROM weggeg_lane w
-                CROSS JOIN LATERAL (SELECT ST_LineMerge(w.geom) AS line) merged
-                WHERE w.lane = 1
-                  AND w.road_number = s.road_number
-                  AND w.carriageway_side = s.carriageway
-                  AND s.km BETWEEN
-                      least((w.raw->>'BEGINKM')::double precision,
-                            (w.raw->>'EINDKM')::double precision) - 0.25
-                      AND
-                      greatest((w.raw->>'BEGINKM')::double precision,
-                               (w.raw->>'EINDKM')::double precision) + 0.25
-                  AND GeometryType(merged.line) = 'LINESTRING'
-                  AND ST_DWithin(w.geom::geography, s.point::geography, 100)
-                ORDER BY w.geom <-> s.point
-                LIMIT 1
-            ) candidate
-            -- WEGGEG geometry direction is inconsistent, so travel bearing can't
-            -- reliably pick a roadside. Instead point the marker away from the
-            -- opposite carriageway (outward from the median) — robust regardless
-            -- of digitisation. Null on single-carriageway roads.
+            JOIN weggeg_lane w
+              ON w.lane = 1
+             AND ST_DWithin(
+                 w.geom::geography,
+                 s.point::geography,
+                 :near_match_max_m
+             )
+            CROSS JOIN LATERAL (SELECT ST_LineMerge(w.geom) AS line) merged
             LEFT JOIN LATERAL (
                 SELECT mod(degrees(ST_Azimuth(
                            ST_ClosestPoint(ST_LineMerge(w2.geom), s.point),
@@ -312,58 +297,45 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
                        ))::numeric, 360)::double precision AS roadside_bearing
                 FROM weggeg_lane w2
                 WHERE w2.lane = 1
-                  AND w2.road_number = s.road_number
+                  AND w2.road_number = w.road_number
                   AND w2.carriageway_side IN ('R', 'L')
-                  AND w2.carriageway_side <> s.carriageway
+                  AND w2.carriageway_side <> w.carriageway_side
                   AND ST_DWithin(w2.geom::geography, s.point::geography, 120)
                   AND NOT ST_Equals(
                       ST_ClosestPoint(ST_LineMerge(w2.geom), s.point), s.point)
                 ORDER BY w2.geom <-> s.point
                 LIMIT 1
             ) opp ON true
+            WHERE GeometryType(merged.line) = 'LINESTRING'
+            ORDER BY s.i, distance_m
             """
         ),
-        {"sites": json.dumps(payload)},
+        {
+            "sites": json.dumps(payload),
+            "near_match_max_m": WEGGEG_NEAR_MATCH_MAX_DISTANCE_M,
+        },
     ).all()
 
-    matched_indices = set()
-    for row in rows:
-        props = features[row.i]["properties"]
-        props["weggeg_source_id"] = row.source_id
-        props["weggeg_lane_count"] = row.lane_count
-        props["weggeg_distance_m"] = round(float(row.distance_m), 1)
-        props["weggeg_match_method"] = "road_carriageway_km"
-        if row.bearing is not None:
-            props["bearing"] = round(float(row.bearing) % 360, 1)
-            props["bearing_source"] = "weggeg"
-        if row.roadside_bearing is not None:
-            props["roadside_bearing"] = round(float(row.roadside_bearing) % 360, 1)
-        matched_indices.add(row.i)
+    near_by_index: dict[int, list] = defaultdict(list)
+    for row in near_rows:
+        near_by_index[row.i].append(row)
 
-    # Exit and connector measurements sometimes retain their former road/km
-    # metadata while WEGGEG assigns the physical lane to the intersecting road.
-    # Only accept an exact lane-count match within 25m, and reject it when a
-    # second candidate is less than 5m farther away. This prevents snapping to
-    # a parallel/opposite carriageway in dense interchange geometry.
-    spatial_payload = []
-    for index, feature in enumerate(features):
-        if index in matched_indices:
-            continue
-        num_lanes = feature["properties"].get("num_lanes")
-        if not isinstance(num_lanes, int) or num_lanes < 1:
-            continue
-        lon, lat = feature["geometry"]["coordinates"]
-        spatial_payload.append({
-            "i": index,
-            "lon": lon,
-            "lat": lat,
-            "num_lanes": num_lanes,
-        })
+    matched_indices: set[int] = set()
+    for index, candidates in near_by_index.items():
+        selected = _pick_near_candidate(candidates)
+        _apply_weggeg_match(features[index], selected, "near_geometry")
+        matched_indices.add(index)
 
-    if not spatial_payload:
+    wide_payload = [site for site in payload if site["i"] not in matched_indices]
+    wide_payload = [
+        site
+        for site in wide_payload
+        if site["road_number"] is not None and site["km"] is not None
+    ]
+    if not wide_payload:
         return
 
-    spatial_rows = db.execute(
+    wide_rows = db.execute(
         text(
             """
             WITH sites AS (
@@ -373,73 +345,122 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
                     i integer,
                     lon double precision,
                     lat double precision,
+                    road_number text,
+                    carriageway text,
+                    km double precision,
                     num_lanes integer
                 )
             )
             SELECT s.i,
-                   candidate.source_id,
-                   candidate.lane_count,
-                   candidate.road_number,
-                   candidate.carriageway_side,
-                   candidate.distance_m,
+                   w.source_id,
+                   w.lane_count,
+                   w.road_number,
+                   w.carriageway_side,
+                   true AS road_match,
+                   (w.carriageway_side = s.carriageway) AS carriageway_match,
+                   (w.lane_count = s.num_lanes) AS lane_count_match,
+                   ST_Distance(s.point::geography, w.geom::geography) AS distance_m,
                    mod((
                        degrees(ST_Azimuth(
                            ST_LineInterpolatePoint(
-                               candidate.line,
-                               greatest(candidate.fraction - 0.0001, 0)
+                               merged.line,
+                               greatest(ST_LineLocatePoint(merged.line, s.point) - 0.0001, 0)
                            ),
                            ST_LineInterpolatePoint(
-                               candidate.line,
-                               least(candidate.fraction + 0.0001, 1)
+                               merged.line,
+                               least(ST_LineLocatePoint(merged.line, s.point) + 0.0001, 1)
                            )
-                       )) + CASE WHEN candidate.direction = 'T' THEN 180 ELSE 0 END
-                   )::numeric, 360)::double precision AS bearing
+                       )) + CASE WHEN w.direction = 'T' THEN 180 ELSE 0 END
+                   )::numeric, 360)::double precision AS bearing,
+                   opp.roadside_bearing
             FROM sites s
-            CROSS JOIN LATERAL (
-                SELECT w.source_id,
-                       w.lane_count,
-                       w.road_number,
-                       w.carriageway_side,
-                       w.direction,
-                       merged.line,
-                       ST_Distance(s.point::geography, w.geom::geography) AS distance_m,
-                       ST_LineLocatePoint(merged.line, s.point) AS fraction
-                FROM weggeg_lane w
-                CROSS JOIN LATERAL (SELECT ST_LineMerge(w.geom) AS line) merged
-                WHERE w.lane = 1
-                  AND w.lane_count = s.num_lanes
-                  AND GeometryType(merged.line) = 'LINESTRING'
-                  AND ST_DWithin(w.geom::geography, s.point::geography, 25)
-                ORDER BY w.geom <-> s.point
-                LIMIT 2
-            ) candidate
-            ORDER BY s.i, candidate.distance_m
+            JOIN weggeg_lane w
+              ON w.lane = 1
+             AND w.road_number = s.road_number
+             AND s.km BETWEEN
+                 least((w.raw->>'BEGINKM')::double precision,
+                       (w.raw->>'EINDKM')::double precision) - 0.25
+                 AND
+                 greatest((w.raw->>'BEGINKM')::double precision,
+                          (w.raw->>'EINDKM')::double precision) + 0.25
+             AND ST_DWithin(
+                 w.geom::geography,
+                 s.point::geography,
+                 :wide_match_max_m
+             )
+            CROSS JOIN LATERAL (SELECT ST_LineMerge(w.geom) AS line) merged
+            LEFT JOIN LATERAL (
+                SELECT mod(degrees(ST_Azimuth(
+                           ST_ClosestPoint(ST_LineMerge(w2.geom), s.point),
+                           s.point
+                       ))::numeric, 360)::double precision AS roadside_bearing
+                FROM weggeg_lane w2
+                WHERE w2.lane = 1
+                  AND w2.road_number = w.road_number
+                  AND w2.carriageway_side IN ('R', 'L')
+                  AND w2.carriageway_side <> w.carriageway_side
+                  AND ST_DWithin(w2.geom::geography, s.point::geography, 120)
+                  AND NOT ST_Equals(
+                      ST_ClosestPoint(ST_LineMerge(w2.geom), s.point), s.point)
+                ORDER BY w2.geom <-> s.point
+                LIMIT 1
+            ) opp ON true
+            WHERE GeometryType(merged.line) = 'LINESTRING'
+            ORDER BY s.i, distance_m
             """
         ),
-        {"sites": json.dumps(spatial_payload)},
+        {
+            "sites": json.dumps(wide_payload),
+            "wide_match_max_m": WEGGEG_WIDE_MATCH_MAX_DISTANCE_M,
+        },
     ).all()
 
-    candidates_by_index: dict[int, list] = defaultdict(list)
-    for row in spatial_rows:
-        candidates_by_index[row.i].append(row)
+    wide_by_index: dict[int, list] = defaultdict(list)
+    for row in wide_rows:
+        wide_by_index[row.i].append(row)
 
-    for index, candidates in candidates_by_index.items():
-        nearest = candidates[0]
-        if (
-            len(candidates) > 1
-            and float(candidates[1].distance_m) < float(nearest.distance_m) + 5
-        ):
-            continue
-        props = features[index]["properties"]
-        props["weggeg_source_id"] = nearest.source_id
-        props["weggeg_lane_count"] = nearest.lane_count
-        props["weggeg_distance_m"] = round(float(nearest.distance_m), 1)
-        props["weggeg_match_method"] = "unambiguous_geometry"
-        props["weggeg_matched_road_number"] = nearest.road_number
-        props["weggeg_matched_carriageway"] = nearest.carriageway_side
-        if nearest.bearing is not None:
-            props["bearing"] = round(float(nearest.bearing) % 360, 1)
-            props["bearing_source"] = "weggeg"
+    for index, candidates in wide_by_index.items():
+        selected = _pick_wide_candidate(candidates)
+        _apply_weggeg_match(features[index], selected, "road_carriageway_lanes")
+
+
+def _pick_near_candidate(candidates: list):
+    """Rank sub-2.5m candidates by road, carriageway, then distance."""
+    return min(
+        candidates,
+        key=lambda candidate: (
+            not bool(candidate.road_match),
+            not bool(candidate.carriageway_match),
+            float(candidate.distance_m),
+        ),
+    )
+
+
+def _pick_wide_candidate(candidates: list):
+    """Rank wider same-road candidates by carriageway, lanes, then distance."""
+    return min(
+        candidates,
+        key=lambda candidate: (
+            not bool(candidate.carriageway_match),
+            not bool(candidate.lane_count_match),
+            float(candidate.distance_m),
+        ),
+    )
+
+
+def _apply_weggeg_match(feature: dict, selected, method: str) -> None:
+    props = feature["properties"]
+    props["weggeg_source_id"] = selected.source_id
+    props["weggeg_lane_count"] = selected.lane_count
+    props["weggeg_distance_m"] = round(float(selected.distance_m), 1)
+    props["weggeg_match_method"] = method
+    props["weggeg_matched_road_number"] = selected.road_number
+    props["weggeg_matched_carriageway"] = selected.carriageway_side
+    if selected.bearing is not None:
+        props["bearing"] = round(float(selected.bearing) % 360, 1)
+        props["bearing_source"] = "weggeg"
+    if selected.roadside_bearing is not None:
+        props["roadside_bearing"] = round(float(selected.roadside_bearing) % 360, 1)
 
 
 def _attach_fallback_bearings(db, features: list[dict]) -> None:
@@ -588,7 +609,11 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
         candidates: list[tuple[dict, dict]] = []
         for point in matched[row.source_id]:
             lane = next(
-                (item for item in point["properties"].get("lanes", []) if item["lane"] == effective_lane),
+                (
+                    item
+                    for item in point["properties"].get("lanes", [])
+                    if item["lane"] == effective_lane
+                ),
                 None,
             )
             if lane is not None:
