@@ -131,6 +131,7 @@ def get_drips(
             "working_status": msg.get("working_status"),
             "image_format": msg.get("image_format"),
             "image_b64": msg.get("image_data"),
+            "updated_at": msg.get("status_update_time"),
         }
 
     return geo_response(make_fc(rows, "geom_json", props))

@@ -189,6 +189,11 @@ def parse_drip(fileobj) -> Iterator[dict]:
             _vs = vstatus_outer.find(f"{VMS_T}vmsStatus")
             vstatus = _vs if _vs is not None else vstatus_outer
             working_status = _text_e(vstatus, f"{VMS_T}workingStatus")
+            # Per-sign last-update time; fall back to the controller-level one.
+            status_update_time = (
+                _text_e(vstatus, f"{VMS_T}statusUpdateTime")
+                or _text_e(cstat, f"{VMS_T}statusUpdateTime")
+            )
             image_data = image_format = None
             display_text = None
             msg_inner = vstatus.find(f"{VMS_T}vmsMessage/{VMS_T}vmsMessage")
@@ -211,6 +216,7 @@ def parse_drip(fileobj) -> Iterator[dict]:
                 "image_data": image_data,
                 "image_format": image_format,
                 "display_text": display_text,
+                "status_update_time": status_update_time,
             }
 
     # Pass 2: yield sign rows merged with status

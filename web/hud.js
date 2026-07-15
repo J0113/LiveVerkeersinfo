@@ -1,5 +1,75 @@
 'use strict'
 
+// ─── Drive HUD: linger / hold ────────────────────────────────────────────────
+// When a channel briefly has nothing ahead (gap between sensors/gantries), keep
+// the last selection on screen for a grace period instead of flickering off.
+const HUD_LINGER_MS = { speed: 5000, matrix: 5000, drip: 10000 }
+const roadSignHudHold = { speed: null, matrix: null, drip: null } // { data, expiresAt }
+let roadSignHudHoldTimer = null
+
+// Return the data to actually render for a channel: the fresh selection when
+// present (refreshing its hold), else the previously held selection while still
+// inside the linger window, else null (expired → clear).
+function holdSelection (channel, current) {
+  const now = Date.now()
+  if (current) {
+    roadSignHudHold[channel] = { data: current, expiresAt: now + HUD_LINGER_MS[channel] }
+    return current
+  }
+  const held = roadSignHudHold[channel]
+  if (held && now < held.expiresAt) return held.data
+  roadSignHudHold[channel] = null
+  return null
+}
+
+// Re-render when the nearest hold expires, so a lingering tile clears even if no
+// GPS update arrives (e.g. stopped) to drive the loop.
+function scheduleHudHoldClear () {
+  if (roadSignHudHoldTimer) { clearTimeout(roadSignHudHoldTimer); roadSignHudHoldTimer = null }
+  const now = Date.now()
+  let next = Infinity
+  for (const ch of ['speed', 'matrix', 'drip']) {
+    const h = roadSignHudHold[ch]
+    if (h && h.expiresAt > now) next = Math.min(next, h.expiresAt)
+  }
+  if (next !== Infinity) {
+    roadSignHudHoldTimer = setTimeout(() => { roadSignHudHoldTimer = null; renderRoadSignHud() }, next - now + 20)
+  }
+}
+
+function resetHudHolds () {
+  roadSignHudHold.speed = null
+  roadSignHudHold.matrix = null
+  roadSignHudHold.drip = null
+  if (roadSignHudHoldTimer) { clearTimeout(roadSignHudHoldTimer); roadSignHudHoldTimer = null }
+}
+
+// ─── Drive HUD: "last updated" relative time ─────────────────────────────────
+// Last-update ISO per channel; a slow ticker re-renders the label text so the
+// relative age stays fresh even between selections.
+const roadSignHudTimes = { speed: null, matrix: null, drip: null }
+let roadSignHudTimeTimer = null
+
+function setHudUpdated (channel, iso) {
+  roadSignHudTimes[channel] = iso || null
+  paintHudUpdated(channel)
+}
+
+function paintHudUpdated (channel) {
+  const el = document.getElementById(`road-sign-hud-${channel}-updated`)
+  if (!el) return
+  const txt = formatAgeNl(roadSignHudTimes[channel])
+  setTextIfChanged(el, txt)
+  el.classList.toggle('hidden', !txt)
+}
+
+function startHudTimeTicker () {
+  if (roadSignHudTimeTimer) return
+  roadSignHudTimeTimer = setInterval(() => {
+    paintHudUpdated('speed'); paintHudUpdated('matrix'); paintHudUpdated('drip')
+  }, 10000)
+}
+
 // ─── GPS-relative road-sign HUD ──────────────────────────────────────────────
 
 function fetchRoadSignHud (force = false) {
@@ -36,7 +106,7 @@ function fetchRoadSignHud (force = false) {
   const speedBbox = forwardBiasedBbox(userCoords, userHeading ?? 0, {
     ahead: 1500,
     behind: 500,
-    side: 250
+    side: 400
   })
   const requests = []
   if (userHeading !== null && hudEnabled.has('hud_matrix')) requests.push(fetchRoadSignHudSource('matrix', bbox, ctrl.signal))
@@ -77,6 +147,7 @@ function fetchRoadSignHudSource (source, bbox, signal) {
 
 function renderRoadSignHud () {
   if (gpsState === GPS_STATES.OFF || !userCoords) {
+    resetHudHolds()
     renderRoadSignHudSelection({ matrix: null, drip: null, speed: null, gpsKmh: null })
     return
   }
@@ -94,6 +165,14 @@ function renderRoadSignHud () {
   selected.upcoming = (userHeading === null || !hudEnabled.has('hud_speed'))
     ? null
     : selectUpcomingLaneSpeeds(roadSignHudCache.speedPoints, { coords: userCoords, heading: userHeading }, 2500)
+
+  // Keep a just-passed selection on screen briefly instead of flickering off in
+  // the gap before the next one. Disabled channels hold null (cleared instantly).
+  selected.matrix = holdSelection('matrix', hudEnabled.has('hud_matrix') ? selected.matrix : null)
+  selected.drip = holdSelection('drip', hudEnabled.has('hud_drips') ? selected.drip : null)
+  selected.upcoming = holdSelection('speed', hudEnabled.has('hud_speed') ? selected.upcoming : null)
+  scheduleHudHoldClear()
+  startHudTimeTicker()
 
   renderRoadSignHudSelection(selected)
 }
@@ -129,6 +208,8 @@ function renderSpeedHudTile (upcoming) {
   const distance = document.getElementById('road-sign-hud-speed-distance')
   const road = document.getElementById('road-sign-hud-speed-road')
   if (!laneLabel || !distance || !road) return
+
+  setHudUpdated('speed', upcoming ? upcoming.data.measured_at : null)
 
   const label = upcoming
     ? [upcoming.data.road || upcoming.data.road_number, upcoming.data.carriageway,
@@ -172,6 +253,7 @@ function renderMatrixHudTile (selection) {
   const lanes = document.getElementById('road-sign-hud-lanes')
   if (!selection) {
     tile.classList.add('hidden')
+    setHudUpdated('matrix', null)
     if (roadSignHudRenderState.matrixKey !== null) {
       lanes.replaceChildren()
       roadSignHudRenderState.matrixKey = null
@@ -181,6 +263,8 @@ function renderMatrixHudTile (selection) {
   tile.classList.remove('hidden')
 
   const gantry = selection.data
+  setHudUpdated('matrix', gantry.lanes.reduce(
+    (mx, l) => (l.ts_state && (!mx || l.ts_state > mx)) ? l.ts_state : mx, null))
   setTextIfChanged(
     document.getElementById('road-sign-hud-matrix-distance'),
     formatDistance(Math.max(0, selection.cls.along))
@@ -234,6 +318,7 @@ function renderDripHudTile (selection) {
   const text = document.getElementById('road-sign-hud-drip-text')
   if (!selection) {
     tile.classList.add('hidden')
+    setHudUpdated('drip', null)
     if (roadSignHudRenderState.dripKey !== null) {
       image.removeAttribute('src')
       image.classList.add('hidden')
@@ -246,6 +331,7 @@ function renderDripHudTile (selection) {
   tile.classList.remove('hidden')
 
   const data = selection.data
+  setHudUpdated('drip', data.updated_at)
   setTextIfChanged(
     document.getElementById('road-sign-hud-drip-distance'),
     formatDistance(Math.max(0, selection.cls.along))
@@ -279,6 +365,7 @@ function setTextIfChanged (element, value) {
 
 function clearRoadSignHud () {
   controllers['road-sign-hud']?.abort()
+  resetHudHolds()
   roadSignHudCache.matrix = EMPTY_FC
   roadSignHudCache.drips = EMPTY_FC
   roadSignHudCache.speedPoints = EMPTY_FC

@@ -178,7 +178,15 @@ function classifyFeature (device, featCoords, featBearing, opts) {
   const o = Object.assign({ directed: true }, DRIVE_DEFAULTS, opts || {})
   const rp = relativePosition(device, featCoords)
 
-  if (Math.abs(rp.cross) > o.maxCross) return null
+  // Curve-tolerant corridor: when a slope is given the cross gate widens with
+  // distance ahead (capped), so a feature ahead around a bend is accepted early
+  // instead of only once it is nearly abeam. Without a slope it is the flat
+  // maxCross. Safe to widen because the directed heading gate below still
+  // rejects the oncoming carriageway.
+  const crossLimit = o.crossSlope
+    ? Math.min(o.maxCrossCap ?? Infinity, o.maxCross + Math.max(0, rp.along) * o.crossSlope)
+    : o.maxCross
+  if (Math.abs(rp.cross) > crossLimit) return null
   if (rp.along > o.maxAhead || rp.along < -o.maxBehind) return null
 
   if (o.directed && featBearing !== null && featBearing !== undefined) {
@@ -256,7 +264,12 @@ function selectUpcomingRoadSigns (matrixFc, dripFc, device, maxDistanceM) {
       directed: true,
       maxAhead,
       maxBehind: 0,
-      maxCross: 60
+      // Curve-tolerant corridor (matches the speed HUD). MSI/DRIP bearing comes
+      // straight from NDW (reliable travel heading), so the directed heading gate
+      // still rejects the oncoming carriageway while the corridor widens.
+      maxCross: 45,
+      crossSlope: 0.12,
+      maxCrossCap: 130
     })
     return cls?.status === 'ahead' ? cls : null
   }
@@ -280,10 +293,43 @@ function selectUpcomingRoadSigns (matrixFc, dripFc, device, maxDistanceM) {
   return { matrix, drip }
 }
 
+// Direction / corridor tuning for the drive-HUD "next sensor" pick.
+const LANE_SPEED_SELECT = {
+  sideTol: 70,        // deg; roadside_bearing must be within this of heading+90
+  axisTol: 55,        // deg; fallback road-axis (mod 180) tolerance when no roadside
+  baseCross: 45,      // m; corridor half-width right at the device
+  crossSlope: 0.12,   // corridor widening per metre ahead (~7deg cone)
+  maxCross: 130,      // m; corridor half-width cap
+}
+
+// True when the sensor is on OUR carriageway (same travel direction), judged
+// from the reliable roadside_bearing rather than the flip-prone travel bearing.
+// NL is right-hand traffic, so a carriageway's roadside (outward from the median)
+// sits ~90deg clockwise of its travel direction: our carriageway has
+// roadside_bearing ~= heading+90; the oncoming carriageway is ~180deg away and
+// therefore rejected. Falls back to a road-axis (mod 180) match — which only
+// rejects crossing roads, not oncoming — when roadside_bearing is absent
+// (single-carriageway roads, where there is no median to measure across).
+function sameCarriagewayDirection (p, heading) {
+  const roadside = Number(p.roadside_bearing)
+  if (Number.isFinite(roadside)) {
+    return Math.abs(angleDiff(roadside, heading + 90)) <= LANE_SPEED_SELECT.sideTol
+  }
+  const bearing = Number(p.bearing)
+  if (!Number.isFinite(bearing)) return true // no direction info — don't over-filter
+  const axis = Math.abs(angleDiff(bearing, heading))
+  return Math.min(axis, 180 - axis) <= LANE_SPEED_SELECT.axisTol
+}
+
 // Pick the nearest speed-measurement site AHEAD in the travel direction (the
 // "next upcoming sensor") whose lanes carry at least one speed reading. Point
 // features come from /traffic/speed/map (data.points), each carrying a `lanes`
 // array plus num_lanes / weggeg_lane_count for entry/exit detection.
+//
+// Direction is filtered on roadside_bearing (reliable) so the oncoming
+// carriageway is rejected without depending on the flip-prone travel bearing;
+// the lateral corridor then widens with distance so a sensor ahead around a
+// curve is picked up early instead of only once you are almost on top of it.
 function selectUpcomingLaneSpeeds (pointFc, device, maxDistanceM) {
   const maxAhead = maxDistanceM ?? 2000
   if (!device || !Array.isArray(device.coords) || !Number.isFinite(device.heading)) return null
@@ -294,13 +340,17 @@ function selectUpcomingLaneSpeeds (pointFc, device, maxDistanceM) {
     const p = feature.properties
     const hasSpeed = (p.lanes || []).some(l => l && l.speed_kmh !== null && l.speed_kmh !== undefined)
     if (!hasSpeed) continue
-    const cls = classifyFeature(device, feature.geometry.coordinates, Number(p.bearing), {
-      directed: true,
-      maxAhead,
-      maxBehind: 0,
-      maxCross: 60
-    })
-    if (cls?.status !== 'ahead') continue
+
+    const rp = relativePosition(device, feature.geometry.coordinates)
+    if (rp.along <= 0 || rp.along > maxAhead) continue
+    if (!sameCarriagewayDirection(p, device.heading)) continue
+    const corridor = Math.min(
+      LANE_SPEED_SELECT.maxCross,
+      LANE_SPEED_SELECT.baseCross + rp.along * LANE_SPEED_SELECT.crossSlope
+    )
+    if (Math.abs(rp.cross) > corridor) continue
+
+    const cls = { status: 'ahead', along: rp.along, cross: rp.cross, dist: rp.dist }
     if (!best || cls.along < best.cls.along) best = { data: p, cls }
   }
   return best
@@ -476,4 +526,20 @@ function formatAge (isoTs) {
   if (ageS < 60) return `${Math.round(ageS)}s ago`
   if (ageS < 3600) return `${Math.round(ageS / 60)}m ago`
   return `${Math.round(ageS / 3600)}h ago`
+}
+
+// Dutch "bijgewerkt"-style age for the drive HUD tiles. Sub-day ages are
+// relative ("5 min geleden"); a week or older shows a short date, since DRIP
+// status timestamps can be months/years old.
+function formatAgeNl (isoTs) {
+  if (!isoTs) return ''
+  const t = new Date(isoTs).getTime()
+  if (!Number.isFinite(t)) return ''
+  const ageS = (Date.now() - t) / 1000
+  if (ageS < 10) return 'nu'
+  if (ageS < 60) return `${Math.round(ageS)} sec geleden`
+  if (ageS < 3600) return `${Math.round(ageS / 60)} min geleden`
+  if (ageS < 86400) return `${Math.round(ageS / 3600)} uur geleden`
+  if (ageS < 7 * 86400) return `${Math.round(ageS / 86400)} dag${Math.round(ageS / 86400) === 1 ? '' : 'en'} geleden`
+  return new Date(t).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short', year: 'numeric' })
 }

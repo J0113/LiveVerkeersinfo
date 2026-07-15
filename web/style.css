@@ -379,6 +379,17 @@ input[type="radio"] {
   white-space: nowrap;
 }
 
+.road-sign-hud-updated {
+  margin-top: 2px;
+  color: #6d8095;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.road-sign-hud-updated.hidden { display: none; }
+
 .road-sign-hud-distance {
   flex: 0 0 auto;
   min-width: 68px;
