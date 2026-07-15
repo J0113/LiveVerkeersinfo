@@ -1,7 +1,7 @@
 'use strict'
 
-// ─── Shared helpers used by the map page (app.js) ───────────────────────────────
-// Plain global script (no modules); load BEFORE app.js.
+// ─── Shared helpers used by the map page modules ───────────────────────────────
+// Plain global script (no modules); load BEFORE the config/map/…/gps modules.
 
 // ─── MSI sign rendering (pure DOM + CSS classes in style.css) ───────────────────
 

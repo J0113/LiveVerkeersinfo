@@ -1,11 +1,15 @@
 import asyncio
+import hashlib
 import os
+import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
@@ -82,5 +86,32 @@ def public_config():
     return {"nwbDiagnosticMode": settings.nwb_diagnostic_mode}
 
 
-if os.path.isdir("web") and any(os.scandir("web")):
+_WEB_DIR = Path("web")
+# Local JS/CSS references in index.html get a content-hash query param so browsers
+# refetch only when a file actually changes. Computed once at startup; a rebuild
+# restarts the app and recomputes. Skips external URLs (any src/href with "://").
+_ASSET_REF = re.compile(r'(src|href)="([^":?]+\.(?:js|css))(?:\?[^"]*)?"')
+
+
+def _render_index() -> str:
+    def bust(match: re.Match) -> str:
+        attr, rel = match.group(1), match.group(2)
+        try:
+            digest = hashlib.md5((_WEB_DIR / rel).read_bytes()).hexdigest()[:10]
+        except OSError:
+            return f'{attr}="{rel}"'
+        return f'{attr}="{rel}?v={digest}"'
+
+    return _ASSET_REF.sub(bust, (_WEB_DIR / "index.html").read_text(encoding="utf-8"))
+
+
+if _WEB_DIR.is_dir() and any(os.scandir(_WEB_DIR)):
+    _INDEX_HTML = _render_index()
+
+    @app.get("/", include_in_schema=False)
+    @app.get("/index.html", include_in_schema=False)
+    def index() -> HTMLResponse:
+        return HTMLResponse(_INDEX_HTML)
+
+    # Explicit routes above win for "/"; the mount serves every other asset.
     app.mount("/", StaticFiles(directory="web", html=True), name="static")

@@ -1,0 +1,290 @@
+'use strict'
+
+// ─── GPS-relative road-sign HUD ──────────────────────────────────────────────
+
+function fetchRoadSignHud (force = false) {
+  if (gpsState === GPS_STATES.OFF || !userCoords) {
+    renderRoadSignHud()
+    return
+  }
+
+  const moved = roadSignHudLastFetchCoords
+    ? calculateDistance(roadSignHudLastFetchCoords, userCoords)
+    : Infinity
+  const elapsed = Date.now() - roadSignHudLastFetchAt
+  const headingChanged = userHeading !== null && (
+    roadSignHudLastFetchHeading === null ||
+    Math.abs(angleDiff(userHeading, roadSignHudLastFetchHeading)) >= 20
+  )
+  if (!force && !headingChanged && moved < ROAD_SIGN_HUD_REFETCH_DISTANCE_M && elapsed < ROAD_SIGN_HUD_REFETCH_MS) {
+    renderRoadSignHud()
+    return
+  }
+
+  controllers['road-sign-hud']?.abort()
+  const ctrl = new AbortController()
+  controllers['road-sign-hud'] = ctrl
+  roadSignHudLastFetchCoords = [...userCoords]
+  roadSignHudLastFetchAt = Date.now()
+  roadSignHudLastFetchHeading = userHeading
+
+  const bbox = forwardBiasedBbox(userCoords, userHeading, {
+    ahead: ROAD_SIGN_HUD_MAX_DISTANCE_M + 250,
+    behind: 100,
+    side: 250
+  })
+  const speedBbox = forwardBiasedBbox(userCoords, userHeading ?? 0, {
+    ahead: 1500,
+    behind: 500,
+    side: 250
+  })
+  const requests = []
+  if (userHeading !== null && hudEnabled.has('hud_matrix')) requests.push(fetchRoadSignHudSource('matrix', bbox, ctrl.signal))
+  else roadSignHudCache.matrix = EMPTY_FC
+  if (userHeading !== null && hudEnabled.has('hud_drips')) requests.push(fetchRoadSignHudSource('drips', bbox, ctrl.signal))
+  else roadSignHudCache.drips = EMPTY_FC
+  if (hudEnabled.has('hud_speed')) requests.push(fetchRoadSignHudSpeedSource(speedBbox, ctrl.signal))
+  else roadSignHudCache.speedPoints = EMPTY_FC
+
+  Promise.allSettled(requests).then(results => {
+    for (const result of results) {
+      if (result.status === 'rejected' && result.reason?.name !== 'AbortError') {
+        console.warn('[road-sign-hud]', result.reason?.message || result.reason)
+      }
+    }
+    if (!ctrl.signal.aborted) renderRoadSignHud()
+  })
+}
+
+function fetchRoadSignHudSpeedSource (bbox, signal) {
+  return fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=false&limit=500`, { signal })
+    .then(response => {
+      if (!response.ok) throw new Error(`speed: HTTP ${response.status}`)
+      return response.json()
+    })
+    .then(data => { roadSignHudCache.speedPoints = data.points || EMPTY_FC })
+}
+
+function fetchRoadSignHudSource (source, bbox, signal) {
+  const limit = source === 'matrix' ? 300 : 25
+  return fetch(`/api/signs/${source}?bbox=${bbox}&limit=${limit}`, { signal })
+    .then(response => {
+      if (!response.ok) throw new Error(`${source}: HTTP ${response.status}`)
+      return response.json()
+    })
+    .then(fc => { roadSignHudCache[source] = fc })
+}
+
+function renderRoadSignHud () {
+  if (gpsState === GPS_STATES.OFF || !userCoords) {
+    renderRoadSignHudSelection({ matrix: null, drip: null, speed: null, gpsKmh: null })
+    return
+  }
+
+  const selected = userHeading === null
+    ? { matrix: null, drip: null }
+    : selectUpcomingRoadSigns(
+        hudEnabled.has('hud_matrix') ? roadSignHudCache.matrix : EMPTY_FC,
+        hudEnabled.has('hud_drips') ? roadSignHudCache.drips : EMPTY_FC,
+        { coords: userCoords, heading: userHeading },
+        ROAD_SIGN_HUD_MAX_DISTANCE_M
+      )
+
+  selected.gpsKmh = Number.isFinite(userSpeedMps) ? userSpeedMps * 3.6 : null
+  selected.upcoming = (userHeading === null || !hudEnabled.has('hud_speed'))
+    ? null
+    : selectUpcomingLaneSpeeds(roadSignHudCache.speedPoints, { coords: userCoords, heading: userHeading }, 2500)
+
+  renderRoadSignHudSelection(selected)
+}
+
+function renderRoadSignHudSelection (selected) {
+  const hud = document.getElementById('road-sign-hud')
+  const speedTile = document.getElementById('road-sign-hud-speed')
+  const matrixTile = document.getElementById('road-sign-hud-matrix')
+  const dripTile = document.getElementById('road-sign-hud-drip')
+  if (!hud || !speedTile || !matrixTile || !dripTile) return
+
+  renderSpeedHudTile(selected.upcoming)
+  renderMatrixHudTile(selected.matrix)
+  renderDripHudTile(selected.drip)
+  updateGpsSpeedBadge(selected.gpsKmh, selected.upcoming)
+  const speedVisible = gpsState !== GPS_STATES.OFF && hudEnabled.has('hud_speed')
+  const visibleCount = [speedVisible, selected.matrix, selected.drip].filter(Boolean).length
+  const visible = visibleCount > 0
+  speedTile.classList.toggle('hidden', !speedVisible)
+  hud.classList.remove('road-sign-hud-count-1', 'road-sign-hud-count-2', 'road-sign-hud-count-3')
+  document.body.classList.remove('road-sign-hud-count-1', 'road-sign-hud-count-2', 'road-sign-hud-count-3')
+  if (visible) hud.classList.add(`road-sign-hud-count-${visibleCount}`)
+  if (visible) document.body.classList.add(`road-sign-hud-count-${visibleCount}`)
+  hud.classList.toggle('hidden', !visible)
+  document.body.classList.toggle('road-sign-hud-visible', visible)
+  // First matrix build measures 0 width while the tile is hidden; refit once the
+  // HUD is shown and laid out.
+  if (visible && selected.matrix) requestAnimationFrame(fitMatrixLanes)
+}
+
+function renderSpeedHudTile (upcoming) {
+  const laneLabel = document.getElementById('road-sign-hud-speed-lane')
+  const distance = document.getElementById('road-sign-hud-speed-distance')
+  const road = document.getElementById('road-sign-hud-speed-road')
+  if (!laneLabel || !distance || !road) return
+
+  const label = upcoming
+    ? [upcoming.data.road || upcoming.data.road_number, upcoming.data.carriageway,
+       upcoming.data.km != null ? `km ${upcoming.data.km}` : null].filter(Boolean).join(' · ') || 'Meetpunt'
+    : !userCoords
+        ? (userLocationStatus === 'denied' ? 'GPS-toegang nodig' : 'GPS-signaal zoeken')
+        : 'Meetpunt zoeken'
+
+  // Rebuild the road SVG only when the sensor / speeds / distance change.
+  const roadKey = laneSpeedRoadKey(upcoming)
+  if (roadSignHudRenderState.speedKey !== roadKey) {
+    setTextIfChanged(laneLabel, label)
+    setTextIfChanged(distance, upcoming ? formatDistance(Math.max(0, upcoming.cls.along)) : '')
+    distance.classList.toggle('hidden', !upcoming)
+    road.replaceChildren()
+    if (upcoming) road.appendChild(buildLaneSpeedRoad(upcoming.data))
+    road.classList.toggle('hidden', !upcoming)
+    roadSignHudRenderState.speedKey = roadKey
+  }
+}
+
+// Circular GPS-speed badge (km/h) bottom-left, with the road we are on in the
+// centre-bottom label — shown only while tracking.
+function updateGpsSpeedBadge (gpsKmh, upcoming) {
+  const badge = document.getElementById('gps-speed-badge')
+  const value = document.getElementById('gps-speed-value')
+  const roadLabel = document.getElementById('current-road-label')
+  if (!badge || !value || !roadLabel) return
+
+  const tracking = gpsState !== GPS_STATES.OFF && Boolean(userCoords)
+  badge.classList.toggle('hidden', !tracking)
+  if (tracking) setTextIfChanged(value, Number.isFinite(gpsKmh) ? String(Math.round(gpsKmh)) : '–')
+
+  const road = upcoming ? (upcoming.data.road || upcoming.data.road_number) : null
+  roadLabel.classList.toggle('hidden', !tracking || !road)
+  if (tracking && road) setTextIfChanged(roadLabel, road)
+}
+
+function renderMatrixHudTile (selection) {
+  const tile = document.getElementById('road-sign-hud-matrix')
+  const lanes = document.getElementById('road-sign-hud-lanes')
+  if (!selection) {
+    tile.classList.add('hidden')
+    if (roadSignHudRenderState.matrixKey !== null) {
+      lanes.replaceChildren()
+      roadSignHudRenderState.matrixKey = null
+    }
+    return
+  }
+  tile.classList.remove('hidden')
+
+  const gantry = selection.data
+  setTextIfChanged(
+    document.getElementById('road-sign-hud-matrix-distance'),
+    formatDistance(Math.max(0, selection.cls.along))
+  )
+  const matrixKey = [gantry.road, gantry.carriageway, gantry.km, ...gantry.lanes.flatMap(lane => [
+    lane.lane, lane.aspect_type, lane.value, lane.flashing, lane.red_ring,
+    JSON.stringify(lane.aspects || null)
+  ])].join('|')
+  if (roadSignHudRenderState.matrixKey === matrixKey) return
+
+  setTextIfChanged(
+    document.getElementById('road-sign-hud-matrix-road'),
+    [gantry.road, gantry.carriageway, gantry.km != null ? `km ${gantry.km}` : null]
+      .filter(Boolean).join(' · ')
+  )
+
+  lanes.replaceChildren()
+  const track = document.createElement('div')
+  track.className = 'road-sign-hud-lanes-track'
+  for (const lane of gantry.lanes) {
+    const column = document.createElement('div')
+    column.className = 'road-sign-hud-lane'
+    const label = document.createElement('span')
+    label.className = 'road-sign-hud-lane-label'
+    label.textContent = `Rijstrook ${lane.lane ?? '?'}`
+    column.append(label, buildMsiLane(lane))
+    track.appendChild(column)
+  }
+  lanes.appendChild(track)
+  roadSignHudRenderState.matrixKey = matrixKey
+  fitMatrixLanes()
+}
+
+// Scale the lane row down so wide gantries (4+ lanes) fit the fixed-width matrix
+// tile. Measures once laid out; skips while the tile is hidden (clientWidth 0).
+function fitMatrixLanes () {
+  const container = document.getElementById('road-sign-hud-lanes')
+  const track = container?.firstElementChild
+  if (!track) return
+  const avail = container.clientWidth
+  if (!avail) return
+  track.style.transform = 'scale(1)'
+  const natural = track.scrollWidth
+  const scale = natural > avail ? avail / natural : 1
+  track.style.transform = `scale(${scale})`
+}
+
+function renderDripHudTile (selection) {
+  const tile = document.getElementById('road-sign-hud-drip')
+  const image = document.getElementById('road-sign-hud-drip-image')
+  const text = document.getElementById('road-sign-hud-drip-text')
+  if (!selection) {
+    tile.classList.add('hidden')
+    if (roadSignHudRenderState.dripKey !== null) {
+      image.removeAttribute('src')
+      image.classList.add('hidden')
+      text.textContent = ''
+      text.classList.add('hidden')
+      roadSignHudRenderState.dripKey = null
+    }
+    return
+  }
+  tile.classList.remove('hidden')
+
+  const data = selection.data
+  setTextIfChanged(
+    document.getElementById('road-sign-hud-drip-distance'),
+    formatDistance(Math.max(0, selection.cls.along))
+  )
+  const imageTail = data.image_b64 ? data.image_b64.slice(-24) : ''
+  const dripKey = [data.controller_id, data.vms_index, data.description, data.display_text,
+    data.image_format, data.image_b64?.length || 0, imageTail].join('|')
+  if (roadSignHudRenderState.dripKey === dripKey) return
+
+  setTextIfChanged(document.getElementById('road-sign-hud-drip-name'), data.description || 'DRIP / VMS')
+  if (data.image_b64) {
+    const requestedFormat = String(data.image_format || 'png')
+    const format = /^[a-z0-9.+-]+$/i.test(requestedFormat) ? requestedFormat : 'png'
+    image.src = `data:image/${format};base64,${data.image_b64}`
+    image.classList.remove('hidden')
+    text.textContent = ''
+    text.classList.add('hidden')
+  } else {
+    image.removeAttribute('src')
+    image.classList.add('hidden')
+    setTextIfChanged(text, data.display_text || '')
+    text.classList.toggle('hidden', !String(data.display_text || '').trim())
+  }
+  roadSignHudRenderState.dripKey = dripKey
+}
+
+function setTextIfChanged (element, value) {
+  const text = String(value)
+  if (element.textContent !== text) element.textContent = text
+}
+
+function clearRoadSignHud () {
+  controllers['road-sign-hud']?.abort()
+  roadSignHudCache.matrix = EMPTY_FC
+  roadSignHudCache.drips = EMPTY_FC
+  roadSignHudCache.speedPoints = EMPTY_FC
+  roadSignHudLastFetchCoords = null
+  roadSignHudLastFetchAt = 0
+  roadSignHudLastFetchHeading = null
+  renderRoadSignHud()
+}
+

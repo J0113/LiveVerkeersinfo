@@ -135,9 +135,18 @@ src/ndwinfo/
 
 migrations/              # Alembic schema migrations (SQLAlchemy tracked)
 web/                    # Static frontend:
-├── index.html          # MapLibre GL JS canvas (map page, served at /)
-├── app.js              # Layer toggles, bbox picker, API fetch + render
-├── lib.js              # Shared helpers: MSI sign rendering, speed colors, geo math
+├── index.html          # MapLibre GL JS canvas (served at / via cache-bust route in api/main.py)
+├── lib.js              # Shared helpers: MSI sign rendering, speed colors, geo math (load first)
+│                       # App split into ordered plain-global scripts (shared lexical scope,
+│                       # load in this order — concatenation == old app.js):
+├── config.js           #   layer/group/HUD defs + runtime & GPS state
+├── map.js              #   basemaps, map init, map.on(load/move/zoom/rotate) handlers
+├── fetch.js            #   fetchAll/fetchLayer/NWB roads, viewportBbox, public config
+├── matrix.js           #   MSI gantry HTML markers (map render)
+├── hud.js              #   GPS-relative road-sign HUD tiles
+├── speed.js            #   speed lanes/points markers, gradient lanes, feed status
+├── ui.js               #   popups, layer panel, panel toggles, basemap picker, zoom hint
+├── gps.js              #   GPS/compass/follow-loop + geo math helpers
 └── style.css           # Map styling
 data/                   # Downloaded snapshots (gitignored)
 ├── .meta/              # Feed metadata JSON (last_modified, etag, download time)
