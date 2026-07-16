@@ -14,6 +14,7 @@ from ndwinfo.matching.source_binding import (
     decide_binding,
     derive_vild_bearing,
     normalize_tmc_direction,
+    resolve_source_direction,
     resolve_source_heading,
 )
 
@@ -26,8 +27,9 @@ def candidate(
     lanes=2,
     distance=5.0,
     bearing=0.0,
+    highway=None,
 ):
-    return RoadCandidate(segment_id, road, side, lanes, distance, bearing)
+    return RoadCandidate(segment_id, road, side, lanes, distance, bearing, highway)
 
 
 def test_accepts_clear_directional_road_match():
@@ -71,6 +73,32 @@ def test_opposite_heading_is_rejected():
     )
 
     assert decision.status == "rejected"
+
+
+def test_explicit_main_carriageway_rejects_nearer_slip_road():
+    decision = decide_binding(
+        SourceTraits(road="A4", heading=0, carriageway_type="mainCarriageway"),
+        [
+            candidate("ramp", distance=1, bearing=0, highway="motorway_link"),
+            candidate("main", distance=6, bearing=0, highway="motorway"),
+        ],
+    )
+
+    assert decision.status == "accepted"
+    assert decision.internal_segment_id == "main"
+
+
+def test_explicit_exit_slip_road_rejects_main_carriageway():
+    decision = decide_binding(
+        SourceTraits(road="A4", heading=0, carriageway_type="exitSlipRoad"),
+        [
+            candidate("main", distance=1, bearing=0, highway="motorway"),
+            candidate("ramp", distance=5, bearing=0, highway="motorway_link"),
+        ],
+    )
+
+    assert decision.status == "accepted"
+    assert decision.internal_segment_id == "ramp"
 
 
 def test_same_geometry_both_directions_without_heading_stays_ambiguous():
@@ -183,10 +211,22 @@ def test_vild_inconsistent_topology_arms_fail_closed():
     )
 
 
-def test_openlr_bearing_has_strict_precedence_over_vild_fallback():
-    assert resolve_source_heading(295.7, 75.0) == pytest.approx(295.7)
+def test_vild_is_primary_and_openlr_conflict_fails_closed():
+    assert resolve_source_heading(77.0, 75.0) == pytest.approx(75.0)
+    assert resolve_source_heading(295.7, 75.0) is None
+    assert resolve_source_direction(295.7, 75.0)[2] is True
     assert resolve_source_heading(None, 75.0) == pytest.approx(75.0)
+    assert resolve_source_heading(295.7, None) == pytest.approx(295.7)
     assert resolve_source_heading(float("nan"), None) is None
+
+
+def test_direction_evidence_conflict_rejects_even_single_nearest_candidate():
+    decision = decide_binding(
+        SourceTraits(road="N203", direction_conflict=True),
+        [candidate(road="N203", distance=1, bearing=0)],
+    )
+
+    assert decision.status == "rejected"
 
 
 def test_derived_vild_heading_disambiguates_shared_two_way_geometry():

@@ -162,6 +162,8 @@ function renderSpeedPoints (fc) {
         ...(p.km != null ? { km: p.km } : {}),
         ...(p.measured_at ? { measured: p.measured_at } : {}),
         ...(p.bearing != null ? { bearing: p.bearing + '°' } : {}),
+        ...(p.bearing_source ? { bearing_source: p.bearing_source } : {}),
+        ...(p.tmc_direction ? { vild_direction: p.tmc_direction } : {}),
         ...(p.side ? { side: p.side } : {}),
         binding: pointState.label,
         ...(p.binding_reason ? { binding_reason: p.binding_reason } : {}),

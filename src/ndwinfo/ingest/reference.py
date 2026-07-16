@@ -19,6 +19,7 @@ from ndwinfo.models import (
     VildPoint,
     VildTmc,
     WeggegLane,
+    WeggegRoadAttribute,
 )
 from ndwinfo.parsers.shapefile_ref import (
     parse_meetlocaties,
@@ -26,7 +27,7 @@ from ndwinfo.parsers.shapefile_ref import (
     parse_vild,
     parse_vild_tmc,
 )
-from ndwinfo.parsers.weggeg import parse_weggeg_lanes
+from ndwinfo.parsers.weggeg import parse_weggeg_lanes, parse_weggeg_road_attributes
 
 
 class MeetlocatiesIngester(Ingester):
@@ -171,6 +172,7 @@ class WeggegLaneIngester(Ingester):
         # Each release is a complete national snapshot. This delete is part of
         # the transaction, so a failed parse rolls back to the prior snapshot.
         session.execute(delete(WeggegLane))
+        session.execute(delete(WeggegRoadAttribute))
         total = 0
         batch: list[dict] = []
         for row in parse_weggeg_lanes(result.path):
@@ -185,5 +187,23 @@ class WeggegLaneIngester(Ingester):
                 batch.clear()
         if batch:
             total += bulk_upsert(session, WeggegLane, batch, ["id"])
+            session.flush()
+        attribute_batch: list[dict] = []
+        for row in parse_weggeg_road_attributes(result.path):
+            attribute_batch.append({
+                **row,
+                "geom": wkt_geom(row["geom"]),
+                "raw": json_safe(row["raw"]),
+            })
+            if len(attribute_batch) >= BATCH_SIZE:
+                total += bulk_upsert(
+                    session, WeggegRoadAttribute, attribute_batch, ["id"]
+                )
+                session.flush()
+                attribute_batch.clear()
+        if attribute_batch:
+            total += bulk_upsert(
+                session, WeggegRoadAttribute, attribute_batch, ["id"]
+            )
             session.flush()
         return total

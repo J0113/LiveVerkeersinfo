@@ -29,7 +29,7 @@ from ndwinfo.matching.source_binding import (
 LiveObjectType = Literal["msi", "drip"]
 BindingStatus = Literal["accepted", "ambiguous", "rejected"]
 LaneScopeStatus = Literal["not_applicable", "source_only", "canonical"]
-ALGORITHM_VERSION = "ndw-osm-live-object-v1"
+ALGORITHM_VERSION = "ndw-osm-live-object-v2-carriageway"
 PERSISTED_SOURCE_TYPES: Mapping[LiveObjectType, str] = {
     "msi": "ndw_msi",
     "drip": "ndw_drip",
@@ -57,6 +57,7 @@ class LiveRoadCandidate:
     lanes: int | None
     distance_m: float
     bearing: float
+    highway: str | None = None
 
 
 @dataclass(frozen=True)
@@ -166,11 +167,18 @@ def decide_live_object_binding(
         raise ValueError("max_heading_delta_deg must be between 0 and 180")
     source_refs = normalize_road_refs(source.road)
     source_side = normalize_carriageway(source.carriageway)
+    source_carriageway_type = (
+        _datex_carriageway_type(source.carriageway)
+        if source.source_type == "drip"
+        else None
+    )
     source_lane = _valid_lane_number(source.lane)
     # Formatting variants are normalized, but an explicit label whose meaning
     # is unknown must not silently degrade to "metadata absent".
     if (source.road and not source_refs) or (
-        source.carriageway and source_side is None
+        source.carriageway
+        and source_side is None
+        and source_carriageway_type is None
     ):
         return _decision(
             source, observed_at, ingested_at, valid_until, stale, status="rejected"
@@ -194,13 +202,22 @@ def decide_live_object_binding(
             continue
 
         candidate_side = normalize_carriageway(candidate.carriageway_ref)
-        side_match = bool(source_side and candidate_side and source_side == candidate_side)
-        if source_side not in {None, "L", "R"} and not side_match:
-            # A specific DVK carriageway letter carries more information than
-            # travel side. It may only bind to the same explicit OSM reference.
-            continue
-        if source_side and candidate_side and not side_match:
-            continue
+        if source_carriageway_type is not None:
+            compatible, side_match = _datex_carriageway_compatibility(
+                source_carriageway_type, candidate
+            )
+            if not compatible:
+                continue
+        else:
+            side_match = bool(
+                source_side and candidate_side and source_side == candidate_side
+            )
+            if source_side not in {None, "L", "R"} and not side_match:
+                # A specific DVK carriageway letter carries more information than
+                # travel side. It may only bind to the same explicit OSM reference.
+                continue
+            if source_side and candidate_side and not side_match:
+                continue
 
         delta = angle_diff(source_bearing, candidate_bearing)
         if delta > heading_limit:
@@ -301,6 +318,55 @@ def _lane_scope(
     ):
         return source_lane, "canonical"
     return None, "source_only"
+
+
+def _datex_carriageway_type(value: object) -> str | None:
+    """Normalize the DATEX carriageway enums relevant to a road-side VMS.
+
+    These values describe the physical role of a carriageway, not its left or
+    right identity.  They must therefore not be passed through the DVK L/R
+    comparison used for MSI and measurement sites.
+    """
+    token = "".join(
+        character
+        for character in str(value or "").lower()
+        if character.isalnum()
+    )
+    aliases = {
+        "maincarriageway": "main",
+        "parallelcarriageway": "parallel",
+        "entrysliproad": "link",
+        "exitsliproad": "link",
+        "sliproad": "link",
+        "connectingcarriageway": "link",
+    }
+    return aliases.get(token)
+
+
+def _datex_carriageway_compatibility(
+    source_type: str, candidate: LiveRoadCandidate
+) -> tuple[bool, bool]:
+    """Return hard compatibility and whether the source adds confidence.
+
+    OSM explicitly distinguishes link roads through the highway class.  It
+    does not consistently distinguish a parallel through-carriageway from a
+    main through-carriageway, so `parallel` is retained as scope/provenance but
+    earns no match bonus unless an explicit carriageway_ref agrees.
+    """
+    highway = str(candidate.highway or "").strip().lower()
+    if not highway:
+        return False, False
+    is_link = highway.endswith("_link")
+    if source_type == "link":
+        return is_link, is_link
+    if source_type == "main":
+        return not is_link, not is_link
+    if source_type == "parallel":
+        if is_link:
+            return False, False
+        candidate_type = _datex_carriageway_type(candidate.carriageway_ref)
+        return True, candidate_type == "parallel"
+    return False, False
 
 
 def _confidence(

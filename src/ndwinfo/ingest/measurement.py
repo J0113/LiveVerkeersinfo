@@ -36,21 +36,30 @@ CREATE TEMP TABLE traffic_measurement_stage (
     flow_veh_h numeric,
     speed_kmh numeric,
     n_inputs integer,
-    std_dev numeric
+    std_dev numeric,
+    n_incomplete_inputs integer,
+    supplier_quality numeric,
+    computational_method varchar,
+    data_error boolean,
+    measurement_status varchar,
+    is_usable boolean
 ) ON COMMIT DROP
 """
 
 _TRAFFIC_COPY_SQL = """
 COPY traffic_measurement_stage (
     site_id, "index", measured_at, value_type, flow_veh_h,
-    speed_kmh, n_inputs, std_dev
+    speed_kmh, n_inputs, std_dev, n_incomplete_inputs, supplier_quality,
+    computational_method, data_error, measurement_status, is_usable
 ) FROM STDIN
 """
 
 _TRAFFIC_MERGE_SQL = """
 INSERT INTO traffic_measurement (
     site_id, "index", measured_at, value_type, flow_veh_h,
-    speed_kmh, n_inputs, std_dev, raw, ingested_at
+    speed_kmh, n_inputs, std_dev, n_incomplete_inputs, supplier_quality,
+    computational_method, data_error, measurement_status, is_usable,
+    raw, ingested_at
 )
 SELECT DISTINCT ON (site_id, "index")
     site_id,
@@ -61,16 +70,13 @@ SELECT DISTINCT ON (site_id, "index")
     speed_kmh,
     n_inputs,
     std_dev,
-    jsonb_build_object(
-        'site_id', site_id,
-        'index', "index",
-        'measured_at', measured_at,
-        'value_type', value_type,
-        'flow_veh_h', flow_veh_h,
-        'speed_kmh', speed_kmh,
-        'n_inputs', n_inputs,
-        'std_dev', std_dev
-    ),
+    n_incomplete_inputs,
+    supplier_quality,
+    computational_method,
+    data_error,
+    measurement_status,
+    is_usable,
+    NULL::jsonb,
     :ingested_at
 FROM traffic_measurement_stage
 ORDER BY site_id, "index", ordinal DESC
@@ -81,6 +87,12 @@ ON CONFLICT (site_id, "index") DO UPDATE SET
     speed_kmh = excluded.speed_kmh,
     n_inputs = excluded.n_inputs,
     std_dev = excluded.std_dev,
+    n_incomplete_inputs = excluded.n_incomplete_inputs,
+    supplier_quality = excluded.supplier_quality,
+    computational_method = excluded.computational_method,
+    data_error = excluded.data_error,
+    measurement_status = excluded.measurement_status,
+    is_usable = excluded.is_usable,
     raw = excluded.raw,
     ingested_at = excluded.ingested_at
 WHERE (
@@ -90,6 +102,12 @@ WHERE (
     traffic_measurement.speed_kmh,
     traffic_measurement.n_inputs,
     traffic_measurement.std_dev,
+    traffic_measurement.n_incomplete_inputs,
+    traffic_measurement.supplier_quality,
+    traffic_measurement.computational_method,
+    traffic_measurement.data_error,
+    traffic_measurement.measurement_status,
+    traffic_measurement.is_usable,
     traffic_measurement.raw
 ) IS DISTINCT FROM (
     excluded.measured_at,
@@ -98,6 +116,12 @@ WHERE (
     excluded.speed_kmh,
     excluded.n_inputs,
     excluded.std_dev,
+    excluded.n_incomplete_inputs,
+    excluded.supplier_quality,
+    excluded.computational_method,
+    excluded.data_error,
+    excluded.measurement_status,
+    excluded.is_usable,
     excluded.raw
 )
 """
@@ -118,9 +142,9 @@ def _copy_traffic_measurements(session: Session, rows: Iterable[dict]) -> int:
     """Stream one complete publication into PostgreSQL and merge it atomically.
 
     The staging table lives in the caller's transaction. A parse, COPY or merge
-    failure therefore leaves the previous live snapshot untouched. ``raw`` is
-    reconstructed by PostgreSQL from the same normalized fields as the parser;
-    copying that derived JSON a second time would only double wire traffic.
+    failure therefore leaves the previous live snapshot untouched. Every useful
+    field is stored in a typed column, so ``raw`` remains NULL; copying the same
+    values again as derived JSON would only add wire, JSONB and WAL overhead.
     """
     connection = session.connection()
     connection.exec_driver_sql(_TRAFFIC_STAGE_SQL)
@@ -140,6 +164,12 @@ def _copy_traffic_measurements(session: Session, rows: Iterable[dict]) -> int:
                         row.get("speed_kmh"),
                         row.get("n_inputs"),
                         row.get("std_dev"),
+                        row.get("n_incomplete_inputs"),
+                        row.get("supplier_quality"),
+                        row.get("computational_method"),
+                        row.get("data_error"),
+                        row.get("measurement_status"),
+                        row.get("is_usable"),
                     )
                 )
                 total += 1
@@ -156,7 +186,6 @@ class MeasurementSiteIngester(Ingester):
         total = 0
         site_batch: list[dict] = []
         char_batch: list[dict] = []
-        refreshed_site_ids: list[str] = []
 
         def _flush_chars() -> None:
             for i in range(0, len(char_batch), BATCH_SIZE):
@@ -168,7 +197,6 @@ class MeasurementSiteIngester(Ingester):
         with open_feed(result.path) as f:
             for site_dict, char_dicts in parse_measurement_site_table(f):
                 row = dict(site_dict)
-                refreshed_site_ids.append(row["id"])
                 row["geom"] = wkt_geom(row.get("geom"))
                 row["line_geom"] = wkt_geom(row.get("line_geom"))
                 site_batch.append(row)
@@ -199,13 +227,12 @@ class MeasurementSiteIngester(Ingester):
         active_graph_id = session.scalar(
             select(OsmImportRun.id).where(OsmImportRun.is_active.is_(True)).limit(1)
         )
-        if active_graph_id is not None and refreshed_site_ids:
+        if active_graph_id is not None and total:
             from ndwinfo.matching.source_binding import rebuild_measurement_bindings
 
             rebuild_measurement_bindings(
                 session,
                 active_graph_id,
-                source_ids=refreshed_site_ids,
             )
 
         return total
@@ -226,7 +253,11 @@ class TrafficspeedIngester(Ingester):
 
         with open_feed(result.path) as f:
             for row in parse_trafficspeed(f):
-                batch.append(dict(row))
+                normalized = dict(row)
+                # All useful traffic fields are typed. Avoid duplicating the
+                # full minute snapshot in JSONB/WAL on portable fallback paths.
+                normalized["raw"] = None
+                batch.append(normalized)
                 if len(batch) >= BATCH_SIZE:
                     total += bulk_upsert(session, TrafficMeasurement, batch, ["site_id", "index"])
                     session.flush()

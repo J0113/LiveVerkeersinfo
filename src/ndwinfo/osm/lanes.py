@@ -16,7 +16,10 @@ LANE_ATTRIBUTE_TAGS = {
     "turn": "turn:lanes",
     "change": "change:lanes",
     "destination": "destination:lanes",
+    "destination_ref": "destination:ref:lanes",
     "maxspeed": "maxspeed:lanes",
+    "minspeed": "minspeed:lanes",
+    "width": "width:lanes",
 }
 
 _MAIN_MOTORWAY_CLASSES = {"motorway", "trunk"}
@@ -65,6 +68,10 @@ def build_lane_schema(
         ),
         None,
     )
+    for mode in ("hgv", "psv", "bus"):
+        selected[mode] = _directional_lane_value(
+            tags, f"{mode}:lanes", suffix, oneway
+        )
     if lane_count is None and supplied_lane_count is None and not any(selected.values()):
         return None
 

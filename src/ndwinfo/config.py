@@ -22,8 +22,13 @@ class Settings(BaseSettings):
     db_pool_size: int = 20
     db_max_overflow: int = 10
     db_pool_recycle_s: int = 1800
-    # comma-separated names to skip, e.g. "verkeersborden_csv,msi_shapefiles"
-    disabled_feeds: str = ""
+    # Core-driving defaults: these sources currently have no consumer in the
+    # speed/corridor path (meetlocaties, travel time) or duplicate the OSM road
+    # graph at disproportionate cost (full NWB). They remain opt-in for
+    # diagnostics by removing their names from DISABLED_FEEDS.
+    disabled_feeds: str = (
+        "verkeersborden_csv,meetlocaties_shapefile,traveltime,nwb_wegvakken"
+    )
     nwb_wegvakken_url: str = (
         "https://downloads.rijkswaterstaatdata.nl/nwb-wegen/geogegevens/"
         "geopackage/NWB-dagelijks/Wegvakken/Wegvakken.gpkg"
@@ -69,9 +74,9 @@ class Settings(BaseSettings):
     road_topology_max_branches: int = 8
     source_binding_max_distance_m: float = 80.0
     source_binding_max_heading_delta_deg: float = 85.0
-    # VILD is only a direction fallback when its referenced line is physically
-    # close to the measurement site. This prevents sparse/incomplete VILD
-    # coverage from assigning a remote line's direction.
+    # VILD is the primary fixed-sensor direction source only when its exact
+    # referenced line is physically close to the site. This prevents a stale or
+    # incomplete location reference from assigning a remote line's direction.
     source_binding_vild_max_distance_m: float = 50.0
     source_binding_min_confidence: float = 0.5
     source_binding_min_margin: float = 4.0

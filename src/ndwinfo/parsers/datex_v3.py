@@ -35,6 +35,42 @@ def _bool(s: str | None) -> bool | None:
     return s.strip().lower() == "true"
 
 
+def _number(s: str | None) -> int | float | None:
+    if s is None:
+        return None
+    try:
+        value = float(s)
+    except ValueError:
+        return None
+    return int(value) if value.is_integer() else value
+
+
+def _local_type(value: str | None) -> str:
+    """Return the local part of either a QName or Clark-notation type."""
+    if not value:
+        return ""
+    if "}" in value:
+        return value.rsplit("}", 1)[-1]
+    return value.rsplit(":", 1)[-1]
+
+
+def _local_name(elem) -> str:
+    return elem.tag.rsplit("}", 1)[-1]
+
+
+def _texts_local(elem, name: str) -> list[str]:
+    values: list[str] = []
+    for child in elem.iter():
+        if _local_name(child) == name and child.text and child.text.strip():
+            values.append(child.text.strip())
+    return values
+
+
+def _first_local(elem, name: str) -> str | None:
+    values = _texts_local(elem, name)
+    return values[0] if values else None
+
+
 def _poslist_to_linestring(poslist: str) -> str | None:
     vals = poslist.split()
     if len(vals) < 4 or len(vals) % 2 != 0:
@@ -62,22 +98,202 @@ def _geom_from_location(loc_elem) -> str | None:
         return None
     xsi_type = loc_elem.get(XSIT + "type", "")
 
-    if "PointLocation" in xsi_type:
-        lat_e = loc_elem.find(f".//{{{LOC}}}latitude")
-        lon_e = loc_elem.find(f".//{{{LOC}}}longitude")
-        if lat_e is not None and lon_e is not None and lat_e.text and lon_e.text:
-            try:
-                return f"POINT({float(lon_e.text)} {float(lat_e.text)})"
-            except ValueError:
-                pass
-        return None
-
-    # Linear / itinerary: extract posList
+    # Prefer the route geometry of an itinerary over a reference point embedded
+    # elsewhere in that itinerary.
     poslist_e = loc_elem.find(f".//{{{LOC}}}posList")
     if poslist_e is not None and poslist_e.text:
         return _poslist_to_linestring(poslist_e.text)
 
+    lat_e = loc_elem.find(f".//{{{LOC}}}latitude")
+    lon_e = loc_elem.find(f".//{{{LOC}}}longitude")
+    if lat_e is not None and lon_e is not None and lat_e.text and lon_e.text:
+        try:
+            return f"POINT({float(lon_e.text)} {float(lat_e.text)})"
+        except ValueError:
+            pass
+
     return None
+
+
+_SUBTYPE_FIELDS = {
+    "Accident": "accidentType",
+    "AbnormalTraffic": "abnormalTrafficType",
+    "ConstructionWorks": "constructionWorkType",
+    "GeneralNetworkManagement": "generalNetworkManagementType",
+    "GeneralObstruction": "obstructionType",
+    "MaintenanceWorks": "maintenanceWorkType",
+    "PublicEvent": "publicEventType",
+    "ReroutingManagement": "reroutingManagementType",
+    "RoadOrCarriagewayOrLaneManagement": "roadOrCarriagewayOrLaneManagementType",
+    "SpeedManagement": "speedManagementType",
+    "VehicleObstruction": "vehicleObstructionType",
+}
+
+_INCIDENT_TYPES = {
+    "Accident",
+    "AbnormalTraffic",
+    "AnimalPresenceObstruction",
+    "EnvironmentalObstruction",
+    "EquipmentOrSystemFault",
+    "GeneralObstruction",
+    "NonWeatherRelatedRoadCondition",
+    "PoorEnvironmentConditions",
+    "VehicleObstruction",
+    "WeatherRelatedRoadCondition",
+}
+
+_ROADWORK_TYPES = {
+    "AuthorityOperation",
+    "ConstructionWorks",
+    "MaintenanceWorks",
+    "PublicEvent",
+}
+
+_CLOSURE_SUBTYPES = {
+    "carriagewayClosures",
+    "laneClosures",
+    "roadClosed",
+}
+
+
+def _record_subtype(record, record_type: str) -> str | None:
+    field = _SUBTYPE_FIELDS.get(record_type)
+    if field:
+        return _first_local(record, field)
+
+    # Preserve useful subtype information for a DATEX specialization that is
+    # newer than this parser. Cause/status fields are deliberately excluded.
+    for child in record:
+        name = _local_name(child)
+        if name.endswith("Type") and name not in {"causeType", "mobilityType"}:
+            if child.text and child.text.strip():
+                return child.text.strip()
+    return None
+
+
+def _situation_category(
+    record_type: str,
+    subtype: str | None,
+    safety_related: bool | None,
+    fallback: str,
+) -> str:
+    """Classify a record by its contents, never merely by publication name."""
+    if record_type == "SpeedManagement":
+        return "speed_limit"
+    if record_type == "GeneralNetworkManagement":
+        if subtype and "bridge" in subtype.lower():
+            return "bridge_opening"
+        return "roadworks"
+    if record_type == "RoadOrCarriagewayOrLaneManagement":
+        return "closure" if subtype in _CLOSURE_SUBTYPES else "roadworks"
+    if record_type == "ReroutingManagement":
+        return "closure"
+    if record_type in _ROADWORK_TYPES:
+        return "roadworks"
+    if record_type in _INCIDENT_TYPES:
+        return "srti" if safety_related else "incident"
+    return fallback
+
+
+def _alert_c(location) -> dict | None:
+    alert = next(
+        (
+            child
+            for child in location.iter()
+            if _local_name(child) in {"alertCPoint", "alertCLinear"}
+        ),
+        None,
+    )
+    if alert is None:
+        return None
+
+    def endpoint(kind: str) -> dict | None:
+        container = next(
+            (
+                child
+                for child in alert.iter()
+                if kind in _local_name(child) and _local_name(child).endswith("PointLocation")
+            ),
+            None,
+        )
+        if container is None:
+            return None
+        code = _first_local(container, "specificLocation")
+        offset = _number(_first_local(container, "offsetDistance"))
+        if code is None and offset is None:
+            return None
+        return {"specific_location": code, "offset_distance_m": offset}
+
+    return {
+        "type": _local_type(alert.get(XSIT + "type")),
+        "country_code": _first_local(alert, "alertCLocationCountryCode"),
+        "table_number": _first_local(alert, "alertCLocationTableNumber"),
+        "table_version": _first_local(alert, "alertCLocationTableVersion"),
+        "direction_coded": _first_local(alert, "alertCDirectionCoded"),
+        "affected_direction": _first_local(alert, "alertCAffectedDirection"),
+        "primary": endpoint("Primary"),
+        "secondary": endpoint("Secondary"),
+    }
+
+
+def _location_contract(loc_elem) -> list[dict]:
+    if loc_elem is None:
+        return []
+
+    contained = loc_elem.findall(f".//{{{LOC}}}locationContainedInItinerary")
+    logical_locations: list[tuple[int | None, object]] = []
+    for item in contained:
+        location = item.find(f"{{{LOC}}}location")
+        if location is not None:
+            index = _number(item.get("index"))
+            logical_locations.append((index if isinstance(index, int) else None, location))
+    if not logical_locations:
+        logical_locations = [(None, loc_elem)]
+
+    result: list[dict] = []
+    for index, location in logical_locations:
+        pos_lists = _texts_local(location, "posList")
+        lat = _number(_first_local(location, "latitude"))
+        lon = _number(_first_local(location, "longitude"))
+        carriageways = _texts_local(location, "carriageway")
+        # The outer <carriageway> is a container without text; retain distinct
+        # actual enum values in source order.
+        carriageways = list(dict.fromkeys(carriageways))
+        lanes = []
+        for lane in location.findall(f".//{{{LOC}}}lane"):
+            lane_contract = {
+                "number": _number(_first_local(lane, "laneNumber")),
+                "usage": _first_local(lane, "laneUsage"),
+                "status": _first_local(lane, "laneStatus"),
+                "type": _first_local(lane, "laneType"),
+            }
+            if any(value is not None for value in lane_contract.values()):
+                lanes.append(lane_contract)
+        result.append(
+            {
+                "index": index,
+                "type": _local_type(location.get(XSIT + "type")),
+                "carriageway": carriageways[0] if carriageways else None,
+                "original_number_of_lanes": _number(
+                    _first_local(location, "originalNumberOfLanes")
+                ),
+                "lanes": lanes,
+                "lane_usage": list(dict.fromkeys(_texts_local(location, "laneUsage"))),
+                "bearing": _number(_first_local(location, "bearing")),
+                "point": (
+                    {"latitude": lat, "longitude": lon}
+                    if lat is not None and lon is not None
+                    else None
+                ),
+                "gml_line_strings": [
+                    wkt
+                    for pos_list in pos_lists
+                    if (wkt := _poslist_to_linestring(pos_list)) is not None
+                ],
+                "alert_c": _alert_c(location),
+            }
+        )
+    return result
 
 
 def _clear(elem) -> None:
@@ -95,19 +311,26 @@ def parse_situations(fileobj, category: str) -> Iterator[dict]:
     """Parse DATEX v3 SituationPublication.
 
     Yields one dict per situationRecord.
-    category: 'incident'|'srti'|'roadworks'|'bridge_opening'|'closure'|'speed_limit'
+    ``category`` is retained as a fallback for unknown future record types.
+    Known records are classified from their actual xsi:type and subtype.
     """
     SIT_T = _t(SIT)
 
     for _, sit_elem in etree.iterparse(fileobj, events=("end",), tag=f"{SIT_T}situation"):
         sit_id = sit_elem.get("id")
         severity = _text_e(sit_elem, f"{SIT_T}overallSeverity")
+        information_status = _text_e(
+            sit_elem, f"{SIT_T}headerInformation/{{{COM}}}informationStatus"
+        )
 
         for record in sit_elem.findall(f"{SIT_T}situationRecord"):
             record_id = record.get("id")
-            xsi_type = record.get(XSIT + "type", "")
-            # Strip "sit:" prefix or Clark notation
-            record_type = xsi_type.replace("sit:", "").replace(f"{{{SIT}}}", "")
+            record_type = _local_type(record.get(XSIT + "type"))
+            safety_related = _bool(_text_e(record, f"{SIT_T}safetyRelatedMessage"))
+            record_subtype = _record_subtype(record, record_type)
+            actual_category = _situation_category(
+                record_type, record_subtype, safety_related, category
+            )
 
             # Validity window
             vts = record.find(f".//{{{COM}}}validityTimeSpecification")
@@ -115,6 +338,22 @@ def parse_situations(fileobj, category: str) -> Iterator[dict]:
             if vts is not None:
                 valid_from = _text_e(vts, f"{{{COM}}}overallStartTime")
                 valid_to = _text_e(vts, f"{{{COM}}}overallEndTime")
+            validity_status = _first_local(record, "validityStatus")
+            valid_periods = []
+            if vts is not None:
+                for period in vts.findall(f".//{{{COM}}}validPeriod"):
+                    valid_periods.append(
+                        {
+                            "start": _text_e(period, f"{{{COM}}}startOfPeriod"),
+                            "end": _text_e(period, f"{{{COM}}}endOfPeriod"),
+                        }
+                    )
+            validity = {
+                "status": validity_status,
+                "overall_start": valid_from,
+                "overall_end": valid_to,
+                "valid_periods": valid_periods,
+            }
 
             # Source name (first Dutch value)
             source_name: str | None = None
@@ -126,6 +365,62 @@ def parse_situations(fileobj, category: str) -> Iterator[dict]:
             # Geometry
             loc_elem = record.find(f"{SIT_T}locationReference")
             geom = _geom_from_location(loc_elem)
+            locations = _location_contract(loc_elem)
+            carriageways = list(
+                dict.fromkeys(
+                    location["carriageway"]
+                    for location in locations
+                    if location["carriageway"]
+                )
+            )
+            bearings = [
+                location["bearing"]
+                for location in locations
+                if location["bearing"] is not None
+            ]
+            alert_c_locations = [
+                location["alert_c"] for location in locations if location["alert_c"]
+            ]
+
+            lane_impact = {
+                "number_of_lanes_restricted": _number(
+                    _first_local(record, "numberOfLanesRestricted")
+                ),
+                "number_of_operational_lanes": _number(
+                    _first_local(record, "numberOfOperationalLanes")
+                ),
+                "original_number_of_lanes": next(
+                    (
+                        location["original_number_of_lanes"]
+                        for location in locations
+                        if location["original_number_of_lanes"] is not None
+                    ),
+                    None,
+                ),
+                "lane_usage": list(
+                    dict.fromkeys(
+                        lane_usage
+                        for location in locations
+                        for lane_usage in location["lane_usage"]
+                    )
+                ),
+                "lanes": [
+                    lane for location in locations for lane in location["lanes"]
+                ],
+            }
+            if not any(
+                value
+                for key, value in lane_impact.items()
+                if key not in {"lane_usage", "lanes"}
+            ) and not lane_impact["lane_usage"] and not lane_impact["lanes"]:
+                lane_impact = None
+
+            cause = {
+                "type": _first_local(record, "causeType"),
+                "detailed_type": _first_local(record, "detailedCauseType"),
+            }
+            if not any(cause.values()):
+                cause = None
 
             # Speed limit (SpeedManagement only)
             speed_limit_kmh: int | None = None
@@ -140,18 +435,32 @@ def parse_situations(fileobj, category: str) -> Iterator[dict]:
             row = {
                 "id": sit_id,
                 "record_id": record_id,
-                "category": category,
+                "category": actual_category,
                 "record_type": record_type,
+                "record_subtype": record_subtype,
+                "record_version": _number(record.get("version")),
+                "feed_category": category,
                 "severity": severity,
                 "probability": _text_e(record, f"{SIT_T}probabilityOfOccurrence"),
-                "safety_related": _bool(
-                    _text_e(record, f"{SIT_T}safetyRelatedMessage")
-                ),
+                "safety_related": safety_related,
                 "source": source_name,
                 "valid_from": valid_from,
                 "valid_to": valid_to,
                 "version_time": _text_e(record, f"{SIT_T}situationRecordVersionTime"),
                 "speed_limit_kmh": speed_limit_kmh,
+                "carriageway": carriageways[0] if len(carriageways) == 1 else None,
+                "carriageways": carriageways,
+                "bearing": bearings[0] if bearings else None,
+                "alert_c": alert_c_locations[0] if len(alert_c_locations) == 1 else None,
+                "alert_c_locations": alert_c_locations,
+                "locations": locations,
+                "lane_impact": lane_impact,
+                "operator_action_status": _first_local(record, "operatorActionStatus"),
+                "record_status": _first_local(record, "situationRecordStatus"),
+                "validity_status": validity_status,
+                "validity": validity,
+                "information_status": information_status,
+                "cause": cause,
                 "geom": geom,
             }
             row["raw"] = {k: v for k, v in row.items() if k != "raw"}
@@ -233,9 +542,15 @@ def parse_drip(fileobj) -> Iterator[dict]:
             )
 
             bearing: int | None = None
+            carriageway: str | None = None
             lat = lon = None
             loc = vms.find(f"{VMS_T}vmsLocation")
             if loc is not None:
+                carriageway = _text_e(
+                    loc,
+                    f"{LOC_T}supplementaryPositionalDescription/"
+                    f"{LOC_T}carriageway/{LOC_T}carriageway",
+                )
                 b_e = loc.find(f".//{LOC_T}bearing")
                 lat_e = loc.find(f".//{LOC_T}latitude")
                 lon_e = loc.find(f".//{LOC_T}longitude")
@@ -268,6 +583,7 @@ def parse_drip(fileobj) -> Iterator[dict]:
                 "vms_type": _text_e(vms, f"{VMS_T}vmsType"),
                 "physical_support": _text_e(vms, f"{VMS_T}physicalSupport"),
                 "bearing": bearing,
+                "carriageway": carriageway,
                 "num_display_areas": num_display_areas,
                 "display_text": status.get("display_text") if status else None,
                 "geom": geom,

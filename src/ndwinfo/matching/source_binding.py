@@ -33,7 +33,7 @@ from ndwinfo.models import (
     VildTmc,
 )
 
-ALGORITHM_VERSION = "ndw-osm-v2-tmc-vild-bearing"
+ALGORITHM_VERSION = "ndw-osm-v4-vild-primary-direction"
 SOURCE_TYPE = "ndw_measurement_site"
 BindingStatus = Literal["accepted", "ambiguous", "rejected"]
 
@@ -44,6 +44,9 @@ class SourceTraits:
     carriageway: str | None = None
     heading: float | None = None
     lanes: int | None = None
+    carriageway_type: str | None = None
+    form_of_way: str | None = None
+    direction_conflict: bool = False
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,7 @@ class RoadCandidate:
     lanes: int | None
     distance_m: float
     bearing: float
+    highway: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,14 +88,27 @@ def decide_binding(
     max_distance_m: float | None = None,
 ) -> BindingDecision:
     """Rank bounded candidates after applying hard metadata constraints."""
+    if source.direction_conflict:
+        return BindingDecision("rejected", None, None, None, None, None, 0.0)
     max_distance = max_distance_m or settings.source_binding_max_distance_m
     source_refs = normalize_road_refs(source.road)
     source_side = normalize_carriageway(source.carriageway)
+    location_kind = (source.carriageway_type or "").casefold()
+    form_of_way = (source.form_of_way or "").casefold()
+    expects_link = "sliproad" in location_kind or "sliproad" in form_of_way
+    expects_main = location_kind == "maincarriageway"
     heading = finite_number(source.heading)
     scored: list[CandidateScore] = []
 
     for candidate in candidates:
         if candidate.distance_m > max_distance:
+            continue
+        candidate_is_link = (candidate.highway or "").casefold().endswith("_link")
+        # This evidence is explicitly supplied by NDW/OpenLR and resolves the
+        # common main-road versus ramp ambiguity before distance scoring.
+        if expects_link and not candidate_is_link:
+            continue
+        if expects_main and candidate_is_link:
             continue
         road_refs = normalize_road_refs(candidate.road_number)
         road_match = bool(source_refs and road_refs and source_refs & road_refs)
@@ -201,26 +218,34 @@ def rebuild_measurement_bindings(
     counts = {"accepted": 0, "ambiguous": 0, "rejected": 0}
     evaluated_at = datetime.now(timezone.utc)
     for site, candidates in _candidate_groups(session, graph.id, site_filter):
+        vild_bearing = derive_vild_bearing(
+            direction=site["tmc_direction"],
+            site_point=site["site_point"],
+            line=site["vild_line"],
+            primary_point=site["vild_primary_point"],
+            positive_point=site["vild_positive_point"],
+            negative_point=site["vild_negative_point"],
+        )
+        heading, direction_source, direction_conflict = resolve_source_direction(
+            site["openlr_bearing"], vild_bearing
+        )
         decision = decide_binding(
             SourceTraits(
                 road=site["road"],
                 carriageway=site["carriageway"],
-                heading=resolve_source_heading(
-                    site["openlr_bearing"],
-                    derive_vild_bearing(
-                        direction=site["tmc_direction"],
-                        site_point=site["site_point"],
-                        line=site["vild_line"],
-                        primary_point=site["vild_primary_point"],
-                        positive_point=site["vild_positive_point"],
-                        negative_point=site["vild_negative_point"],
-                    ),
-                ),
+                heading=heading,
                 lanes=site["num_lanes"],
+                carriageway_type=site["carriageway_type"],
+                form_of_way=site["openlr_fow"],
+                direction_conflict=direction_conflict,
             ),
             candidates,
         )
-        session.add(_binding_record(graph, site["id"], decision, evaluated_at))
+        session.add(
+            _binding_record(
+                graph, site["id"], decision, evaluated_at, direction_source
+            )
+        )
         counts[decision.status] += 1
 
     session.flush()
@@ -279,6 +304,7 @@ def _candidate_groups(
             OsmRoadSegment.road_number.label("segment_road"),
             OsmRoadSegment.carriageway_ref.label("segment_carriageway"),
             OsmRoadSegment.lanes.label("segment_lanes"),
+            OsmRoadSegment.highway.label("segment_highway"),
             distance,
             OsmRoadSegment.geom.label("segment_geom"),
         )
@@ -307,6 +333,8 @@ def _candidate_groups(
             MeasurementSite.id.label("site_id"),
             MeasurementSite.road.label("site_road"),
             MeasurementSite.carriageway.label("site_carriageway"),
+            MeasurementSite.carriageway_type.label("site_carriageway_type"),
+            MeasurementSite.openlr_fow.label("site_openlr_fow"),
             MeasurementSite.openlr_bearing.label("site_bearing"),
             MeasurementSite.tmc_direction.label("site_tmc_direction"),
             MeasurementSite.num_lanes.label("site_lanes"),
@@ -322,13 +350,38 @@ def _candidate_groups(
             candidate.c.segment_road,
             candidate.c.segment_carriageway,
             candidate.c.segment_lanes,
+            candidate.c.segment_highway,
             candidate.c.distance_m,
             candidate.c.segment_geom,
         )
         .select_from(MeasurementSite)
-        .outerjoin(primary_tmc, primary_tmc.loc_nr == MeasurementSite.tmc_primary)
-        .outerjoin(positive_tmc, positive_tmc.loc_nr == primary_tmc.pos_off)
-        .outerjoin(negative_tmc, negative_tmc.loc_nr == primary_tmc.neg_off)
+        .outerjoin(
+            primary_tmc,
+            and_(
+                primary_tmc.loc_nr == MeasurementSite.tmc_primary,
+                primary_tmc.country_code == MeasurementSite.tmc_country_code,
+                primary_tmc.table_number == MeasurementSite.tmc_table_number,
+                primary_tmc.table_version == MeasurementSite.tmc_table_version,
+            ),
+        )
+        .outerjoin(
+            positive_tmc,
+            and_(
+                positive_tmc.loc_nr == primary_tmc.pos_off,
+                positive_tmc.country_code == primary_tmc.country_code,
+                positive_tmc.table_number == primary_tmc.table_number,
+                positive_tmc.table_version == primary_tmc.table_version,
+            ),
+        )
+        .outerjoin(
+            negative_tmc,
+            and_(
+                negative_tmc.loc_nr == primary_tmc.neg_off,
+                negative_tmc.country_code == primary_tmc.country_code,
+                negative_tmc.table_number == primary_tmc.table_number,
+                negative_tmc.table_version == primary_tmc.table_version,
+            ),
+        )
         .outerjoin(
             primary_point,
             primary_point.id == cast(primary_tmc.loc_nr, String),
@@ -382,6 +435,7 @@ def _candidate_groups(
                 lanes=row.segment_lanes,
                 distance_m=float(row.distance_m),
                 bearing=local_line_bearing(to_shape(row.segment_geom), point),
+                highway=row.segment_highway,
             )
             for row in grouped_rows
             if row.segment_id is not None
@@ -391,6 +445,8 @@ def _candidate_groups(
                 "id": first.site_id,
                 "road": first.site_road,
                 "carriageway": first.site_carriageway,
+                "carriageway_type": first.site_carriageway_type,
+                "openlr_fow": first.site_openlr_fow,
                 "openlr_bearing": first.site_bearing,
                 "tmc_direction": first.site_tmc_direction,
                 "num_lanes": first.site_lanes,
@@ -409,6 +465,7 @@ def _binding_record(
     source_id: str,
     decision: BindingDecision,
     evaluated_at: datetime,
+    direction_source: str | None,
 ) -> SourceLocationBinding:
     return SourceLocationBinding(
         source_type=SOURCE_TYPE,
@@ -417,6 +474,7 @@ def _binding_record(
         status=decision.status,
         distance_m=decision.distance_m,
         heading_delta_deg=decision.heading_delta_deg,
+        direction_source=direction_source,
         score=decision.score,
         margin=decision.margin,
         confidence=decision.confidence,
@@ -466,12 +524,37 @@ def local_line_bearing(line: LineString, point: Point) -> float:
 
 
 def resolve_source_heading(openlr_bearing: object, vild_bearing: object) -> float | None:
-    """Prefer explicit OpenLR and use VILD only when OpenLR is unavailable."""
+    """Return the primary fixed-sensor heading, or None on a hard conflict."""
+    heading, _, conflict = resolve_source_direction(openlr_bearing, vild_bearing)
+    return None if conflict else heading
+
+
+def resolve_source_direction(
+    openlr_bearing: object,
+    vild_bearing: object,
+    *,
+    max_agreement_delta_deg: float = 45.0,
+) -> tuple[float | None, str | None, bool]:
+    """Use nationally complete VILD direction with OpenLR as cross-check.
+
+    VILD supplies a relative direction for every in-scope fixed speed site and
+    its chain topology orients the local line tangent. OpenLR remains a useful
+    independent fallback/check. Material disagreement fails closed instead of
+    choosing whichever source happens to be nearer to an OSM candidate.
+    """
     openlr = finite_number(openlr_bearing)
-    if openlr is not None:
-        return openlr % 360.0
     vild = finite_number(vild_bearing)
-    return vild % 360.0 if vild is not None else None
+    openlr = openlr % 360.0 if openlr is not None else None
+    vild = vild % 360.0 if vild is not None else None
+    if openlr is not None and vild is not None:
+        if angle_diff(openlr, vild) > max_agreement_delta_deg:
+            return None, "conflict", True
+        return vild, "vild", False
+    if vild is not None:
+        return vild, "vild", False
+    if openlr is not None:
+        return openlr, "openlr", False
+    return None, None, False
 
 
 def derive_vild_bearing(

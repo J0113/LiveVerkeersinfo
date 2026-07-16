@@ -100,7 +100,10 @@ def test_postgres_ingest_streams_copy_and_preserves_zero_speed(monkeypatch):
     assert len(session.db.driver_sql) == 1
     copied = session.db.driver.copy_writer.rows
     assert copied == [
-        ("NL01", 3, "2026-07-15T10:00:00Z", "TrafficSpeed", None, 0.0, 8, 0.0)
+        (
+            "NL01", 3, "2026-07-15T10:00:00Z", "TrafficSpeed", None, 0.0,
+            8, 0.0, None, None, None, None, None, None,
+        )
     ]
     assert len(session.executed) == 1
     merge_sql, params = session.executed[0]

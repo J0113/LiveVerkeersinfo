@@ -24,11 +24,21 @@ def test_make_lane_rows_creates_centered_lane_features():
         "WEGNUMMER": "001",
         "KANTCODE": "H",
         "IZI_SIDE": "R",
+        "VOLGNRSTRK": 4,
+        "VNRWOL": 2,
+        "BEGINWDL": "001R",
+        "BEGINKM": 7.4,
+        "EINDWDL": "001R",
+        "EINDKM": 7.8,
     }
     rows = make_lane_rows(attrs, LineString([(155000, 463000), (155100, 463000)]))
 
     assert [row["id"] for row in rows] == ["KLK123:1", "KLK123:2", "KLK123:3"]
     assert all(row["lane_count"] == 3 for row in rows)
+    assert rows[0]["sequence_number"] == 4
+    assert rows[0]["wol_lane_number"] == 2
+    assert rows[0]["begin_km"] == 7.4
+    assert rows[0]["end_km"] == 7.8
     latitudes = [from_wkt(row["geom"]).coords[0][1] for row in rows]
     assert latitudes[0] > latitudes[1] > latitudes[2]
     lane_lengths = [from_wkt(row["geom"]).length for row in rows]

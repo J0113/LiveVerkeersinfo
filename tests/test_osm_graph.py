@@ -68,6 +68,9 @@ def test_directional_tags_override_total_values():
         "lanes:backward": "2",
         "maxspeed": "80",
         "maxspeed:backward": "60",
+        "maxspeed:conditional": "100 @ (06:00-19:00)",
+        "placement:forward": "middle_of:2",
+        "shoulder": "right",
         "ref": "a 12; e 35",
     }
     forward = normalize_way_tags(tags, "forward")
@@ -76,6 +79,9 @@ def test_directional_tags_override_total_values():
     assert backward["lanes"] == 2
     assert forward["maxspeed"] == "80"
     assert backward["maxspeed"] == "60"
+    assert forward["maxspeed_conditional"] == "100 @ (06:00-19:00)"
+    assert forward["placement"] == "middle_of:2"
+    assert forward["shoulder"] == "right"
     assert normalize_road_ref(tags["ref"]) == "A12;E35"
 
 

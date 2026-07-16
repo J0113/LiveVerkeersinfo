@@ -107,6 +107,12 @@ def make_lane_rows(attributes: Mapping[str, Any], geometry) -> list[dict]:
             "road_number": _text(attributes.get("WEGNUMMER")),
             "direction": _text(attributes.get("KANTCODE")),
             "carriageway_side": _text(attributes.get("IZI_SIDE")),
+            "sequence_number": _integer(attributes.get("VOLGNRSTRK")),
+            "wol_lane_number": _integer(attributes.get("VNRWOL")),
+            "begin_wdl": _text(attributes.get("BEGINWDL")),
+            "begin_km": _number(attributes.get("BEGINKM")),
+            "end_wdl": _text(attributes.get("EINDWDL")),
+            "end_km": _number(attributes.get("EINDKM")),
             "geom": transform(_RD_TO_WGS84.transform, lane_geom).wkt,
             "raw": raw,
         })
@@ -156,6 +162,24 @@ def _text(value: Any) -> str | None:
     return str(value)
 
 
+def _integer(value: Any) -> int | None:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _number(value: Any) -> float | None:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_weggeg_lanes(zip_path: Path) -> Iterator[dict]:
     """Yield one WGS84 lane row for every lane in WEGGEG ``Rijstroken``."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -176,3 +200,66 @@ def parse_weggeg_lanes(zip_path: Path) -> Iterator[dict]:
         for _, feature in frame.iterrows():
             attributes = {column: feature[column] for column in columns}
             yield from make_lane_rows(attributes, feature["geometry"])
+
+
+_ATTRIBUTE_LAYERS = {
+    "rijbanen.shp": "carriageway",
+    "convergenties.shp": "convergence",
+    "divergenties.shp": "divergence",
+    "max_snelheden.shp": "maximum_speed",
+}
+
+
+def parse_weggeg_road_attributes(zip_path: Path) -> Iterator[dict]:
+    """Yield typed rows from the WEGGEG layers used as canonical evidence.
+
+    These geometries never authorize a traffic fact by themselves. They enrich
+    an already accepted OSM direction with carriageway layout, merge/diverge
+    topology and Rijksweg static maximum-speed evidence.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with zipfile.ZipFile(zip_path) as zf:
+            for member in zf.namelist():
+                basename = member.replace("\\", "/").rsplit("/", 1)[-1].lower()
+                stem = basename.rsplit(".", 1)[0]
+                if any(stem == shp.rsplit(".", 1)[0] for shp in _ATTRIBUTE_LAYERS):
+                    zf.extract(member, tmpdir)
+
+        root = Path(tmpdir)
+        for filename, feature_type in _ATTRIBUTE_LAYERS.items():
+            matches = list(root.rglob(filename))
+            if not matches:
+                continue
+            frame = pyogrio.read_dataframe(str(matches[0]))
+            columns = [column for column in frame.columns if column != "geometry"]
+            for _, feature in frame.iterrows():
+                attrs = {column: feature[column] for column in columns}
+                source_id = _text(attrs.get("FK_VELD4"))
+                geometry = feature["geometry"]
+                if source_id is None or geometry is None or geometry.is_empty:
+                    continue
+                maxspeed = (
+                    _integer(attrs.get("OMSCHR"))
+                    if feature_type == "maximum_speed"
+                    else None
+                )
+                yield {
+                    "id": f"{feature_type}:{source_id}",
+                    "feature_type": feature_type,
+                    "source_id": source_id,
+                    "description": _text(attrs.get("OMSCHR")),
+                    "subtype": _text(attrs.get("TYPE_CONV") or attrs.get("TYPE_DIV")),
+                    "road_number": _text(attrs.get("WEGNUMMER")),
+                    "direction": _text(attrs.get("KANTCODE") or attrs.get("WEGDEELLTR")),
+                    "carriageway_side": _text(attrs.get("IZI_SIDE")),
+                    "begin_wdl": _text(attrs.get("BEGINWDL")),
+                    "begin_km": _number(attrs.get("BEGINKM")),
+                    "end_wdl": _text(attrs.get("EINDWDL")),
+                    "end_km": _number(attrs.get("EINDKM")),
+                    "point_km": _number(attrs.get("KMTR")),
+                    "maxspeed_kmh": maxspeed,
+                    "begin_time": _number(attrs.get("BEGINTIJD")),
+                    "end_time": _number(attrs.get("EINDTIJD")),
+                    "geom": transform(_RD_TO_WGS84.transform, geometry).wkt,
+                    "raw": attrs,
+                }

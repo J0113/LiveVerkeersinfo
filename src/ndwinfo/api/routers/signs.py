@@ -98,6 +98,10 @@ def get_drips(
     b: BBoxDep,
     db: DbDep,
     limit: Annotated[int, Query(ge=1, le=settings.api_max_limit)] = settings.api_default_limit,
+    include_image: Annotated[
+        bool,
+        Query(description="Include base64 display graphics for a bounded driver request"),
+    ] = False,
 ):
     bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
     rows = db.execute(
@@ -108,6 +112,7 @@ def get_drips(
             Drip.vms_type,
             Drip.physical_support,
             Drip.bearing,
+            Drip.carriageway,
             Drip.num_display_areas,
             Drip.display_text,
             Drip.message,
@@ -118,20 +123,30 @@ def get_drips(
     ).all()
 
     def props(r):
-        msg = r.message or {}
-        return {
-            "controller_id": r.controller_id,
-            "vms_index": r.vms_index,
-            "description": r.description,
-            "vms_type": r.vms_type,
-            "physical_support": r.physical_support,
-            "bearing": r.bearing,
-            "num_display_areas": r.num_display_areas,
-            "display_text": r.display_text,
-            "working_status": msg.get("working_status"),
-            "image_format": msg.get("image_format"),
-            "image_b64": msg.get("image_data"),
-            "updated_at": msg.get("status_update_time"),
-        }
+        return _drip_properties(r, include_image=include_image)
 
     return geo_response(make_fc(rows, "geom_json", props))
+
+
+def _drip_properties(row, *, include_image: bool = False) -> dict:
+    """Build a compact DRIP response; graphics are explicit and opt-in."""
+    message = row.message or {}
+    image_data = message.get("image_data")
+    properties = {
+        "controller_id": row.controller_id,
+        "vms_index": row.vms_index,
+        "description": row.description,
+        "vms_type": row.vms_type,
+        "physical_support": row.physical_support,
+        "bearing": row.bearing,
+        "carriageway": row.carriageway,
+        "num_display_areas": row.num_display_areas,
+        "display_text": row.display_text,
+        "working_status": message.get("working_status"),
+        "has_image": bool(image_data),
+        "updated_at": message.get("status_update_time"),
+    }
+    if include_image and image_data:
+        properties["image_format"] = message.get("image_format")
+        properties["image_b64"] = image_data
+    return properties

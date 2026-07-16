@@ -42,14 +42,24 @@ class MeasurementSite(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[Optional[str]] = mapped_column(String)
     equipment_type: Mapped[Optional[str]] = mapped_column(String)
+    equipment_reference: Mapped[Optional[str]] = mapped_column(String)
+    computation_method: Mapped[Optional[str]] = mapped_column(String)
     num_lanes: Mapped[Optional[int]] = mapped_column(Integer)
     side: Mapped[Optional[str]] = mapped_column(String)
     version: Mapped[Optional[int]] = mapped_column(Integer)
     record_version_time: Mapped[Optional[datetime]] = mapped_column(_tz)
     road: Mapped[Optional[str]] = mapped_column(String)
     carriageway: Mapped[Optional[str]] = mapped_column(String)
+    carriageway_source: Mapped[Optional[str]] = mapped_column(String)
+    carriageway_type: Mapped[Optional[str]] = mapped_column(String)
     km: Mapped[Optional[Any]] = mapped_column(Numeric)
     openlr_bearing: Mapped[Optional[int]] = mapped_column(Integer)
+    openlr_side_of_road: Mapped[Optional[str]] = mapped_column(String)
+    openlr_orientation: Mapped[Optional[str]] = mapped_column(String)
+    openlr_positive_offset_m: Mapped[Optional[int]] = mapped_column(Integer)
+    openlr_frc: Mapped[Optional[str]] = mapped_column(String)
+    openlr_fow: Mapped[Optional[str]] = mapped_column(String)
+    openlr_data: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
     # Segment line for travel-time sites: road-following (built from VILD TMC
     # chain) when resolvable, else straight start→end chord.
@@ -59,6 +69,10 @@ class MeasurementSite(Base):
     tmc_primary: Mapped[Optional[int]] = mapped_column(Integer)
     tmc_secondary: Mapped[Optional[int]] = mapped_column(Integer)
     tmc_direction: Mapped[Optional[str]] = mapped_column(String)
+    tmc_country_code: Mapped[Optional[str]] = mapped_column(String)
+    tmc_table_number: Mapped[Optional[str]] = mapped_column(String)
+    tmc_table_version: Mapped[Optional[str]] = mapped_column(String)
+    tmc_offset_m: Mapped[Optional[int]] = mapped_column(Integer)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -77,6 +91,8 @@ class MeasurementCharacteristic(Base):
     lane: Mapped[Optional[int]] = mapped_column(Integer)
     period_s: Mapped[Optional[int]] = mapped_column(Integer)
     value_type: Mapped[Optional[str]] = mapped_column(String)
+    accuracy: Mapped[Optional[Any]] = mapped_column(Numeric)
+    vehicle_type: Mapped[Optional[str]] = mapped_column(String)
     veh_length_min: Mapped[Optional[Any]] = mapped_column(Numeric)
     veh_length_max: Mapped[Optional[Any]] = mapped_column(Numeric)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
@@ -140,6 +156,12 @@ class VildTmc(Base):
     pos_off: Mapped[Optional[int]] = mapped_column(Integer)
     neg_off: Mapped[Optional[int]] = mapped_column(Integer)
     road_number: Mapped[Optional[str]] = mapped_column(String)
+    country_code: Mapped[Optional[str]] = mapped_column(String)
+    table_number: Mapped[Optional[str]] = mapped_column(String)
+    table_version: Mapped[Optional[str]] = mapped_column(String)
+    # +1/-1 relates Alert-C positive coding to increasing hectometrering. It is
+    # evidence for an optional R/L enrichment, never a compass direction.
+    hecto_direction: Mapped[Optional[int]] = mapped_column(Integer)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -317,6 +339,9 @@ class OsmRoadSegment(Base):
     lanes: Mapped[Optional[int]] = mapped_column(Integer)
     lane_schema: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     maxspeed: Mapped[Optional[str]] = mapped_column(String(64))
+    maxspeed_conditional: Mapped[Optional[str]] = mapped_column(String)
+    placement: Mapped[Optional[str]] = mapped_column(String)
+    shoulder: Mapped[Optional[str]] = mapped_column(String)
     access: Mapped[Optional[str]] = mapped_column(String(32))
     bridge: Mapped[Optional[str]] = mapped_column(String(32))
     tunnel: Mapped[Optional[str]] = mapped_column(String(32))
@@ -370,6 +395,7 @@ class SourceLocationBinding(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     distance_m: Mapped[Optional[Any]] = mapped_column(Numeric)
     heading_delta_deg: Mapped[Optional[Any]] = mapped_column(Numeric)
+    direction_source: Mapped[Optional[str]] = mapped_column(String)
     score: Mapped[Optional[Any]] = mapped_column(Numeric)
     margin: Mapped[Optional[Any]] = mapped_column(Numeric)
     confidence: Mapped[Optional[Any]] = mapped_column(Numeric)
@@ -407,6 +433,47 @@ class WeggegLane(Base):
     road_number: Mapped[Optional[str]] = mapped_column(String)
     direction: Mapped[Optional[str]] = mapped_column(String)
     carriageway_side: Mapped[Optional[str]] = mapped_column(String)
+    sequence_number: Mapped[Optional[int]] = mapped_column(Integer)
+    wol_lane_number: Mapped[Optional[int]] = mapped_column(Integer)
+    begin_wdl: Mapped[Optional[str]] = mapped_column(String)
+    begin_km: Mapped[Optional[Any]] = mapped_column(Numeric)
+    end_wdl: Mapped[Optional[str]] = mapped_column(String)
+    end_km: Mapped[Optional[Any]] = mapped_column(Numeric)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True
+    )
+    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
+class WeggegRoadAttribute(Base):
+    """Typed WEGGEG carriageway, transition and static-speed evidence."""
+
+    __tablename__ = "weggeg_road_attribute"
+    __table_args__ = (
+        Index("ix_weggeg_road_attribute_geom", "geom", postgresql_using="gist"),
+        Index(
+            "ix_weggeg_road_attribute_lookup",
+            "feature_type", "road_number", "carriageway_side", "begin_km", "end_km",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    feature_type: Mapped[str] = mapped_column(String, nullable=False)
+    source_id: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String)
+    subtype: Mapped[Optional[str]] = mapped_column(String)
+    road_number: Mapped[Optional[str]] = mapped_column(String)
+    direction: Mapped[Optional[str]] = mapped_column(String)
+    carriageway_side: Mapped[Optional[str]] = mapped_column(String)
+    begin_wdl: Mapped[Optional[str]] = mapped_column(String)
+    begin_km: Mapped[Optional[Any]] = mapped_column(Numeric)
+    end_wdl: Mapped[Optional[str]] = mapped_column(String)
+    end_km: Mapped[Optional[Any]] = mapped_column(Numeric)
+    point_km: Mapped[Optional[Any]] = mapped_column(Numeric)
+    maxspeed_kmh: Mapped[Optional[int]] = mapped_column(Integer)
+    begin_time: Mapped[Optional[Any]] = mapped_column(Numeric)
+    end_time: Mapped[Optional[Any]] = mapped_column(Numeric)
     geom: Mapped[Optional[Any]] = mapped_column(
         Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True
     )
@@ -431,6 +498,15 @@ class TrafficMeasurement(Base):
     speed_kmh: Mapped[Optional[Any]] = mapped_column(Numeric)
     n_inputs: Mapped[Optional[int]] = mapped_column(Integer)
     std_dev: Mapped[Optional[Any]] = mapped_column(Numeric)
+    n_incomplete_inputs: Mapped[Optional[int]] = mapped_column(Integer)
+    supplier_quality: Mapped[Optional[Any]] = mapped_column(Numeric)
+    computational_method: Mapped[Optional[str]] = mapped_column(String)
+    data_error: Mapped[Optional[bool]] = mapped_column(Boolean)
+    # measurement|valid_standstill|no_traffic|error|quality_rejected. Keeping this semantic
+    # state prevents a detector with no passing vehicles from colouring a road
+    # as a measured 0 km/h queue.
+    measurement_status: Mapped[Optional[str]] = mapped_column(String)
+    is_usable: Mapped[Optional[bool]] = mapped_column(Boolean)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -462,15 +538,23 @@ class TravelTime(Base):
 class Situation(Base):
     __tablename__ = "situation"
     __table_args__ = (
+        PrimaryKeyConstraint("record_id", "feed_name"),
         Index("ix_situation_geom", "geom", postgresql_using="gist"),
         Index("ix_situation_category", "category"),
         Index("ix_situation_id", "id"),
+        Index("ix_situation_record_id", "record_id"),
     )
 
-    record_id: Mapped[str] = mapped_column(String, primary_key=True)
+    record_id: Mapped[str] = mapped_column(String)
+    # Preserve duplicate publications during shadow validation. API consumers
+    # receive one newest/preferred version per record_id; ingest ownership and
+    # pruning remain safely scoped to the originating feed.
+    feed_name: Mapped[str] = mapped_column(String)
     id: Mapped[Optional[str]] = mapped_column(String)  # situation grouping id
     category: Mapped[Optional[str]] = mapped_column(String)  # incident|srti|roadworks|...
     record_type: Mapped[Optional[str]] = mapped_column(String)  # xsi:type stripped
+    record_subtype: Mapped[Optional[str]] = mapped_column(String)
+    record_version: Mapped[Optional[int]] = mapped_column(Integer)
     severity: Mapped[Optional[str]] = mapped_column(String)
     probability: Mapped[Optional[str]] = mapped_column(String)
     safety_related: Mapped[Optional[bool]] = mapped_column(Boolean)
@@ -479,6 +563,17 @@ class Situation(Base):
     valid_to: Mapped[Optional[datetime]] = mapped_column(_tz)
     version_time: Mapped[Optional[datetime]] = mapped_column(_tz)
     speed_limit_kmh: Mapped[Optional[int]] = mapped_column(Integer)
+    carriageway: Mapped[Optional[str]] = mapped_column(String)
+    bearing: Mapped[Optional[Any]] = mapped_column(Numeric)
+    alert_c: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    locations: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    lane_impact: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    operator_action_status: Mapped[Optional[str]] = mapped_column(String)
+    record_status: Mapped[Optional[str]] = mapped_column(String)
+    validity_status: Mapped[Optional[str]] = mapped_column(String)
+    validity: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    information_status: Mapped[Optional[str]] = mapped_column(String)
+    cause: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     geom: Mapped[Optional[Any]] = mapped_column(Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
@@ -538,6 +633,9 @@ class Drip(Base):
     vms_type: Mapped[Optional[str]] = mapped_column(String)
     physical_support: Mapped[Optional[str]] = mapped_column(String)
     bearing: Mapped[Optional[int]] = mapped_column(Integer)
+    # DATEX carriageway type (for example mainCarriageway or exitSlipRoad).
+    # This scopes a DRIP to a directional carriageway, never to a lane.
+    carriageway: Mapped[Optional[str]] = mapped_column(String)
     num_display_areas: Mapped[Optional[int]] = mapped_column(Integer)
     display_text: Mapped[Optional[str]] = mapped_column(Text)
     message: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)

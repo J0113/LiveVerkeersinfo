@@ -92,8 +92,13 @@ def test_parse_situations_actueel_beeld():
     assert len(rows) > 0, "no situations parsed"
     r = rows[0]
     assert r["id"], "situation id required"
-    assert r["category"] == "incident"
     assert r["record_type"], "record_type required"
+    # actueel_beeld is a mixed publication. Classification must follow each
+    # record's actual type/subtype rather than this parser fallback argument.
+    assert any(row["category"] != "incident" for row in rows)
+    speed_records = [row for row in rows if row["record_type"] == "SpeedManagement"]
+    assert speed_records
+    assert all(row["category"] == "speed_limit" for row in speed_records)
 
 
 @requires_sample("veiligheidsgerelateerde_berichten_srti.xml.gz")

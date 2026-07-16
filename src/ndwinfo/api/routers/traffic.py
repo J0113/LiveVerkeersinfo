@@ -14,6 +14,7 @@ from fastapi.responses import Response
 from geoalchemy2.shape import to_shape
 from shapely.geometry import Point
 from sqlalchemy import and_, case, func, select, text
+from sqlalchemy.orm import aliased
 
 from ndwinfo.api.deps import BBox, BBoxDep, DbDep
 from ndwinfo.api.geo import geo_response, make_fc
@@ -24,6 +25,7 @@ from ndwinfo.matching.source_binding import (
     angle_diff,
     local_line_bearing,
     normalize_carriageway,
+    normalize_tmc_direction,
 )
 from ndwinfo.models import (
     MeasurementCharacteristic,
@@ -60,6 +62,16 @@ def get_speed(
     reading wins. One marker per (location, side) instead of stacked duplicates.
     """
     bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
+    # Bound source sites before joining their per-lane speed/flow rows. The
+    # small multiplier retains co-located systems while making `limit` a real
+    # database/JSON/CPU bound instead of a late Python-only display cap.
+    candidate_site = aliased(MeasurementSite)
+    candidate_site_ids = (
+        select(candidate_site.id)
+        .where(func.ST_Intersects(candidate_site.geom, bbox_geom))
+        .order_by(candidate_site.id)
+        .limit(limit * 6)
+    )
     rows = db.execute(
         select(
             TrafficMeasurement.site_id,
@@ -67,13 +79,18 @@ def get_speed(
             MeasurementSite.side,
             MeasurementSite.road,
             MeasurementSite.carriageway,
+            MeasurementSite.carriageway_source,
             MeasurementSite.km,
             MeasurementSite.openlr_bearing,
+            MeasurementSite.tmc_direction,
             MeasurementCharacteristic.lane,
             func.max(
                 case(
                     (
-                        TrafficMeasurement.value_type == "TrafficSpeed",
+                        and_(
+                            TrafficMeasurement.value_type == "TrafficSpeed",
+                            TrafficMeasurement.is_usable.is_not(False),
+                        ),
                         TrafficMeasurement.speed_kmh,
                     )
                 )
@@ -81,18 +98,47 @@ def get_speed(
             func.max(
                 case(
                     (
-                        TrafficMeasurement.value_type == "TrafficFlow",
+                        and_(
+                            TrafficMeasurement.value_type == "TrafficFlow",
+                            TrafficMeasurement.is_usable.is_not(False),
+                        ),
                         TrafficMeasurement.flow_veh_h,
                     )
                 )
             ).label("flow_veh_h"),
             func.max(
-                case((TrafficMeasurement.value_type == "TrafficSpeed", TrafficMeasurement.n_inputs))
+                case(
+                    (
+                        and_(
+                            TrafficMeasurement.value_type == "TrafficSpeed",
+                            TrafficMeasurement.is_usable.is_not(False),
+                        ),
+                        TrafficMeasurement.n_inputs,
+                    )
+                )
             ).label("n_inputs"),
             func.max(
-                case((TrafficMeasurement.value_type == "TrafficSpeed", TrafficMeasurement.std_dev))
+                case(
+                    (
+                        and_(
+                            TrafficMeasurement.value_type == "TrafficSpeed",
+                            TrafficMeasurement.is_usable.is_not(False),
+                        ),
+                        TrafficMeasurement.std_dev,
+                    )
+                )
             ).label("std_dev"),
-            func.max(TrafficMeasurement.measured_at).label("measured_at"),
+            func.max(
+                case(
+                    (
+                        and_(
+                            TrafficMeasurement.value_type == "TrafficSpeed",
+                            TrafficMeasurement.is_usable.is_not(False),
+                        ),
+                        TrafficMeasurement.measured_at,
+                    )
+                )
+            ).label("measured_at"),
             func.ST_AsGeoJSON(MeasurementSite.geom, 6).label("geom_json"),
         )
         .join(MeasurementSite, TrafficMeasurement.site_id == MeasurementSite.id)
@@ -105,6 +151,7 @@ def get_speed(
         )
         .where(
             func.ST_Intersects(MeasurementSite.geom, bbox_geom),
+            MeasurementSite.id.in_(candidate_site_ids),
             MeasurementCharacteristic.lane.isnot(None),
             MeasurementCharacteristic.veh_length_min.is_(None),
             MeasurementCharacteristic.veh_length_max.is_(None),
@@ -115,8 +162,10 @@ def get_speed(
             MeasurementSite.side,
             MeasurementSite.road,
             MeasurementSite.carriageway,
+            MeasurementSite.carriageway_source,
             MeasurementSite.km,
             MeasurementSite.openlr_bearing,
+            MeasurementSite.tmc_direction,
             MeasurementCharacteristic.lane,
             MeasurementSite.geom,
         )
@@ -126,12 +175,14 @@ def get_speed(
     # Identify road/carriageway metadata available at each physical point first.
     # Some MONICA records omit road/km but are exactly co-located with a MONIBAS
     # record that has them. Inherit only when there is one unambiguous candidate.
-    known_at_position: dict[tuple, set[tuple[str, str | None]]] = defaultdict(set)
+    known_at_position: dict[tuple, set[tuple[str, str | None, str | None]]] = defaultdict(set)
     for row in rows:
         if not row.geom_json or not row.road:
             continue
         row_coords = tuple(round(c, 5) for c in json.loads(row.geom_json)["coordinates"])
-        known_at_position[(row_coords, row.side)].add((row.road, row.carriageway))
+        known_at_position[(row_coords, row.side)].add(
+            (row.road, row.carriageway, normalize_tmc_direction(row.tmc_direction))
+        )
 
     # Bucket lane readings by physical location + road direction. Location is
     # rounded to ~1m so co-located systems merge, while carriageways stay apart.
@@ -142,12 +193,19 @@ def get_speed(
         coords = tuple(round(c, 5) for c in json.loads(r.geom_json)["coordinates"])
         effective_road = r.road
         effective_carriageway = r.carriageway
+        effective_direction = normalize_tmc_direction(r.tmc_direction)
         inherited = known_at_position.get((coords, r.side), set())
         if effective_road is None and len(inherited) == 1:
-            effective_road, effective_carriageway = next(iter(inherited))
+            effective_road, effective_carriageway, effective_direction = next(iter(inherited))
         # Keep opposite carriageways separate even when two systems publish the
         # same gantry coordinate and measurementSide is absent.
-        key = (coords, effective_road, effective_carriageway, r.side)
+        key = (
+            coords,
+            effective_road,
+            effective_carriageway,
+            r.side,
+            effective_direction,
+        )
         loc = locs.get(key)
         if loc is None:
             loc = locs[key] = {
@@ -155,6 +213,8 @@ def get_speed(
                 "side": r.side,
                 "road": effective_road,
                 "carriageway": effective_carriageway,
+                "carriageway_source": r.carriageway_source,
+                "tmc_direction": effective_direction,
                 "km": float(r.km) if r.km is not None else None,
                 "openlr_bearing": int(r.openlr_bearing) if r.openlr_bearing is not None else None,
                 "num_lanes": r.num_lanes or 0,
@@ -165,6 +225,8 @@ def get_speed(
         if r.road is not None and (loc["road"] is None or loc["km"] is None):
             loc["road"] = r.road
             loc["carriageway"] = r.carriageway
+            loc["carriageway_source"] = r.carriageway_source
+            loc["tmc_direction"] = normalize_tmc_direction(r.tmc_direction)
             loc["km"] = float(r.km) if r.km is not None else loc["km"]
         if loc["openlr_bearing"] is None and r.openlr_bearing is not None:
             loc["openlr_bearing"] = int(r.openlr_bearing)
@@ -207,6 +269,8 @@ def get_speed(
                 "site_id": rep,
                 "road": loc["road"],
                 "carriageway": loc["carriageway"],
+                "carriageway_source": loc["carriageway_source"],
+                "tmc_direction": loc["tmc_direction"],
                 "km": loc["km"],
                 "openlr_bearing": loc["openlr_bearing"],
                 "num_lanes": loc["num_lanes"] or None,
@@ -337,13 +401,21 @@ def _binding_summary(
         and len(accepted_segments) == 1
         and len(accepted) == len(bindings)
     ):
-        return {
+        summary = {
             "binding_status": "accepted",
             "internal_segment_id": next(iter(accepted_segments)),
             "binding_confidence": round(
                 min(float(binding.confidence or 0.0) for binding in accepted), 3
             ),
         }
+        direction_sources = {
+            getattr(binding, "direction_source", None) for binding in accepted
+        }
+        if len(direction_sources) == 1 and None not in direction_sources:
+            summary["binding_direction_source"] = next(iter(direction_sources))
+        elif any(source is not None for source in direction_sources):
+            summary["binding_direction_source"] = "mixed"
+        return summary
     if accepted or not complete or any(
         binding.status == "ambiguous" for binding in bindings
     ):
@@ -532,11 +604,11 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
               ON w.lane = 1
              AND w.road_number = s.road_number
              AND s.km BETWEEN
-                 least((w.raw->>'BEGINKM')::double precision,
-                       (w.raw->>'EINDKM')::double precision) - 0.25
+                 least(w.begin_km::double precision,
+                       w.end_km::double precision) - 0.25
                  AND
-                 greatest((w.raw->>'BEGINKM')::double precision,
-                          (w.raw->>'EINDKM')::double precision) + 0.25
+                 greatest(w.begin_km::double precision,
+                          w.end_km::double precision) + 0.25
              AND ST_DWithin(
                  w.geom::geography,
                  s.point::geography,
@@ -701,6 +773,17 @@ def _attach_fallback_bearings(db, features: list[dict]) -> None:
         if ob is not None:
             f["properties"]["bearing"] = int(ob) % 360
             f["properties"]["bearing_source"] = "openlr"
+            continue
+        canonical = f["properties"].get("canonical_bearing")
+        if canonical is not None:
+            f["properties"]["bearing"] = round(float(canonical) % 360, 1)
+            f["properties"]["bearing_source"] = (
+                "vild_bound_osm"
+                if f["properties"].get("binding_direction_source") == "vild"
+                else "openlr_bound_osm"
+                if f["properties"].get("binding_direction_source") == "openlr"
+                else "canonical_osm"
+            )
 
 
 def _lane_start_point(geom_json: str | None) -> list[float] | None:

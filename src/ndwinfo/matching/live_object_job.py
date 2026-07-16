@@ -126,6 +126,7 @@ def _candidate_groups(session, graph_id: int, kind: str, envelope):
             OsmRoadSegment.road_number.label("segment_road"),
             OsmRoadSegment.carriageway_ref.label("segment_carriageway"),
             OsmRoadSegment.lanes.label("segment_lanes"),
+            OsmRoadSegment.highway.label("segment_highway"),
             distance,
             OsmRoadSegment.geom.label("segment_geom"),
         )
@@ -167,6 +168,7 @@ def _candidate_groups(session, graph_id: int, kind: str, envelope):
                 lanes=row.segment_lanes,
                 distance_m=float(row.distance_m),
                 bearing=local_line_bearing(to_shape(row.segment_geom), point),
+                highway=row.segment_highway,
             )
             for row in grouped
             if row.segment_id is not None
@@ -212,7 +214,7 @@ def _source_query(kind: str, envelope):
     return select(
         func.concat(Drip.controller_id, ":", Drip.vms_index).label("source_id"),
         literal(None).label("road"),
-        literal(None).label("carriageway"),
+        Drip.carriageway.label("carriageway"),
         literal(None).label("lane"),
         Drip.bearing.label("bearing"),
         Drip.ingested_at.label("ingested_at"),

@@ -107,6 +107,9 @@ def normalize_way_tags(tags: Mapping[str, str], direction: str) -> dict:
         ),
         "lanes": directional_int(tags, "lanes", suffix),
         "maxspeed": directional_value(tags, "maxspeed", suffix),
+        "maxspeed_conditional": directional_value(tags, "maxspeed:conditional", suffix),
+        "placement": directional_value(tags, "placement", suffix),
+        "shoulder": directional_value(tags, "shoulder", suffix),
         "access": _optional(
             tags.get(f"motor_vehicle:{suffix}")
             or tags.get("motor_vehicle")
@@ -170,6 +173,9 @@ def material_signature(tags: Mapping[str, str], direction: str) -> str:
         "lanes",
         "lane_schema",
         "maxspeed",
+        "maxspeed_conditional",
+        "placement",
+        "shoulder",
         "access",
         "bridge",
         "tunnel",

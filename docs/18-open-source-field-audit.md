@@ -1,6 +1,7 @@
 # Open-source field and feed audit
 
-Status: research complete, implementation backlog only.
+Status: P0/P1 field-preservation implementation complete; retirement gates and
+maximum-speed activation hierarchy remain staged work.
 
 This audit combines current code/data inspection with official NDW, PDOK, RWS
 and OSM documentation. It does not authorize source/schema removal without the
@@ -31,7 +32,7 @@ of an ambiguous OSM direction.
 | OSM PBF | Keep + extend | `maxspeed:conditional`, `destination:ref:lanes`, `placement`, `width:lanes`, shoulder/access lane tags | Normalize selectively; fail closed |
 | `measurement_current` | Keep + extend first | full OpenLR coordinates/offsets/FRC/FOW/orientation/side, Alert-C table/version/offset, carriageway, computation method, accuracy | Persist typed and use before candidate ranking |
 | `trafficspeed` | Keep + quality | `dataError`, supplier quality, computational method, incomplete inputs | Distinguish error, no traffic and valid standstill |
-| VILD point/line/TMC | Keep compact | table/version/offset validation | Direction fallback while OpenLR remains optional |
+| VILD point/line/TMC | Keep compact | table/version/offset validation | Primary fixed-sensor direction; OpenLR cross-check/fallback |
 | Meetlocaties shapefile | Retire | no runtime consumer | Stop feed/ingest; drop schema only later |
 | WEGGEG | Keep selected layers | typed begin/end km, `VNRWOL`, `VOLGNRSTRK`, Rijbanen, Convergenties, Divergenties, Maximum snelheid | Prebind to OSM outside request path |
 | Full NWB GeoPackage | Replace | only `wvk_id`, hectometrage/crosswalk remain useful | Build compact offline crosswalk, then stop full ingest |
@@ -44,6 +45,9 @@ of an ambiguous OSM direction.
 
 ## P0 correctness backlog
 
+Implemented in migration `0a1b2c3d4e5f` and matcher version
+`ndw-osm-v4-vild-primary-direction`:
+
 1. Rebuild situation classification around each record's actual `xsi:type` and
    subtype. Never label all `actueel_beeld` records as incidents.
 2. Preserve situation carriageway, point bearing, Alert-C direction/offsets,
@@ -54,8 +58,14 @@ of an ambiguous OSM direction.
    Preserve `no_traffic` separately from `unknown` and valid standstill.
 5. Persist full MST OpenLR/Alert-C/carriageway/accuracy metadata and use it as
    bounded candidate evidence. Do not replace fail-closed margin checks.
+   For fixed speed sensors, use oriented VILD as the nationally complete
+   direction source; use OpenLR as cross-check/fallback and reject conflicts.
 
 ## P1 coverage backlog
+
+Items 6–8 are ingested/preserved. Item 10 remains deliberately inactive until
+the separate source hierarchy and temporal evaluation are tested end to end;
+merely storing a field must never change a displayed maximum speed.
 
 6. Ingest WEGGEG Rijbanen, Convergenties, Divergenties and Maximum snelheid;
    store linear-reference fields typed rather than querying JSON `raw`.
@@ -68,6 +78,10 @@ of an ambiguous OSM direction.
     limit, evaluable conditional limit, otherwise unknown.
 
 ## P2 resource backlog
+
+Items 11 and 14 are disabled by default. Item 15 is implemented as an opt-in
+image payload. Items 12–13 retain their old code/schema behind feature flags
+until their stated comparison gates pass.
 
 11. Stop the unused meetlocaties-shapefile ingest (about 80 MB locally).
 12. Replace the roughly 1 GB local NWB full ingest with a compact crosswalk.

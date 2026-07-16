@@ -35,6 +35,7 @@ def candidate(segment_id="segment-1", **kwargs):
         "lanes": 3,
         "distance_m": 4,
         "bearing": 0,
+        "highway": "motorway",
     }
     values.update(kwargs)
     return LiveRoadCandidate(**values)
@@ -164,6 +165,36 @@ def test_drip_can_bind_to_segment_but_never_to_lane():
     assert result.source_lane is None
     assert result.canonical_lane is None
     assert result.lane_scope_status == "not_applicable"
+
+
+def test_drip_main_carriageway_rejects_link_road_candidate():
+    main = decide(
+        source("drip", carriageway="mainCarriageway"),
+        [candidate(highway="motorway")],
+    )
+    link = decide(
+        source("drip", carriageway="mainCarriageway"),
+        [candidate(highway="motorway_link")],
+    )
+
+    assert main.status == "accepted"
+    assert main.lane_scope_status == "not_applicable"
+    assert link.status == "rejected"
+
+
+def test_drip_slip_road_scope_only_accepts_osm_link_class():
+    link = decide(
+        source("drip", carriageway="exitSlipRoad"),
+        [candidate(highway="motorway_link")],
+    )
+    through = decide(
+        source("drip", carriageway="exitSlipRoad"),
+        [candidate(highway="motorway")],
+    )
+
+    assert link.status == "accepted"
+    assert link.canonical_lane is None
+    assert through.status == "rejected"
 
 
 def test_stale_state_keeps_location_binding_but_is_not_usable():

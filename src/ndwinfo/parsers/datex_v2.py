@@ -31,6 +31,43 @@ def _int(elem, tag: str) -> int | None:
         return None
 
 
+def _float(elem, tag: str) -> float | None:
+    v = _text(elem, tag)
+    try:
+        return float(v) if v is not None else None
+    except ValueError:
+        return None
+
+
+def _attr_int(elem, name: str) -> int | None:
+    value = elem.get(name) if elem is not None else None
+    try:
+        return int(value) if value not in (None, "") else None
+    except ValueError:
+        return None
+
+
+def _attr_float(elem, name: str) -> float | None:
+    value = elem.get(name) if elem is not None else None
+    try:
+        return float(value) if value not in (None, "") else None
+    except ValueError:
+        return None
+
+
+def _data_error(elem) -> bool | None:
+    """Return an explicit DATEX dataError flag without treating absence as false."""
+    value = _text(elem, "dataError") if elem is not None else None
+    if value is None:
+        return None
+    normalized = value.casefold()
+    if normalized in {"true", "1"}:
+        return True
+    if normalized in {"false", "0"}:
+        return False
+    return None
+
+
 def _latlon(elem) -> str | None:
     """Find first latitude/longitude pair anywhere inside elem → WKT POINT."""
     lat_e = elem.find(f".//{T}latitude")
@@ -87,7 +124,7 @@ def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) ->
       - RWS08: road+HRL/HRR+km encoded in the site_id
       - Provincial (PZH/PFR/etc.): "N457 hmp 4.75 Re" in name
     """
-    road = km = carriageway = None
+    road = km = carriageway = carriageway_source = None
     n = name or ""
     prefix = site_id.split("_")[0]
 
@@ -96,7 +133,11 @@ def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) ->
         road_num = int(n[0:3])
         road = f"A{road_num}" if road_num <= 99 else f"N{road_num}"
         km = round(int(n[6:12]) / 1000.0, 3)
-        carriageway = "R" if alc_dir == "positive" else "L" if alc_dir == "negative" else None
+        cw_code = n[3:6]
+        if cw_code == "hrr":
+            carriageway, carriageway_source = "R", "site_name_hrr"
+        elif cw_code == "hrl":
+            carriageway, carriageway_source = "L", "site_name_hrl"
 
     # --- RWS01 MONIBAS: "0091hrl0572ra" (3-digit road + 1-digit subcode, 3-char cw, 4-digit hm, 2-char suffix) ---
     elif prefix == "RWS01" and re.fullmatch(r"\d{4}[a-z]{3}\d{4}[a-z]{2}", n):
@@ -107,10 +148,7 @@ def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) ->
         if cw_code.startswith("hr"):
             # hrr = hoofdrijbaan rechts (R), hrl = hoofdrijbaan links (L)
             carriageway = "R" if cw_code[2] == "r" else "L"
-        elif alc_dir == "positive":
-            carriageway = "R"
-        elif alc_dir == "negative":
-            carriageway = "L"
+            carriageway_source = "site_name_hrr" if carriageway == "R" else "site_name_hrl"
 
     # --- RWS08: id = "RWS08_6_HRL_096.6_1" or "RWS08_A30_HRL_021.8_1" ---
     elif prefix == "RWS08":
@@ -122,6 +160,8 @@ def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) ->
                 n2 = int(digits)
                 road = rp if rp[0].isalpha() else (f"A{n2}" if n2 <= 99 else f"N{n2}")
             carriageway = "R" if "HRR" in cp.upper() else "L" if "HRL" in cp.upper() else None
+            if carriageway:
+                carriageway_source = "site_id_hrr" if carriageway == "R" else "site_id_hrl"
             try:
                 km = float(kp)
             except (ValueError, TypeError):
@@ -134,8 +174,16 @@ def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) ->
             road = m.group(1).replace(" ", "")
             km = round(float(m.group(2).replace(",", ".")), 3)
             carriageway = "R" if m.group(3) == "Re" else "L"
+            carriageway_source = "site_name_re_li"
 
-    return {"road": road, "carriageway": carriageway, "km": km}
+    # Alert-C positive/negative is a VILD chain direction, not an R/L side.
+    # Never turn it into a carriageway without separate hectometre evidence.
+    return {
+        "road": road,
+        "carriageway": carriageway,
+        "carriageway_source": carriageway_source,
+        "km": km,
+    }
 
 
 def _clear(elem) -> None:
@@ -166,8 +214,57 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
         name = _multilang(elem, "measurementSiteName")
 
         # openlrBearing: first openlrLocationReferencePoint bearing
-        bear_e = elem.find(f".//{T}openlrLocationReferencePoint/{T}openlrLineAttributes/{T}openlrBearing")
+        first_lrp = elem.find(f".//{T}openlrLocationReferencePoint")
+        line_attributes = (
+            first_lrp.find(f"{T}openlrLineAttributes") if first_lrp is not None else None
+        )
+        bear_e = (
+            line_attributes.find(f"{T}openlrBearing")
+            if line_attributes is not None
+            else None
+        )
         openlr_bearing = int(bear_e.text) if bear_e is not None and bear_e.text else None
+        point_along_line = elem.find(f".//{T}openlrPointAlongLine")
+
+        def _deep_text(tag: str) -> str | None:
+            found = elem.find(f".//{T}{tag}")
+            return found.text.strip() if found is not None and found.text else None
+
+        def _deep_int(tag: str) -> int | None:
+            value = _deep_text(tag)
+            try:
+                return int(value) if value is not None else None
+            except ValueError:
+                return None
+
+        openlr_data = None
+        if point_along_line is not None:
+            lrps = []
+            for point_tag in (
+                "openlrLocationReferencePoint",
+                "openlrLastLocationReferencePoint",
+            ):
+                point = point_along_line.find(f"{T}{point_tag}")
+                if point is None:
+                    continue
+                coord = point.find(f"{T}openlrCoordinate")
+                attrs = point.find(f"{T}openlrLineAttributes")
+                path = point.find(f"{T}openlrPathAttributes")
+                lrps.append({
+                    "kind": point_tag,
+                    "latitude": _float(coord, "latitude") if coord is not None else None,
+                    "longitude": _float(coord, "longitude") if coord is not None else None,
+                    "frc": _text(attrs, "openlrFunctionalRoadClass") if attrs is not None else None,
+                    "fow": _text(attrs, "openlrFormOfWay") if attrs is not None else None,
+                    "bearing": _int(attrs, "openlrBearing") if attrs is not None else None,
+                    "lowest_frc_to_next": (
+                        _text(path, "openlrLowestFRCToNextLRPoint") if path is not None else None
+                    ),
+                    "distance_to_next_m": (
+                        _int(path, "openlrDistanceToNextLRPoint") if path is not None else None
+                    ),
+                })
+            openlr_data = {"lrps": lrps}
 
         # alertCDirectionCoded: positive/negative travel direction
         dir_e = elem.find(f".//{T}alertCDirectionCoded")
@@ -187,6 +284,15 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
 
         tmc_primary = _loc_code("Primary")
         tmc_secondary = _loc_code("Secondary")
+        tmc_offset_e = elem.find(f".//{T}offsetDistance/{T}offsetDistance")
+        try:
+            tmc_offset_m = (
+                int(tmc_offset_e.text)
+                if tmc_offset_e is not None and tmc_offset_e.text
+                else None
+            )
+        except ValueError:
+            tmc_offset_m = None
 
         location_info = _parse_site_location(site_id, name, alc_dir)
 
@@ -194,19 +300,33 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
             "id": site_id,
             "name": name,
             "equipment_type": _multilang(elem, "measurementEquipmentTypeUsed"),
+            "equipment_reference": _text(elem, "measurementEquipmentReference"),
+            "computation_method": _text(elem, "computationMethod"),
             "num_lanes": _int(elem, "measurementSiteNumberOfLanes"),
             "side": _text(elem, "measurementSide"),
             "version": int(version_str) if version_str else None,
             "record_version_time": _text(elem, "measurementSiteRecordVersionTime"),
             "road": location_info["road"],
             "carriageway": location_info["carriageway"],
+            "carriageway_source": location_info["carriageway_source"],
+            "carriageway_type": _deep_text("carriageway"),
             "km": location_info["km"],
             "openlr_bearing": openlr_bearing,
+            "openlr_side_of_road": _deep_text("openlrSideOfRoad"),
+            "openlr_orientation": _deep_text("openlrOrientation"),
+            "openlr_positive_offset_m": _deep_int("openlrPositiveOffset"),
+            "openlr_frc": _deep_text("openlrFunctionalRoadClass"),
+            "openlr_fow": _deep_text("openlrFormOfWay"),
+            "openlr_data": openlr_data,
             "geom": geom,
             "line_geom": line_geom,
             "tmc_primary": tmc_primary,
             "tmc_secondary": tmc_secondary,
             "tmc_direction": alc_dir,
+            "tmc_country_code": _deep_text("alertCLocationCountryCode"),
+            "tmc_table_number": _deep_text("alertCLocationTableNumber"),
+            "tmc_table_version": _deep_text("alertCLocationTableVersion"),
+            "tmc_offset_m": tmc_offset_m,
         }
         site["raw"] = {k: v for k, v in site.items() if k != "raw"}
 
@@ -259,6 +379,10 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
                     "lane": lane,
                     "period_s": _int(char, "period"),
                     "value_type": value_type,
+                    "accuracy": _float(char, "accuracy"),
+                    "vehicle_type": (
+                        _text(vc, "vehicleType") if vc is not None else None
+                    ),
                     "veh_length_min": veh_min,
                     "veh_length_max": veh_max,
                 }
@@ -277,7 +401,10 @@ def parse_trafficspeed(fileobj) -> Iterator[dict]:
     """Parse DATEX v2 MeasuredDataPublication (flow + speed).
 
     Yields one dict per (site_id, index).
-    speed_kmh is None when speed == -1 or numberOfInputValuesUsed == 0.
+    ``measurement_status`` preserves the distinction made by the Dutch DATEX
+    profile between an error, a functioning detector that observed no traffic,
+    a valid standstill and an ordinary measurement.  Only the latter two expose
+    ``speed_kmh`` as a usable speed observation.
     """
     for _, elem in etree.iterparse(fileobj, events=("end",), tag=f"{T}siteMeasurements"):
         site_ref = elem.find(f"{T}measurementSiteReference")
@@ -305,36 +432,83 @@ def parse_trafficspeed(fileobj) -> Iterator[dict]:
             speed: float | None = None
             n_inputs: int | None = None
             std_dev: float | None = None
+            n_incomplete_inputs: int | None = None
+            supplier_quality: float | None = None
+            computational_method: str | None = None
+            data_error: bool | None = None
+            measurement_status: str | None = None
+            is_usable: bool | None = None
 
             if "TrafficFlow" in xsi_type:
-                vfr = basic.find(f".//{T}vehicleFlowRate")
+                value_elem = basic.find(f"{T}vehicleFlow")
+                vfr = value_elem.find(f"{T}vehicleFlowRate") if value_elem is not None else None
+                n_inputs = _attr_int(value_elem, "numberOfInputValuesUsed")
+                n_incomplete_inputs = _attr_int(value_elem, "numberOfIncompleteInputs")
+                std_dev = _attr_float(value_elem, "standardDeviation")
+                supplier_quality = _attr_float(value_elem, "supplierCalculatedDataQuality")
+                computational_method = (
+                    value_elem.get("computationalMethod") if value_elem is not None else None
+                )
+                data_error = _data_error(value_elem)
                 if vfr is not None and vfr.text:
                     try:
                         flow = float(vfr.text)
                     except ValueError:
                         pass
+                if data_error is True:
+                    measurement_status = "error"
+                    is_usable = False
+                    flow = None
+                elif supplier_quality == 0:
+                    measurement_status = "quality_rejected"
+                    is_usable = False
+                    flow = None
+                elif flow == 0 and n_incomplete_inputs == 0:
+                    measurement_status = "no_traffic"
+                    is_usable = False
+                elif flow is not None:
+                    measurement_status = "measurement"
+                    is_usable = True
 
             elif "TrafficSpeed" in xsi_type:
                 avg = basic.find(f"{T}averageVehicleSpeed")
-                n_str = avg.get("numberOfInputValuesUsed", "1") if avg is not None else "1"
-                sd_str = avg.get("standardDeviation") if avg is not None else None
-                try:
-                    n_inputs = int(n_str) if n_str else None
-                except ValueError:
-                    n_inputs = None
-                try:
-                    std_dev = float(sd_str) if sd_str else None
-                except ValueError:
-                    std_dev = None
-                speed_e = basic.find(f".//{T}speed")
+                n_inputs = _attr_int(avg, "numberOfInputValuesUsed")
+                n_incomplete_inputs = _attr_int(avg, "numberOfIncompleteInputs")
+                std_dev = _attr_float(avg, "standardDeviation")
+                supplier_quality = _attr_float(avg, "supplierCalculatedDataQuality")
+                computational_method = avg.get("computationalMethod") if avg is not None else None
+                data_error = _data_error(avg)
+                speed_e = avg.find(f"{T}speed") if avg is not None else None
+                raw_speed: float | None = None
                 if speed_e is not None and speed_e.text:
                     try:
-                        s = float(speed_e.text)
-                        n = n_inputs if n_inputs is not None else 1
-                        if s != -1.0 and n > 0:
-                            speed = s
+                        raw_speed = float(speed_e.text)
                     except ValueError:
                         pass
+
+                # The Dutch profile defines -1 as the error sentinel.  Fail
+                # closed even when a supplier omitted the required dataError.
+                if data_error is True or raw_speed == -1.0:
+                    measurement_status = "error"
+                    is_usable = False
+                elif supplier_quality == 0:
+                    measurement_status = "quality_rejected"
+                    is_usable = False
+                elif (
+                    raw_speed == 0.0
+                    and n_inputs == 0
+                    and n_incomplete_inputs == 0
+                ):
+                    measurement_status = "no_traffic"
+                    is_usable = False
+                elif raw_speed == 0.0:
+                    measurement_status = "valid_standstill"
+                    is_usable = True
+                    speed = raw_speed
+                elif raw_speed is not None and raw_speed >= 0.0:
+                    measurement_status = "measurement"
+                    is_usable = True
+                    speed = raw_speed
 
             row = {
                 "site_id": site_id,
@@ -345,6 +519,12 @@ def parse_trafficspeed(fileobj) -> Iterator[dict]:
                 "speed_kmh": speed,
                 "n_inputs": n_inputs,
                 "std_dev": std_dev,
+                "n_incomplete_inputs": n_incomplete_inputs,
+                "supplier_quality": supplier_quality,
+                "computational_method": computational_method,
+                "data_error": data_error,
+                "measurement_status": measurement_status,
+                "is_usable": is_usable,
             }
             row["raw"] = dict(row)
             yield row

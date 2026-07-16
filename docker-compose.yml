@@ -35,7 +35,7 @@ services:
       POLLER_BULK_MAX_INFLIGHT: ${POLLER_BULK_MAX_INFLIGHT:-1}
       POLLER_IDLE_TIMEOUT_S: ${POLLER_IDLE_TIMEOUT_S:-300}
       POLLER_MAINTENANCE_IDLE_S: ${POLLER_MAINTENANCE_IDLE_S:-900}
-      DISABLED_FEEDS: ${DISABLED_FEEDS:-verkeersborden_csv}
+      DISABLED_FEEDS: ${DISABLED_FEEDS:-verkeersborden_csv,meetlocaties_shapefile,traveltime,nwb_wegvakken}
       NWB_WEGVAKKEN_URL: ${NWB_WEGVAKKEN_URL:-https://downloads.rijkswaterstaatdata.nl/nwb-wegen/geogegevens/geopackage/NWB-dagelijks/Wegvakken/Wegvakken.gpkg}
     depends_on:
       migrate:

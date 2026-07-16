@@ -125,6 +125,28 @@ def test_motor_vehicle_lane_access_overrides_generic_access():
     assert schema["attributes"]["access"] == ["yes", "no"]
 
 
+def test_additional_open_lane_fields_are_preserved_when_well_formed():
+    schema = build_lane_schema(
+        {
+            "destination:ref:lanes": "A4|A5",
+            "minspeed:lanes": "50|60",
+            "width:lanes": "3.5|3.2",
+            "hgv:lanes": "yes|no",
+            "bus:lanes": "no|designated",
+        },
+        "forward",
+        lane_count=2,
+        oneway="forward",
+        highway="motorway",
+    )
+
+    assert schema["attributes"]["destination_ref"] == ["A4", "A5"]
+    assert schema["attributes"]["minspeed"] == ["50", "60"]
+    assert schema["attributes"]["width"] == ["3.5", "3.2"]
+    assert schema["attributes"]["hgv"] == ["yes", "no"]
+    assert schema["attributes"]["bus"] == ["no", "designated"]
+
+
 def test_unknown_lane_count_cannot_assign_even_well_formed_values():
     schema = build_lane_schema(
         {"turn:lanes": "through|right"},

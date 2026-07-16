@@ -29,31 +29,47 @@ class SituationIngester(Ingester):
 
         with open_feed(result.path) as f:
             for row in parse_situations(f, self.category):
-                r = dict(row)
+                # Typed columns drive filtering/matching. The complete contract
+                # remains in JSONB for provenance and future DATEX extensions.
+                raw = dict(row.get("raw") or {})
+                raw["feed_name"] = self.feed_name
+                raw["feed_category"] = self.category
+                r = {
+                    key: value
+                    for key, value in row.items()
+                    if key in Situation.__table__.columns.keys()
+                }
+                r["feed_name"] = self.feed_name
+                r["raw"] = raw
                 r["geom"] = wkt_geom(r.get("geom"))
                 batch.append(r)
                 saw_any = True
                 if len(batch) >= BATCH_SIZE:
-                    total += bulk_upsert(session, Situation, batch, ["record_id"])
+                    total += bulk_upsert(
+                        session, Situation, batch, ["record_id", "feed_name"]
+                    )
                     session.flush()
                     batch.clear()
 
         if batch:
-            total += bulk_upsert(session, Situation, batch, ["record_id"])
+            total += bulk_upsert(
+                session, Situation, batch, ["record_id", "feed_name"]
+            )
             session.flush()
 
-        # Prune stale records: rows from this category that weren't touched this run
+        # Prune only records last written by this publication. actueel_beeld is
+        # mixed-category, while the same record may also occur in a specialized
+        # feed, so category alone is not a safe ownership boundary.
+        owned_by_feed = Situation.feed_name == self.feed_name
         if saw_any:
             session.execute(
                 delete(Situation).where(
-                    Situation.category == self.category,
+                    owned_by_feed,
                     Situation.ingested_at < run_start,
                 )
             )
         else:
-            session.execute(
-                delete(Situation).where(Situation.category == self.category)
-            )
+            session.execute(delete(Situation).where(owned_by_feed))
 
         session.flush()
         return total

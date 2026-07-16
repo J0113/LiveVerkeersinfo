@@ -76,20 +76,29 @@ not scan the national graph or all measurement sites per request.
 
 ### Measurement-site direction fallback
 
-Persisted OSM binding uses source direction in this strict order:
+For fixed speed/flow points, persisted OSM binding uses source direction in
+this strict order:
 
-1. an explicit, finite OpenLR bearing;
-2. a local VILD line tangent oriented by the site's exact TMC
+1. a local VILD line tangent oriented by the site's exact TMC
    `positive`/`negative` topology;
+2. an explicit, finite OpenLR bearing as independent cross-check/fallback;
 3. unknown direction, which leaves equal opposite OSM candidates ambiguous.
 
-VILD never overrides OpenLR. The fallback requires the primary and selected
+When both references exist they must agree within 45 degrees; a material
+conflict rejects the binding. VILD is primary here because every in-scope fixed
+speed site in the audited snapshot carries Alert-C direction and a primary TMC
+code, while OpenLR bearing covers only a minority. The VILD derivation requires the primary and selected
 neighbour point to share the same VILD line, distinct topology offsets, a known
 textual direction, and a VILD line within 50 metres of the measurement site.
 When both topology arms exist they must project to opposite sides. Numeric
 direction codes, site-name suffixes and road-number conventions are not
 guessed. A nearest measurement-line chord is not exposed as bearing because it
 does not prove local travel direction.
+
+`positive`/`negative` is never translated directly to carriageway R/L. The
+optional VILD `HECTO_DIR` field is retained for enrichment/audit, but the
+audited rule is not accurate enough to become authoritative without further
+ground-truth validation.
 
 The local database audit on 2026-07-16 found that this conservative fallback is
 derivable for roughly 23,480 of 99,435 measurement sites without OpenLR. On

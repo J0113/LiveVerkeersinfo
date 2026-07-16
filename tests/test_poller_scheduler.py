@@ -134,6 +134,7 @@ def test_run_once_wait_drains_due_realtime_in_bounded_waves(monkeypatch):
             return future
 
     monkeypatch.setattr(poller, "SessionLocal", FakeSession)
+    monkeypatch.setattr(poller, "_ensure_current_binding_algorithms", lambda _session: None)
     monkeypatch.setattr(poller, "FEEDS", feeds)
     monkeypatch.setattr(poller, "INGESTERS", {feed["name"]: object() for feed in feeds})
     monkeypatch.setattr(poller, "_last_finished_per_feed", lambda _session: {})

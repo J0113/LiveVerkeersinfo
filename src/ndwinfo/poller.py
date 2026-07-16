@@ -15,7 +15,7 @@ from ndwinfo.config import settings
 from ndwinfo.db import SessionLocal
 from ndwinfo.feeds import FEEDS, FEEDS_BY_NAME, FeedDef
 from ndwinfo.ingest import INGESTERS
-from ndwinfo.models import FeedRun, SystemState
+from ndwinfo.models import FeedRun, OsmImportRun, SourceLocationBinding, SystemState
 
 TICK_S = 10
 MAINTENANCE_INTERVAL_S = 3600
@@ -57,6 +57,67 @@ _executor = ThreadPoolExecutor(max_workers=settings.poller_max_workers)
 _inflight: dict[str, Future] = {}
 _last_maintenance_at = 0.0
 _last_schedule_mode: str | None = None
+_bindings_checked_graph_version: str | None = None
+
+
+def _ensure_current_binding_algorithms(session) -> None:
+    """Backfill new matcher versions once per poller process/active graph.
+
+    Static feeds frequently answer 304. A deployment must therefore not wait
+    for MST, VILD, MSI or DRIP content to change before the roads API can use a
+    newly versioned binding algorithm.
+    """
+    global _bindings_checked_graph_version
+    graph = session.scalar(
+        select(OsmImportRun)
+        .where(OsmImportRun.is_active.is_(True), OsmImportRun.status == "active")
+        .limit(1)
+    )
+    if graph is None or _bindings_checked_graph_version == graph.graph_version:
+        return
+
+    from ndwinfo.matching.live_object_job import rebuild_live_object_bindings
+    from ndwinfo.matching.live_objects import (
+        ALGORITHM_VERSION as LIVE_ALGORITHM_VERSION,
+        PERSISTED_SOURCE_TYPES,
+    )
+    from ndwinfo.matching.source_binding import (
+        ALGORITHM_VERSION as MEASUREMENT_ALGORITHM_VERSION,
+        SOURCE_TYPE,
+        rebuild_measurement_bindings,
+    )
+
+    has_measurement_version = session.scalar(
+        select(SourceLocationBinding.id).where(
+            SourceLocationBinding.source_type == SOURCE_TYPE,
+            SourceLocationBinding.graph_version == graph.graph_version,
+            SourceLocationBinding.algorithm_version == MEASUREMENT_ALGORITHM_VERSION,
+        ).limit(1)
+    )
+    if has_measurement_version is None:
+        logger.info("backfilling measurement bindings: %s", MEASUREMENT_ALGORITHM_VERSION)
+        rebuild_measurement_bindings(session, graph.id)
+
+    missing_live_kinds = []
+    for kind, source_type in PERSISTED_SOURCE_TYPES.items():
+        exists = session.scalar(
+            select(SourceLocationBinding.id).where(
+                SourceLocationBinding.source_type == source_type,
+                SourceLocationBinding.graph_version == graph.graph_version,
+                SourceLocationBinding.algorithm_version == LIVE_ALGORITHM_VERSION,
+            ).limit(1)
+        )
+        if exists is None:
+            missing_live_kinds.append(kind)
+    if missing_live_kinds:
+        logger.info(
+            "backfilling live-object bindings %s: %s",
+            LIVE_ALGORITHM_VERSION,
+            ",".join(missing_live_kinds),
+        )
+        rebuild_live_object_bindings(session, graph.id, kinds=missing_live_kinds)
+    session.commit()
+    _bindings_checked_graph_version = graph.graph_version
 
 
 def _schedule_class(feed: FeedDef) -> str:
@@ -160,6 +221,7 @@ def _run_feed(name: str) -> None:
 def run_once(wait: bool = False) -> None:
     global _last_maintenance_at, _last_schedule_mode
     with SessionLocal() as session:
+        _ensure_current_binding_algorithms(session)
         monotonic_now = time.monotonic()
         if monotonic_now - _last_maintenance_at >= MAINTENANCE_INTERVAL_S:
             pruned = _prune_feed_runs(session)

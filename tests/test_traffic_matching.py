@@ -93,11 +93,12 @@ def test_wide_match_prioritizes_carriageway_then_lane_count():
     assert _pick_wide_candidate(candidates).source_id == "same-side-and-lanes"
 
 
-def binding(status, segment=None, confidence=0.0):
+def binding(status, segment=None, confidence=0.0, direction_source=None):
     return SimpleNamespace(
         status=status,
         internal_segment_id=segment,
         confidence=confidence,
+        direction_source=direction_source,
     )
 
 
@@ -125,6 +126,14 @@ def test_point_binding_summary_distinguishes_rejected_and_unmatched():
     assert _binding_summary([])["binding_status"] == "unmatched"
 
 
+def test_point_binding_summary_exposes_vild_direction_provenance():
+    summary = _binding_summary([
+        binding("accepted", "segment-a", 0.9, direction_source="vild")
+    ])
+
+    assert summary["binding_direction_source"] == "vild"
+
+
 def test_point_binding_summary_fails_closed_for_partial_merged_marker():
     summary = _binding_summary(
         [binding("accepted", "segment-a", 0.9)], expected_count=2
@@ -138,6 +147,15 @@ def test_bearing_fallback_never_invents_direction_from_nearest_line():
     features = [
         {"properties": {"openlr_bearing": 361}, "geometry": None},
         {"properties": {"openlr_bearing": None}, "geometry": None},
+        {
+            "properties": {
+                "openlr_bearing": None,
+                "canonical_bearing": 295.7,
+                "tmc_direction": "negative",
+                "binding_direction_source": "vild",
+            },
+            "geometry": None,
+        },
     ]
 
     _attach_fallback_bearings(None, features)
@@ -146,6 +164,8 @@ def test_bearing_fallback_never_invents_direction_from_nearest_line():
     assert features[0]["properties"]["bearing_source"] == "openlr"
     assert "bearing" not in features[1]["properties"]
     assert "bearing_source" not in features[1]["properties"]
+    assert features[2]["properties"]["bearing"] == 295.7
+    assert features[2]["properties"]["bearing_source"] == "vild_bound_osm"
 
 
 def test_lane_activation_requires_fresh_accepted_canonical_binding():

@@ -67,6 +67,9 @@ _SEGMENT_COLUMNS = (
     OsmRoadSegment.lanes,
     OsmRoadSegment.lane_schema,
     OsmRoadSegment.maxspeed,
+    OsmRoadSegment.maxspeed_conditional,
+    OsmRoadSegment.placement,
+    OsmRoadSegment.shoulder,
     OsmRoadSegment.access,
     OsmRoadSegment.bridge,
     OsmRoadSegment.tunnel,
@@ -367,6 +370,9 @@ def _road_response(
                     "lanes": row.lanes,
                     "lane_schema": lane_schemas[row.internal_segment_id],
                     "maxspeed": row.maxspeed,
+                    "maxspeed_conditional": getattr(row, "maxspeed_conditional", None),
+                    "placement": getattr(row, "placement", None),
+                    "shoulder": getattr(row, "shoulder", None),
                     "access": row.access,
                     "bridge": row.bridge,
                     "tunnel": row.tunnel,
@@ -430,6 +436,7 @@ def load_direct_speed_states(
             SourceLocationBinding.internal_segment_id.in_(segment_ids),
             TrafficMeasurement.value_type == "TrafficSpeed",
             TrafficMeasurement.speed_kmh.isnot(None),
+            TrafficMeasurement.is_usable.is_not(False),
             MeasurementCharacteristic.veh_length_min.is_(None),
             MeasurementCharacteristic.veh_length_max.is_(None),
         )
@@ -624,6 +631,7 @@ def load_live_segment_facts(
             Drip.description,
             Drip.display_text,
             Drip.vms_type,
+            Drip.carriageway,
             Drip.message,
             Drip.ingested_at,
             (
@@ -656,6 +664,7 @@ def load_live_segment_facts(
         )
     ).all()
     for row in drip_rows:
+        message = row.message or {}
         result[row.internal_segment_id]["drips"].append(
             {
                 "source_id": row.source_id,
@@ -663,7 +672,10 @@ def load_live_segment_facts(
                 "description": row.description,
                 "display_text": row.display_text,
                 "vms_type": row.vms_type,
-                "message": row.message,
+                "carriageway": getattr(row, "carriageway", None),
+                "working_status": message.get("working_status"),
+                "has_image": bool(message.get("image_data")),
+                "status_update_time": message.get("status_update_time"),
                 "updated_at": _iso(row.ingested_at),
                 "valid_until": _iso(
                     _utc(row.ingested_at)

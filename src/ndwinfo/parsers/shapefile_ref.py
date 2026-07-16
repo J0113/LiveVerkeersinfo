@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import zipfile
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -119,6 +120,9 @@ def parse_vild_tmc(zip_path: Path) -> Iterator[dict]:
     Yields one dict per location code with the chain topology needed to trace a
     road: lin_ref (→ vild_line.id), pos_off/neg_off (next/previous code), road.
     """
+    identity = re.search(r"VILD(\d+\.\d+)\.([A-Z])", zip_path.name, re.IGNORECASE)
+    table_number = identity.group(1) if identity else None
+    table_version = identity.group(2).upper() if identity else None
     with tempfile.TemporaryDirectory() as tmpdir:
         with zipfile.ZipFile(zip_path) as zf:
             dbf_member = None
@@ -143,6 +147,7 @@ def parse_vild_tmc(zip_path: Path) -> Iterator[dict]:
         if loc_c is None:
             return
         lin_c, pos_c, neg_c, road_c = col("LIN_REF"), col("POS_OFF"), col("NEG_OFF"), col("ROADNUMBER")
+        hecto_c = col("HECTO_DIR")
 
         def _int(v):
             try:
@@ -166,6 +171,10 @@ def parse_vild_tmc(zip_path: Path) -> Iterator[dict]:
                 "pos_off": _int(d.get(pos_c)) if pos_c else None,
                 "neg_off": _int(d.get(neg_c)) if neg_c else None,
                 "road_number": str(road) if road is not None else None,
+                "country_code": "8" if identity else None,
+                "table_number": table_number,
+                "table_version": table_version,
+                "hecto_direction": _int(d.get(hecto_c)) if hecto_c else None,
             }
 
 

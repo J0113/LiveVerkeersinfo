@@ -146,7 +146,8 @@ function fetchRoadSignHudSpeedSource (bbox, signal) {
 
 function fetchRoadSignHudSource (source, bbox, signal) {
   const limit = source === 'matrix' ? 300 : 25
-  return fetch(`/api/signs/${source}?bbox=${bbox}&limit=${limit}`, { signal })
+  const imageParam = source === 'drips' ? '&include_image=true' : ''
+  return fetch(`/api/signs/${source}?bbox=${bbox}&limit=${limit}${imageParam}`, { signal })
     .then(response => {
       if (!response.ok) throw new Error(`${source}: HTTP ${response.status}`)
       return response.json()
