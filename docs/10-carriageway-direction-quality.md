@@ -104,6 +104,37 @@ direction and records the relationship in `HECTO_DIR` (see sections 3.3 and
 Equivalently, R applies when the travel-direction sign equals `HECTO_DIR`; L
 applies when the signs differ.
 
+### Validated against ground truth — the rule helps, but is not exact
+
+The `HECTO_DIR`-adjusted rule above was checked against an independent
+ground truth: the 9,503 `RWS01` MONIBAS sites whose carriageway is already
+known from an explicit `hrl`/`hrr` code in the site name (not derived from
+`alertCDirectionCoded` at all). Comparing that known R/L to what each rule
+would have predicted from `tmc_direction` + `HECTO_DIR` alone:
+
+```text
+naive rule (positive→R, negative→L, ignoring HECTO_DIR):    76.1% correct
+HECTO_DIR-adjusted rule (sign(direction) == sign(HECTO_DIR)): 91.4% correct
+  (excluding 160 HECTO_DIR=0 sites, which neither rule can resolve)
+```
+
+The `HECTO_DIR` correction is a large, real improvement (76.1% → 91.4%), but
+it still mispredicts **804 of 9,343** resolvable cases (8.6%). The cause of
+that residual isn't established here — possibly additional VILD attributes
+beyond `HECTO_DIR`, or inherent exceptions at ramps/interchanges. Treat the
+91.4% figure as the current ceiling for a `tmc_direction`+`HECTO_DIR`-only
+rule, not as a solved problem; do not present derived R/L as authoritative
+without a similar ground-truth check on the target road network first.
+
+### Unverified citations
+
+The handbook section numbers (3.3, 4.2.11) and the two external URLs above
+were supplied by a reviewer pass on this document and have **not** been
+opened/confirmed in this session (no PDF-reading tool was available). Before
+relying on them — e.g. in a PR description or a support answer — fetch
+`Technisch Handboek VILD 6 20191101.pdf` from `data/VILD6.13.A.zip` and check
+the cited sections directly.
+
 ---
 
 ## GEO0B_R_RWSTI358250 example
@@ -215,6 +246,25 @@ The safe conclusions are therefore:
   `carriageway=None`;
 - a direction value must never be presented as though it were already R/L.
 
+### This is not just a future risk — it's already shipping
+
+The `GEO*` branch and `RWS01`'s no-`hrl`/`hrr` fallback path are **already
+live** and already use the unverified naive rule (`positive→R`,
+`negative→L`, no `HECTO_DIR` check) to populate `carriageway` today:
+
+```text
+GEO* sites resolved via alc_dir fallback (no ground truth in name): 2,127
+RWS01 sites resolved via alc_dir fallback (no hrl/hrr in name):      2,600
+                                                            total:   4,727
+```
+
+Applying the ~24–30% error rate measured above (naive rule vs. ground truth)
+to this population suggests roughly **1,100–1,400 sites currently in the
+database likely already carry the wrong `carriageway` value** — not a
+hypothetical consequence of a future change, an existing data-quality gap.
+The 6,903 `RWS01` sites with an explicit `hrl`/`hrr` code are unaffected
+(their carriageway never depended on `alertCDirectionCoded`).
+
 ---
 
 ## Available fields and remaining plumbing
@@ -316,6 +366,13 @@ tiles occupying the same screen position.
 6. **Tests:** cover the N203 pair, at least one `HECTO_DIR=-1` road, exactly
    co-located opposite-direction sources, and a VILD geometry whose raw vertex
    order cannot be assumed to be positive.
+7. **Audit existing data:** the `GEO*` branch and `RWS01`'s no-`hrl`/`hrr`
+   fallback already wrote `carriageway` for 4,727 sites using the unverified
+   naive rule (see above) — re-derive or null out these values once
+   `HECTO_DIR` is ingested, rather than trusting them as-is.
+8. **Verify before citing:** confirm the VILD handbook section numbers and
+   both external URLs referenced below actually say what this document claims
+   before using them outside this investigation.
 
 These changes solve direction handling for fixed traffic-speed sensors without
 introducing travel-time or floating-car-data processing into the current scope.

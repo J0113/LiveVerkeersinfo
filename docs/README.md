@@ -99,6 +99,12 @@ schema, geographic scope, and how the feeds relate to each other.
 Container dependency split, API compression/cache policy, spatial matching,
 browser scheduling, and operational resource tuning.
 
+### Carriageway/direction data quality → [10-carriageway-direction-quality.md](10-carriageway-direction-quality.md)
+
+Why `carriageway` resolves for only 23% of traffic-speed sites today, how
+`alertCDirectionCoded` + the VILD TMC chain give the real travel direction,
+and a bearing-computation plan using data already ingested.
+
 > Sizes are compressed download sizes from the portal listing on 2026-05-29.
 > Decompressed sizes are much larger — e.g. `traveltime.xml.gz` 2.5M → ~73M XML,
 > `trafficspeed.xml.gz` 1.1M → ~52M XML.
