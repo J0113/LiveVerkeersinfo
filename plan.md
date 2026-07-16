@@ -361,6 +361,8 @@ parsers/ingesters/endpoints/layers feed-by-feed, then Phase 5 poller, Phase 8.
 The active OSM-first speed-coverage backlog, delivered phase 1, measured
 validation and phases 2–5 are maintained in
 [docs/17-speed-coverage-iteration.md](docs/17-speed-coverage-iteration.md).
-That document supersedes the older generic speed/lane sequencing below where
-the two conflict. The rollback branch is `codex/osm-speed-coverage` with
+The field-level source simplification and replacement backlog is maintained in
+[docs/18-open-source-field-audit.md](docs/18-open-source-field-audit.md).
+These documents supersede the older generic speed/lane sequencing below where
+they conflict. The rollback branch is `codex/osm-speed-coverage` with
 checkpoint `6c6b8ef`.
