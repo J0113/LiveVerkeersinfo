@@ -1,143 +1,188 @@
-# 10 — Carriageway/direction data quality (traffic speed sites)
+# 10 — Direction data quality for traffic-speed sensors
 
-Findings from a deep-dive into why some `measurement_site` rows can't be shown
-with a clear travel direction in the UI (e.g. two co-located sensors on
-Provincialeweg N203 rendering as unlabeled stacked tiles). Covers the VILD
-line/TMC reference, how `alertCDirectionCoded` works, current carriageway
-resolution rate, and a concrete plan to fix it.
+This document explains why some fixed traffic-speed sensors cannot currently be
+shown with a clear travel direction in the UI, and how to resolve that without
+mixing up three different concepts:
+
+- **VILD direction**: `positive` or `negative`, relative to the VILD/ALERT-C
+  `POS_OFF`/`NEG_OFF` chain;
+- **carriageway side**: `R` or `L`, defined by the direction in which road
+  hectometrering increases or decreases while driving;
+- **compass bearing**: the real-world direction of travel in degrees.
+
+The scope is deliberately limited to fixed **traffic-speed/flow sensors** whose
+`measurementSiteLocation` is a DATEX `Point`. Travel-time itineraries and
+floating-car data are out of scope.
+
+The counts below were reproduced from the complete official
+[`measurement_current.xml.gz`](https://opendata.ndw.nu/measurement_current.xml.gz)
+snapshot containing 101,487
+`measurementSiteRecord`s. After selecting only Point records with traffic-speed
+or traffic-flow characteristics, the in-scope population is **20,813 sites**.
 
 ---
 
-## Case study: PNH02_PNHTI516 / PNH02_PNHTI516r (N203 Provincialeweg, Uitgeest)
+## Case study: PNH02_PNHTI516 / PNH02_PNHTI516r
 
-Two loop sensors at (almost) the same point, opposite carriageways:
+Two loop sensors on the N203 Provincialeweg near Uitgeest lie approximately two
+metres apart and measure opposite traffic directions:
 
 | | `PNH02_PNHTI516` | `PNH02_PNHTI516r` |
 |---|---|---|
 | equipment ref | PNH_516-**B** | PNH_516-**A** |
 | name | "Castricum N203 Provincialeweg, op-/afrit Rijksweg A9 wz - Middelweg thv hmp 55,3" | "Wormerveer N203 Provincialeweg, Middelweg - op-/afrit Rijksweg A9 wz thv hmp 55,3" |
-| lat/lon | 52.518232, 4.71055 | 52.518253, 4.710546 |
-| `alertCDirectionCoded` | positive | negative |
+| lat/lon | 52.518232, 4.710550 | 52.518253, 4.710546 |
+| `alertCDirectionCoded` | `positive` | `negative` |
 | TMC primary `specificLocation` | 10798 | 10800 |
-| offset (m) | 600 | 654 |
+| offset | 600 m | 654 m |
 | lanes | 1 | 1 |
 
-Coordinates are ~2m apart — on a map they render on top of each other, so the
-two speed tiles stack with no visual distinction (this is what triggered the
-investigation). `carriageway` is `None` for both in the DB today (see below),
-so nothing in the API/UI currently disambiguates them either.
+The markers visually overlap at normal map scales. Both rows currently have
+`carriageway=None`, and the API does not expose `tmc_direction`, so the frontend
+has no explicit direction signal with which to label or separate them.
 
-### Resolving the actual direction via the VILD TMC chain
+### Resolving their travel directions through VILD
 
-`measurement_site.tmc_primary` (10798 / 10800) is a VILD/ALERT-C location code.
-Looking it up in the VILD master table (`VILD6.13.A.dbf`, see
-[07-static-reference.md](07-static-reference.md)) gives the chain topology:
+`measurement_site.tmc_primary` is a VILD/ALERT-C location code. The relevant
+records in `VILD6.13.A.dbf` form this chain:
 
-| LOC_NR | LOC_DES | name | hmp (POS/NEG) | POS_OFF → | NEG_OFF → |
-|---|---|---|---|---|---|
-| 10798 (`516`, positive) | Afrit | "A9: Uitgeest" / "A9" | 547/550 | 10800 | 10797 |
-| 10800 (`516r`, negative) | Kruising | "Uitgeest-Centrum" | 559/559 | 10801 | 10798 |
+| LOC_NR | LOC_DES | name | HSTART_POS / HSTART_NEG | HECTO_DIR | POS_OFF → | NEG_OFF → |
+|---|---|---|---|---:|---|---|
+| 10798 | Afrit | "A9: Uitgeest" / "A9" | 547 / 550 | +1 | 10800 | 10797 |
+| 10800 | Kruising | "Uitgeest-Centrum" | 559 / 559 | +1 | 10801 | 10798 |
 
-The chain runs `…10797 → 10798 (A9 exit) → 10800 (Uitgeest-Centrum) → 10801…`
-with **increasing hectometrering** in the `POS_OFF` direction (547→559). That
-increasing-hmp direction is the literal definition of "positive" here.
+The positive chain runs:
 
-So:
-- **`PNH02_PNHTI516` (positive)** = traffic driving **away from the A9
-  Uitgeest exit**, toward Uitgeest-Centrum/Castricum (hmp increasing).
-- **`PNH02_PNHTI516r` (negative)** = traffic driving **toward the A9 Uitgeest
-  exit**, coming from Middelweg/Wormerveer (hmp decreasing).
+```text
+… 10797 → 10798 (A9 exit) → 10800 (Uitgeest-Centrum) → 10801 …
+```
 
-### What `alertCDirectionCoded` actually means
+Therefore:
 
-It is **not** an absolute compass direction. It's relative to the
-**digitization direction of the VILD line** (`vild_line`/TMC chain) that the
-location code sits on: `positive` = same direction as the chain's `POS_OFF`
-pointer (increasing hectometrering), `negative` = opposite (`NEG_OFF`). To turn
-it into a real-world bearing you have to combine it with the underlying
-`vild_line` geometry's coordinate order (see recommendation below) — you can't
-read "noord" or "zuid" off the value directly.
+- `PNH02_PNHTI516`, with direction `positive`, measures traffic travelling
+  away from the A9 exit toward Uitgeest-Centrum/Castricum;
+- `PNH02_PNHTI516r`, with direction `negative`, measures traffic travelling
+  toward the A9 exit from the Middelweg/Wormerveer direction.
+
+For this particular VILD line, `HECTO_DIR=+1`: hectometrering increases in the
+positive VILD direction. Consequently the positive sensor is also carriageway
+R and the negative sensor carriageway L. That relationship is case-specific;
+it is not the definition of positive and negative VILD direction.
 
 ---
 
-## GEO0B_R_RWSTI358250 — connector-road (verbindingsweg) example
+## Meaning of `alertCDirectionCoded`
 
-A second example showing the same mechanism applied to a different site-name
-format (RWS "GEO" family — loop sensors on connector/ramp roads):
+`alertCDirectionCoded` is not an absolute compass direction and is not itself a
+carriageway-side code:
 
-```
+- `positive` means traffic travels in the positive VILD/ALERT-C coding
+  direction, following `POS_OFF`;
+- `negative` means traffic travels in the opposite direction, following
+  `NEG_OFF`.
+
+The value is therefore a valid and useful **travel-direction signal**. To turn
+it into a compass bearing, it must be combined with an oriented VILD geometry.
+To turn it into R/L, it must additionally be combined with the direction of
+hectometrering.
+
+### Why positive does not always mean R
+
+VILD defines carriageway R as the carriageway on which hectometrering increases
+in the direction of travel. Carriageway L is the carriageway on which it
+decreases. VILD explicitly treats this as independent from its positive coding
+direction and records the relationship in `HECTO_DIR` (see sections 3.3 and
+4.2.11 of the
+[official VILD technical handbook](https://docs.ndw.nu/blob/TechnischHandboekVILD620191101.pdf)):
+
+| `HECTO_DIR` | `tmc_direction=positive` | `tmc_direction=negative` |
+|---:|---|---|
+| `+1` | R | L |
+| `-1` | L | R |
+| `0` | not safely derivable from this rule | not safely derivable from this rule |
+
+Equivalently, R applies when the travel-direction sign equals `HECTO_DIR`; L
+applies when the signs differ.
+
+---
+
+## GEO0B_R_RWSTI358250 example
+
+This RWS loop sensor on an A9 connector road has a different site-name format:
+
+```text
 measurementSiteName: 009vwb058082
 measurementSiteLocation xsi:type="Point"
   latitude 52.50756, longitude 4.70814
-  alertCPoint:
-    alertCDirectionCoded: positive
-    specificLocation: 10598, offset 39
+  affectedCarriagewayAndLanes/carriageway: entrySlipRoad
+  alertCDirectionCoded: positive
+  specificLocation: 10598, offset 39
 ```
 
-Name matches `\d{3}[a-z]{3}\d{6}` → road_num `009` → **A9**, km `058082` →
-**58.082**. The middle 3 letters (`vwb` = verbindingsweg-code) are **not**
-parsed for carriageway in this branch — carriageway comes purely from the
-`alertCDirectionCoded` fallback (`positive` → `R`). This is exactly the
-fallback pattern missing from the PNH branch (see below).
+The name matches `\d{3}[a-z]{3}\d{6}`:
+
+- road `009` → A9;
+- position `058082` → km 58.082;
+- `vwb` identifies a connector-road form, not an R/L carriageway side.
+
+The current parser assigns R solely because the direction is positive. That is
+correct for this individual record because VILD location 10598 has
+`HECTO_DIR=+1`, but the same shortcut is not valid for every road.
+`affectedCarriagewayAndLanes/carriageway=entrySlipRoad` is useful carriageway
+**type** information, but likewise does not supply R/L.
 
 ---
 
-## Point vs. multi-point records — trafficSpeed vs travelTime
+## In-scope population and direction completeness
 
-`alertCDirectionCoded` can appear more than once per `measurementSiteRecord`.
-Checked across the full `measurement_current2.xml` (101,487 records):
+The complete measurement-site table has a clean location/value-type split:
 
-| `measurementSiteLocation` xsi:type | `specificMeasurementValueType` | count |
-|---|---|---|
-| `Point` | trafficFlow + trafficSpeed | 20,812 |
-| `Point` | trafficFlow only | 1 |
-| `ItineraryByIndexedLocations` | travelTimeInformation | 80,674 |
+| `measurementSiteLocation` type | value types | count | in scope |
+|---|---|---:|---|
+| `Point` | trafficFlow + trafficSpeed | 20,812 | yes |
+| `Point` | trafficFlow only | 1 | yes |
+| `ItineraryByIndexedLocations` | travelTimeInformation | 80,674 | no |
 
-**100% clean split, zero overlap.** Every multi-point record (an itinerary
-made of several `location xsi:type="Linear"` segments, each with its own
-`alertCDirectionCoded` — sometimes even opposite values within the same
-record, since each segment is measured against its own bit of TMC chain) is a
-**travel-time** route (e.g. `GUT01_091`, FCD-based). Every simple `Point`
-record — including all the sensor examples above — is a **traffic-speed**
-site with **exactly 1** `alertCDirectionCoded`. So for the traffic-speed feed
-specifically, direction is always unambiguous (1 value per site); the
-multi-value complexity only exists in `traveltime.xml`.
+For the **20,813 Point speed/flow sites**:
 
-### Fill rate
+- every record contains exactly one `alertCDirectionCoded`;
+- every value is either `positive` or `negative`;
+- every record contains a primary VILD `specificLocation`;
+- direction is therefore unambiguous for every in-scope sensor.
 
-- `alertCDirectionCoded` present at least once: **101,487 / 101,487 = 100%**
-  of all `measurementSiteRecord`s (traffic-speed and travel-time combined).
-- No empty/garbage values — only ever `positive` or `negative`.
+This establishes 100% availability of a VILD-relative travel direction. It
+does **not** establish 100% availability of carriageway R/L or a compass
+bearing.
 
 ---
 
-## Current carriageway resolution rate (all traffic-speed sites)
+## Current carriageway resolution rate
 
-`_parse_site_location()` ([src/ndwinfo/parsers/datex_v2.py:81](../src/ndwinfo/parsers/datex_v2.py)) tries, per site-id prefix:
+`_parse_site_location()` currently derives road, km and carriageway from a
+small set of provider-specific site-name patterns:
 
-1. **`GEO*`**: name matches `\d{3}[a-z]{3}\d{6}` → carriageway from
-   `alertCDirectionCoded` fallback (`positive`→R, `negative`→L). Middle letters ignored.
-2. **`RWS01`**: name matches `\d{4}[a-z]{3}\d{4}[a-z]{2}` → carriageway from the
-   `hrl`/`hrr` code in the name if present, else same `alertCDirectionCoded` fallback.
-3. **`RWS08`**: carriageway from `HRL`/`HRR` in the id itself. **No `alertCDirectionCoded` fallback.**
-4. **else** (every provincial/regional prefix: `PNH*`, `POV*`, `PUT*`, `PLB*`,
-   `PZH*`, `PGL*`, `PGR*`, `PFR*`, `PFL*`, `GDH*`, `GEH*`, `GAD*`, `GRT*`,
-   `GUT*`, `GMS*`, `GZS*`, `RDH*`, `RWS04/09/10`, …): regex `^([AN]\d+)\s+(hmp|km)\s+([\d.,]+)\s+(Re|Li)`
-   must match the name (e.g. `"N457 hmp 4.75 Re"`). **No `alertCDirectionCoded` fallback.**
+1. `GEO*`: parse the 12-character name and currently map VILD direction directly
+   to R/L;
+2. `RWS01`: parse the MONIBAS name, preferring explicit `hrl`/`hrr`, otherwise
+   using the same direct VILD-direction mapping;
+3. provincial/regional providers: accept names beginning with patterns such as
+   `N457 hmp 4.75 Re` or `N457 km 4.75 Li`;
+4. all other name formats remain unresolved.
 
-Measured against the real site table (`measurement_current2.xml`, 101,487 sites):
+Measured only over the in-scope Point speed/flow population:
 
+```text
+traffic-speed/flow sites:        20,813
+carriageway resolved now:        12,273  (58.97%)
+carriageway None:                 8,540  (41.03%)
+carriageway None with direction:  8,540 (100.00% of missing)
 ```
-total sites:              101,487
-with carriageway resolved:  23,686  (23.34%)
-```
 
-Per-prefix breakdown (non-zero only):
+Non-zero provider breakdown:
 
-| prefix | total | resolved | % |
-|---|---|---|---|
-| RWS08 | 14,254 | 11,413 | 80.1% |
-| RWS01 | 22,118 | 9,503 | 43.0% |
+| prefix | speed sites | resolved | % |
+|---|---:|---:|---:|
+| RWS01 | 14,751 | 9,503 | 64.4% |
 | GEO0C | 734 | 642 | 87.5% |
 | PZH01 | 646 | 643 | 99.5% |
 | GEO0K | 619 | 615 | 99.4% |
@@ -145,107 +190,144 @@ Per-prefix breakdown (non-zero only):
 | GEO2A | 291 | 138 | 47.4% |
 | GEO1A | 241 | 210 | 87.1% |
 
-**Every other prefix resolves 0%** — including `PNH02` (459 sites, the
-Provincialeweg sensors from this investigation), `PNH03`, `POV01`, `PUT01/03`,
-`PLB01/02`, `GDH01`, `PZH03/04`, `GEH01`, `GAD03`, `RDH01/05/06`, `PGR02/08`,
-`GRT02/03/04/06`, `PFR02/07`, `PFL01/02`, `RTT01`, `GUT01`, `HBR01/04`,
-`GMS01`, `GZS01`, `PNB03/05`, `SRR02`, `GAD02`, `PLB05`, `GRT06` — because
-their site names don't match the `"N457 hmp 4.75 Re"` pattern (they use a
-free-text description like `"Wormerveer N203 Provincialeweg, Middelweg - …"`)
-and there's no fallback for the `else` branch.
+All other speed-site prefixes currently resolve 0% through the parser. This
+includes the PNH02 case because its free-text name does not begin with the
+structured `N… hmp … Re/Li` form.
 
-### The fix is already proven — just not applied everywhere
+### Why the missing 8,540 sites are not all recoverable as R/L from direction alone
 
-Of the 76.66% (77,801 sites) with no carriageway, **100% have
-`alertCDirectionCoded` filled** (`tmc_direction` in the parsed dict). Zero
-sites are truly unresolvable:
+Joining the missing speed sites to their primary VILD locations gives:
 
-```
-cw resolved now:                                    23,686  (23.34%)
-cw None but tmc_direction present (recoverable):     77,801  (76.66%)
-cw None AND no tmc_direction (truly unresolvable):        0  ( 0.00%)
+```text
+HECTO_DIR is +1 or -1:  7,672
+HECTO_DIR is 0:            868
 ```
 
-The `GEO*`/`RWS01` branches already prove the fallback works
-(`carriageway = "R" if alc_dir == "positive" else "L" if alc_dir == "negative" else None`).
-Adding the same fallback to the `RWS08` branch and the catch-all `else`
-branch would take carriageway resolution from **23.34% → 100%** with no new
-data source — the value is already sitting in the same XML record.
+Among the 7,672 sites with a usable `HECTO_DIR`, a direct
+`positive→R`/`negative→L` fallback would reverse R/L for **2,304 sites
+(30.03%)** because their `HECTO_DIR` is -1.
+
+The safe conclusions are therefore:
+
+- all 8,540 missing sites have a usable VILD-relative direction;
+- at least 7,672 can receive R/L from `tmc_direction + HECTO_DIR`;
+- the remaining 868 require another authoritative signal or should keep
+  `carriageway=None`;
+- a direction value must never be presented as though it were already R/L.
 
 ---
 
-## Fields that exist in the DB but aren't surfaced
+## Available fields and remaining plumbing
 
-`MeasurementSite` ([src/ndwinfo/models.py:35](../src/ndwinfo/models.py)) already
-has the columns needed — this is a plumbing gap, not a missing-data gap:
+`MeasurementSite` already stores:
 
-- **`tmc_direction`** (`positive`/`negative`, 100% filled for traffic-speed
-  sites) — populated by the parser and written to the DB
-  ([src/ndwinfo/ingest/measurement.py](../src/ndwinfo/ingest/measurement.py)),
-  but **never `SELECT`ed** in `/api/traffic/speed`
-  ([src/ndwinfo/api/routers/traffic.py](../src/ndwinfo/api/routers/traffic.py))
-  and never read in the frontend (`web/speed.js`, `web/lib.js`). Dead column.
-- **`tmc_primary`** (VILD/ALERT-C location code, e.g. 10798) — also populated
-  for every site (not just travel-time routes) but unused outside the
-  travel-time geometry rebuild.
-- **`openlr_bearing`** — already selected by the API and used as a fallback
-  bearing ([traffic.py:469](../src/ndwinfo/api/routers/traffic.py)), but only
-  filled for **2.11%** of sites (2,143 / 101,487) — too sparse to rely on for
-  this problem. None of the sites in this investigation (`PNH02_*`,
-  `RWS01_MONIBAS_*`, `GEO0B_*`) have it.
+- `tmc_direction`: populated for every speed site, but not selected by
+  `/api/traffic/speed` and not used by the frontend;
+- `tmc_primary`: populated for every speed site and usable for VILD lookup;
+- `carriageway`: available for a derived R/L result;
+- `openlr_bearing`: selected by the API and used as a fallback bearing.
 
-Nothing needs to be added to the schema. `carriageway` needs to be
-**computed** (parser fix) and `tmc_direction` needs to be **exposed**
-(API + frontend) for what's already ingested.
+`openlr_bearing` is filled for **2,143 / 20,813 = 10.30%** of speed sites. It is
+useful when present but too sparse to serve as the primary national direction
+source. None of the PNH02, RWS01 MONIBAS or GEO0B sites has it.
 
----
+The current `vild_tmc` table stores `lin_ref`, `pos_off`, `neg_off` and road
+number, but not `HECTO_DIR`. Therefore:
 
-## Recommendation: how to compute a real bearing, not just L/R
-
-`carriageway` (R/L) tells you *which* side of the road a sensor is on, but not
-a compass bearing for arrows/rotation in the UI. `openlr_bearing` is too
-sparse (2.11%) to be the primary source. A robust bearing can be derived from
-data already ingested, no new feed required:
-
-1. `measurement_site.tmc_primary` → look up in `vild_tmc.loc_nr` → get
-   `lin_ref` (→ `vild_line.id`).
-2. Load that `vild_line` row's `LineString` geometry.
-3. Find the point on the line closest to the site's own `geom` (or use
-   `HSTART_POS`/`HEND_POS` proportionally along the line's total length from
-   the VILD master table) to get a local segment of the line.
-4. Compute the **tangent bearing** at that point from the line's coordinate
-   sequence (bearing between the two neighbouring vertices).
-5. If `tmc_direction == "negative"`, **flip the tangent 180°** — the line's
-   own digitization direction is the `positive` direction by definition (same
-   logic already established for the `POS_OFF`/`NEG_OFF` chain).
-
-This mirrors what `rebuild_traveltime_geometry()`
-([src/ndwinfo/ingest/traveltime_geometry.py](../src/ndwinfo/ingest/traveltime_geometry.py))
-already does to build road-following `line_geom` for travel-time segments from
-the same VILD chain — the machinery to walk/clip `vild_line` geometry already
-exists, it just isn't reused for point-site bearing yet.
-
-Caveat already on record: WEGGEG-derived bearing is known to be unreliable
-for offset calculations (see prior memory note) — this VILD-line-tangent
-approach is a **different, independent geometry source** and shouldn't
-inherit that problem, but should still be spot-checked against a few known
-locations before trusting it everywhere.
+- exposing `tmc_direction` needs no schema change;
+- computing a VILD-oriented compass bearing needs no new feed and can use the
+  already ingested chain and geometry;
+- persistently deriving correct R/L through VILD requires ingesting
+  `HECTO_DIR`, or an equivalent authoritative enrichment step.
 
 ---
 
-## Action items
+## Computing a real traffic bearing
 
-1. **Parser fix** ([datex_v2.py](../src/ndwinfo/parsers/datex_v2.py)): add the
-   `alertCDirectionCoded` → `R`/`L` fallback to the `RWS08` branch and the
-   catch-all `else` branch, matching what `GEO*`/`RWS01` already do. Takes
-   carriageway resolution from 23.34% → ~100% (traffic-speed feed only; no
-   multi-value ambiguity to handle there, confirmed above).
-2. **API**: add `tmc_direction` to the `/api/traffic/speed` response
-   ([traffic.py](../src/ndwinfo/api/routers/traffic.py)) so the frontend has a
-   direction signal even before/independent of the carriageway fix.
-3. **Frontend** (`web/speed.js`, `web/lib.js`): show `tmc_direction` and/or the
-   resolved `carriageway` in the marker title/popup so co-located
-   opposite-direction sensors (like the N203 Uitgeest pair) are distinguishable.
-4. **Optional, larger**: implement the VILD-line-tangent bearing computation
-   above for a real compass bearing per site, reusing the chain-walking logic
-   from `traveltime_geometry.py`.
+A VILD-line tangent is a suitable source for a real-world travel bearing, but
+the raw coordinate order of `vild_line.geom` must not be assumed to be the
+positive direction without verification.
+
+A robust procedure is:
+
+1. Look up `measurement_site.tmc_primary` in `vild_tmc` and obtain `lin_ref`.
+2. Load the associated `vild_line` geometry.
+3. Select a neighbouring VILD point on the same line through `POS_OFF` (or use a
+   same-line `NEG_OFF` neighbour when necessary).
+4. Project both VILD points onto the line to establish which local coordinate
+   direction corresponds to the positive chain.
+5. Project the sensor's own `geom` onto the line and compute a local tangent,
+   using neighbouring vertices far enough apart to avoid a zero-length or noisy
+   bearing.
+6. Orient that tangent in the established positive direction.
+7. If `tmc_direction == "negative"`, rotate the bearing by 180 degrees.
+8. Handle `MultiLineString` geometry and unresolved/cross-line cases explicitly;
+   do not silently use an unrelated longest component.
+
+This can reuse the projection, clipping and orientation principles in
+`rebuild_traveltime_geometry()`. That code already orients clipped geometry
+between two projected VILD points instead of trusting the source vertex order.
+
+---
+
+## API and frontend implications
+
+Simply adding `tmc_direction` to the output properties is not sufficient. The
+speed endpoint merges readings from measurement systems at the same physical
+location. When R/L is absent, opposite directions could otherwise be combined.
+
+The API should:
+
+- select and group by `tmc_direction`;
+- include it in the physical-location merge key when carriageway is absent;
+- preserve it in `/api/traffic/speed` and `/api/traffic/speed/map` point
+  properties;
+- expose a derived bearing and its source when available;
+- expose R/L only when it was derived from an authoritative rule.
+
+The frontend should:
+
+- show direction/bearing in the speed popup for diagnostics;
+- use the travel bearing or a reliable roadside bearing to offset overlapping
+  opposite-direction markers visibly;
+- avoid presenting raw `positive`/`negative` as a user-facing compass label;
+- continue to display `carriageway` only when a valid R/L value exists.
+
+For the N203 pair, successful handling means two separately clickable markers
+with approximately opposite travel bearings, rather than two indistinguishable
+tiles occupying the same screen position.
+
+---
+
+## Recommended action items
+
+1. **Do not add a general `positive→R`/`negative→L` parser fallback.** Keep
+   `tmc_direction` as its own direction field.
+2. **API:** select `tmc_direction`, include it in speed-site grouping/merging,
+   and return it in both speed responses.
+3. **Frontend:** display direction diagnostics and visibly separate overlapping
+   opposite-direction speed markers.
+4. **Bearing enrichment:** compute a VILD tangent whose positive orientation is
+   established through neighbouring `POS_OFF`/`NEG_OFF` points, then flip it for
+   negative traffic direction.
+5. **Optional R/L enrichment:** ingest `HECTO_DIR` and combine it with
+   `tmc_direction`; leave R/L unset where `HECTO_DIR=0` and no other
+   authoritative carriageway-side field is available.
+6. **Tests:** cover the N203 pair, at least one `HECTO_DIR=-1` road, exactly
+   co-located opposite-direction sources, and a VILD geometry whose raw vertex
+   order cannot be assumed to be positive.
+
+These changes solve direction handling for fixed traffic-speed sensors without
+introducing travel-time or floating-car-data processing into the current scope.
+
+---
+
+## References
+
+- [DATEX II Alert-C direction semantics](https://docs.datex2.eu/levels/mastering/location/alertc/)
+- [NDW Technical Handbook VILD 6](https://docs.ndw.nu/blob/TechnischHandboekVILD620191101.pdf)
+- [Static reference dataset notes](07-static-reference.md)
+- [`_parse_site_location()` and measurement-site parsing](../src/ndwinfo/parsers/datex_v2.py)
+- [`MeasurementSite` and `VildTmc` models](../src/ndwinfo/models.py)
+- [Traffic-speed API aggregation](../src/ndwinfo/api/routers/traffic.py)
+- [VILD chain projection and geometry orientation](../src/ndwinfo/ingest/traveltime_geometry.py)
