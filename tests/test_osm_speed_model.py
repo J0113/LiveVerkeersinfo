@@ -20,9 +20,11 @@ def segment(
     side="R",
     direction="forward",
     length=100,
+    road_class="motorway",
 ):
     return SpeedSegment(
-        segment_id, length, road, side, direction, tuple(previous), tuple(following)
+        segment_id, length, road, side, direction, tuple(previous), tuple(following),
+        road_class,
     )
 
 
@@ -126,6 +128,26 @@ def test_non_unique_fork_and_merge_stop_assignment():
     ]
     states = assign_speed_states(merge, [observation("a", 70)], now=NOW)
     assert states["after"]["speed_kmh"] is None
+
+
+def test_incompatible_link_does_not_block_unique_mainline_continuation():
+    segments = [
+        segment("approach", following=("main", "exit")),
+        segment("main", previous=("approach",)),
+        segment("exit", previous=("approach",), road_class="motorway_link"),
+    ]
+    states = assign_speed_states(segments, [observation("approach", 87)], now=NOW)
+    assert states["main"]["speed_method"] == "propagated"
+    assert states["exit"]["speed_method"] == "unknown"
+
+
+def test_shared_normalized_road_ref_preserves_corridor_continuity():
+    segments = [
+        segment("a", following=("b",), road="A5"),
+        segment("b", previous=("a",), road="A5; E19"),
+    ]
+    states = assign_speed_states(segments, [observation("a", 91)], now=NOW)
+    assert states["b"]["speed_method"] == "propagated"
 
 
 def test_missing_connected_segment_is_fail_closed():

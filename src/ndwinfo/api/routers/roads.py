@@ -430,7 +430,6 @@ def load_direct_speed_states(
             SourceLocationBinding.internal_segment_id.in_(segment_ids),
             TrafficMeasurement.value_type == "TrafficSpeed",
             TrafficMeasurement.speed_kmh.isnot(None),
-            MeasurementCharacteristic.lane.isnot(None),
             MeasurementCharacteristic.veh_length_min.is_(None),
             MeasurementCharacteristic.veh_length_max.is_(None),
         )
@@ -463,14 +462,33 @@ def load_direct_speed_states(
             default=None,
         )
         stale = not fresh
-        values = [float(row.speed_kmh) for row in fresh]
+        site_observations = []
+        fresh_by_site: dict[str, list] = defaultdict(list)
+        for row in fresh:
+            fresh_by_site[str(row.source_id)].append(row)
+        for source_id, site_rows in fresh_by_site.items():
+            explicit_lanes = [row for row in site_rows if row.lane is not None]
+            selected = explicit_lanes or site_rows
+            latest = max(_utc(row.measured_at) for row in selected)
+            latest_rows = [row for row in selected if _utc(row.measured_at) == latest]
+            site_observations.append({
+                "source_id": source_id,
+                "speed_kmh": float(statistics.median(float(row.speed_kmh) for row in latest_rows)),
+                "observed_at": latest,
+                "confidence": min(float(row.confidence or 0.0) for row in latest_rows),
+            })
+        values = [item["speed_kmh"] for item in site_observations]
         # ``is not None`` above deliberately retains valid standstill readings.
         value = round(float(statistics.median(values)), 1) if values and not stale else None
+        if site_observations:
+            # The combined value is current only while every contributing site
+            # remains current; the oldest contribution defines validity.
+            observed_at = min(item["observed_at"] for item in site_observations)
         states[segment_id] = {
             "speed_kmh": value,
             "speed_method": "measured" if value is not None else "unknown",
             "speed_source": "NDW",
-            "speed_source_ids": sorted({str(row.source_id) for row in fresh}),
+            "speed_source_ids": sorted(item["source_id"] for item in site_observations),
             "speed_observed_at": _iso(observed_at),
             "speed_valid_until": (
                 _iso(
@@ -481,10 +499,10 @@ def load_direct_speed_states(
                 else None
             ),
             "speed_confidence": round(
-                min((float(row.confidence or 0.0) for row in fresh), default=0.0),
+                min((item["confidence"] for item in site_observations), default=0.0),
                 3,
             ),
-            "speed_sample_count": len(fresh),
+            "speed_sample_count": len(site_observations),
             "speed_stale": stale,
             "lane_states": (
                 build_lane_speed_states(
@@ -760,6 +778,7 @@ def assign_corridor_speed_states(db, graph, rows, direct_states: dict[str, dict]
             travel_direction="directed",
             predecessor_ids=tuple(sorted(set(incoming[str(row.internal_segment_id)]))),
             successor_ids=tuple(sorted(set(outgoing[str(row.internal_segment_id)]))),
+            road_class=row.highway,
         )
         for row in rows
     ]

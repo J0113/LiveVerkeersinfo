@@ -356,3 +356,11 @@ parsers/ingesters/endpoints/layers feed-by-feed, then Phase 5 poller, Phase 8.
 - RD (EPSG:28992) sources must be reprojected to 4326 before insert.
 - Truckparking table is `informationStatus=test` and raw (not gzipped); status
   feed is v3 and raw too.
+# Current product backlog (2026-07-16)
+
+The active OSM-first speed-coverage backlog, delivered phase 1, measured
+validation and phases 2–5 are maintained in
+[docs/17-speed-coverage-iteration.md](docs/17-speed-coverage-iteration.md).
+That document supersedes the older generic speed/lane sequencing below where
+the two conflict. The rollback branch is `codex/osm-speed-coverage` with
+checkpoint `6c6b8ef`.

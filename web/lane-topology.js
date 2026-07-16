@@ -8,7 +8,10 @@ var LaneTopology = (() => {
   const ROLES = new Set(['through', 'entry', 'exit', 'weave', 'unknown'])
   const DEFAULTS = Object.freeze({ laneWidth: 42, laneGap: 7, groupGap: 15, height: 112 })
   const USER_LANE_CONFIDENCE = 0.8
-  const LANE_STATE_MIN_CONFIDENCE = 0.6
+  // Keep presentation aligned with the backend's accepted binding floor.
+  // Lane state is only emitted after accepted direction + exact lane-count
+  // validation; a stricter browser threshold used to hide valid lane speeds.
+  const LANE_STATE_MIN_CONFIDENCE = 0.5
   const DISPLAY_LANE_WIDTH_M = 3.5
 
   function normalize (input = {}) {

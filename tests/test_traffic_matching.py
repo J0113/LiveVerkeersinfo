@@ -12,6 +12,7 @@ from ndwinfo.api.routers.traffic import (
     _osm_lane_fallback_features,
     _pick_near_candidate,
     _pick_wide_candidate,
+    _weggeg_stable_lane_row,
 )
 
 
@@ -72,6 +73,14 @@ def test_near_match_uses_distance_after_metadata_ties():
     ]
 
     assert _pick_near_candidate(candidates).source_id == "closer"
+
+
+def test_near_match_prefers_matching_lane_count_before_distance():
+    candidates = [
+        candidate("closer-wrong-count", 0.4, road=True, carriageway=True),
+        candidate("farther-right-count", 1.8, road=True, carriageway=True, lanes=True),
+    ]
+    assert _pick_near_candidate(candidates).source_id == "farther-right-count"
 
 
 def test_wide_match_prioritizes_carriageway_then_lane_count():
@@ -242,7 +251,7 @@ def test_osm_lane_fallback_requires_equal_explicit_lane_counts():
         _FallbackDb([row]),
         [point],
         None,
-        excluded_segment_ids=set(),
+        excluded_lane_keys=set(),
         remaining_limit=20,
     )
     assert [feature["properties"]["lane"] for feature in features] == [1, 2]
@@ -257,6 +266,54 @@ def test_osm_lane_fallback_requires_equal_explicit_lane_counts():
         _FallbackDb([row]),
         [mismatch],
         None,
-        excluded_segment_ids=set(),
+        excluded_lane_keys=set(),
         remaining_limit=20,
     ) == []
+
+
+def test_weggeg_transition_rows_cannot_claim_full_length_lane_geometry():
+    stable = SimpleNamespace(raw={
+        "lane_transition": {"travel": [2, 2], "lane_presence": "both"}
+    })
+    transition = SimpleNamespace(raw={
+        "lane_transition": {"travel": [2, 3], "lane_presence": "source_end"}
+    })
+    legacy_stable = SimpleNamespace(raw={"OMSCHR": "2 -> 2"})
+    legacy_transition = SimpleNamespace(raw={"OMSCHR": "2 -> 3"})
+    assert _weggeg_stable_lane_row(stable)
+    assert not _weggeg_stable_lane_row(transition)
+    assert _weggeg_stable_lane_row(legacy_stable)
+    assert not _weggeg_stable_lane_row(legacy_transition)
+
+
+def test_osm_fallback_fills_only_lane_missing_from_weggeg():
+    now = datetime.now(timezone.utc)
+    point = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [4.71, 52.51]},
+        "properties": {
+            "site_id": "sensor-a",
+            "binding_status": "accepted",
+            "binding_confidence": 0.82,
+            "internal_segment_id": "segment-a",
+            "measurement_stale": False,
+            "measured_at": now.isoformat(),
+            "num_lanes": 2,
+            "lanes": [
+                {"lane": 1, "speed_kmh": 80.0},
+                {"lane": 2, "speed_kmh": 70.0},
+            ],
+        },
+    }
+    row = SimpleNamespace(
+        internal_segment_id="segment-a",
+        road_number="N203",
+        carriageway_ref=None,
+        lanes=2,
+        geom_json='{"type":"LineString","coordinates":[[4.7,52.51],[4.72,52.51]]}',
+    )
+    features = _osm_lane_fallback_features(
+        _FallbackDb([row]), [point], None,
+        excluded_lane_keys={("segment-a", 1)}, remaining_limit=20,
+    )
+    assert [feature["properties"]["lane"] for feature in features] == [2]

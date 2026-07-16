@@ -36,17 +36,40 @@ Direct accepted NDW observations produce `measured`. Missing segments may be
 filled only within the loaded directed graph slice:
 
 - `interpolated`: bounded between compatible measurements on a complete
-  one-to-one chain;
+  direction/carriageway chain;
 - `propagated`: bounded from one compatible measurement on such a chain;
 - `unknown`: every fork, merge, carriageway conflict, incomplete adjacency,
-  stale/future observation or insufficient confidence.
+  stale/future observation or unknown road identity.
+
+Compatibility uses normalized A/N/E road-reference tokens (`A5` is compatible
+with `A5;E19`), normalized left/right carriageway spelling and travel direction.
+An incompatible `*_link` branch does not block one uniquely compatible
+mainline continuation. Two compatible alternatives still stop propagation.
+Missing neighbours outside the loaded slice remain a hard boundary.
+
+The backend is the sole activation authority. Once it emits a versioned,
+current canonical state, browser confidence controls provenance/presentation
+but does not re-reject the state. This keeps accepted direct readings and
+explicit backend-derived estimates visible. Legacy flat speed properties retain
+the conservative browser confidence gate.
+
+Carriageway speed is aggregated in two stages: first per measurement site, then
+across sites. A site with more lanes therefore receives no extra weight.
+Carriageway/aggregate observations without a lane number may colour the road,
+but never create lane state.
 
 For the optional per-lane map overlay, OSM remains the road and direction
-authority. Validated WEGGEG supplies physical lane geometry when available;
+authority. Validated WEGGEG supplies derived lane geometry when available;
 otherwise equal explicit OSM/NDW lane counts allow schematic OSM lane offsets.
 WEGGEG can never promote an ambiguous/rejected binding. The raw point layer
 still displays every available measured value neutrally, so observation
 availability and safe road activation are not conflated.
+
+WEGGEG count transitions such as `2 -> 3` do not identify the physical taper
+position. Those full-length derived lane lines are therefore excluded from
+lane-speed activation. Stable `N -> N` sections remain eligible. OSM fallback
+is applied per missing lane rather than disabled for an entire segment by one
+available WEGGEG lane.
 
 The API performs two set-based endpoint queries for complete adjacency. It does
 not scan the national graph or all measurement sites per request.

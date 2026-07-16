@@ -49,7 +49,15 @@
       ? now <= validUntilMs
       : now - observedMs <= MAX_FALLBACK_AGE_MS)
     const stale = source.stale === true || source.speed_stale === true || !fresh
-    const usable = value !== null && method !== 'unknown' && !stale && confidence !== null && confidence >= MIN_CONFIDENCE
+    // A versioned canonical segment_state has already passed the backend's
+    // accepted direction/carriageway binding and derivation policy. Do not
+    // silently impose a second, stricter confidence threshold in presentation:
+    // that used to hide valid direct readings and most propagated coverage.
+    // Legacy flat properties retain the conservative client-side threshold.
+    const confidenceAccepted = canonical
+      ? confidence !== null
+      : confidence !== null && confidence >= MIN_CONFIDENCE
+    const usable = value !== null && method !== 'unknown' && !stale && confidenceAccepted
     const provenance = source.provenance ?? source.sources ?? source.source ??
       source.speed_source_ids ?? source.speed_source ?? null
     const sampleCount = finite(source.sample_count ?? source.speed_sample_count ?? source.source_count, 0, 100000)

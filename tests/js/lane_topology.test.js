@@ -275,13 +275,13 @@ test('consumes the exact compact lane schema returned by the roads API', () => {
   assert.equal(model.lanes[4].state.confidence, 0.72)
 })
 
-test('hides stale or low-confidence lane speeds while preserving lane identity', () => {
+test('shows backend-accepted lane confidence and still hides stale state', () => {
   const model = LaneTopology.normalize({
     lane_schema: { lane_count: 2, roles: ['through', 'through'], attributes: {} },
     lane_states: [
-      { lane: 1, speed_kmh: 88, speed_confidence: 0.59 },
+      { lane: 1, speed_kmh: 88, speed_confidence: 0.5 },
       { lane: 2, speed_kmh: 77, speed_confidence: 0.9, speed_stale: true }
     ]
   })
-  assert.deepEqual(model.lanes.map(lane => lane.state.speed), [null, null])
+  assert.deepEqual(model.lanes.map(lane => lane.state.speed), [88, null])
 })

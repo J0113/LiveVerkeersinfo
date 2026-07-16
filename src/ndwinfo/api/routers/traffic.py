@@ -643,12 +643,13 @@ def _comparable_carriageways_conflict(
 
 
 def _pick_near_candidate(candidates: list):
-    """Rank sub-2.5m candidates by road, carriageway, then distance."""
+    """Rank sub-2.5m candidates by road, carriageway, lanes, then distance."""
     return min(
         candidates,
         key=lambda candidate: (
             not bool(candidate.road_match),
             not bool(candidate.carriageway_match),
+            not bool(candidate.lane_count_match),
             float(candidate.distance_m),
         ),
     )
@@ -750,6 +751,7 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
                 WeggegLane.road_number,
                 WeggegLane.direction,
                 WeggegLane.carriageway_side,
+                WeggegLane.raw,
                 func.ST_AsGeoJSON(WeggegLane.geom, 6).label("geom_json"),
             )
             .where(
@@ -767,8 +769,12 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
     # The *set* of parallel lane lines is still correct — only the lane→line
     # labelling flips — so detect the mirror (using the point's roadside_bearing,
     # which points outward toward the shoulder) and reverse the speed→lane lookup.
+    # WEGGEG declares count transitions but not the physical taper location.
+    # Its derived full-length offset lines may only carry lane speed for stable
+    # N→N sections; transitions fall back to carriageway/OSM presentation.
+    stable_rows = [row for row in rows if _weggeg_stable_lane_row(row)]
     rows_by_source: dict[str, list] = defaultdict(list)
-    for row in rows:
+    for row in stable_rows:
         rows_by_source[row.source_id].append(row)
 
     mirrored_sources: set[str] = set()
@@ -794,7 +800,7 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
             mirrored_sources.add(source_id)
 
     lane_features = []
-    for row in rows:
+    for row in stable_rows:
         mirrored = row.source_id in mirrored_sources
         effective_lane = (
             row.lane_count + 1 - row.lane
@@ -881,15 +887,19 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
                 "road_authority": "osm",
             },
         })
-    weggeg_segment_ids = {
-        feature["properties"]["internal_segment_id"] for feature in lane_features
+    weggeg_lane_keys = {
+        (
+            feature["properties"]["internal_segment_id"],
+            feature["properties"]["lane"],
+        )
+        for feature in lane_features
     }
     lane_features.extend(
         _osm_lane_fallback_features(
             db,
             point_features,
             bbox_geom,
-            excluded_segment_ids=weggeg_segment_ids,
+            excluded_lane_keys=weggeg_lane_keys,
             remaining_limit=max(0, settings.api_max_limit - len(lane_features)),
         )
     )
@@ -901,7 +911,7 @@ def _osm_lane_fallback_features(
     point_features: list[dict],
     bbox_geom,
     *,
-    excluded_segment_ids: set[str],
+    excluded_lane_keys: set[tuple[str, int]],
     remaining_limit: int,
 ) -> list[dict]:
     """Use OSM's directed geometry where validated WEGGEG geometry is absent."""
@@ -913,7 +923,6 @@ def _osm_lane_fallback_features(
         segment_id = props.get("internal_segment_id")
         if (
             segment_id
-            and segment_id not in excluded_segment_ids
             and _canonical_lane_activation(props)
         ):
             points_by_segment[str(segment_id)].append(feature)
@@ -954,6 +963,8 @@ def _osm_lane_fallback_features(
         if not compatible_points:
             continue
         for lane_number in range(1, lane_count + 1):
+            if (str(row.internal_segment_id), lane_number) in excluded_lane_keys:
+                continue
             readings = []
             for point in compatible_points:
                 lane = next(
@@ -1016,6 +1027,26 @@ def _osm_lane_fallback_features(
             if len(output) >= remaining_limit:
                 return output
     return output
+
+
+def _weggeg_stable_lane_row(row) -> bool:
+    raw = getattr(row, "raw", None)
+    transition = raw.get("lane_transition") if isinstance(raw, dict) else None
+    travel = transition.get("travel") if isinstance(transition, dict) else None
+    if (
+        isinstance(travel, list)
+        and len(travel) == 2
+    ):
+        return bool(
+            travel[0] == travel[1]
+            and transition.get("lane_presence") == "both"
+        )
+    # Backward compatibility for already ingested rows from before the parser
+    # persisted the normalized transition object. OMSCHR is still authoritative
+    # and carries the original N -> M declaration.
+    description = str(raw.get("OMSCHR") or "") if isinstance(raw, dict) else ""
+    match = re.search(r"(?<!\d)(\d+)\s*(?:-+\s*>|=>|→)\s*(\d+)(?!\d)", description)
+    return bool(match and int(match.group(1)) == int(match.group(2)))
 
 
 @router.get("/speed/map")

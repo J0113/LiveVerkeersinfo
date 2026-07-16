@@ -247,10 +247,13 @@ class _Db:
         return _Rows(self.rows)
 
 
-def speed_row(speed, measured_at, confidence=0.9, *, lane=1, site_lane_count=2):
+def speed_row(
+    speed, measured_at, confidence=0.9, *, lane=1, site_lane_count=2,
+    source_id="site-1",
+):
     return SimpleNamespace(
         internal_segment_id="s1",
-        source_id="site-1",
+        source_id=source_id,
         confidence=confidence,
         speed_kmh=speed,
         measured_at=measured_at,
@@ -339,3 +342,32 @@ def test_direct_lane_state_stays_empty_on_carriageway_count_mismatch():
     )
 
     assert states["s1"]["lane_states"] == []
+
+
+def test_lane_less_measurement_contributes_to_carriageway_but_not_lane_state():
+    now = datetime.now(timezone.utc)
+    states = load_direct_speed_states(
+        _Db([speed_row(72, now, lane=None, site_lane_count=None)]),
+        "graph-v1",
+        ["s1"],
+        lane_counts={"s1": 2},
+        lane_order_verified=True,
+    )
+    assert states["s1"]["speed_kmh"] == 72.0
+    assert states["s1"]["lane_states"] == []
+
+
+def test_carriageway_speed_weights_sites_not_their_lane_counts():
+    now = datetime.now(timezone.utc)
+    states = load_direct_speed_states(
+        _Db([
+            speed_row(10, now, lane=1, source_id="three-lane-site"),
+            speed_row(20, now, lane=2, source_id="three-lane-site"),
+            speed_row(30, now, lane=3, source_id="three-lane-site"),
+            speed_row(90, now, lane=None, source_id="aggregate-site"),
+        ]),
+        "graph-v1",
+        ["s1"],
+    )
+    assert states["s1"]["speed_kmh"] == 55.0
+    assert states["s1"]["speed_sample_count"] == 2

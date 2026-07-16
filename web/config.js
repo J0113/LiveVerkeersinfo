@@ -332,6 +332,9 @@ const osmRoadCache = new Map() // local viewport key → { expires, data }
 const OSM_ROAD_BROWSER_CACHE_TTL_MS = 60_000
 let publicConfig = { nwbDiagnosticMode: false }
 let laneSpeedMarkers = [] // upright numeric labels snapped to WEGGEG lanes
+const trafficSpeedMapCache = new Map() // request key → { expires, data }
+const trafficSpeedMapInflight = new Map() // request key → Promise
+const TRAFFIC_SPEED_MAP_CACHE_TTL_MS = 5_000
 
 const ROAD_SIGN_HUD_MAX_DISTANCE_M = 2000
 const ROAD_SIGN_HUD_REFETCH_DISTANCE_M = 100

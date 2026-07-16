@@ -132,6 +132,17 @@ test('newer accepted speed points refresh a stale cached OSM road state', () => 
   assert.equal((speedSource.match(/refreshLocalOsmRoadStateForMeasurements\(data\.points \|\| EMPTY_FC\)/g) || []).length, 2)
 })
 
+test('speed points and lanes share one superset request when both are visible', () => {
+  const source = require('node:fs').readFileSync(
+    require('node:path').resolve(__dirname, '../../web/speed.js'),
+    'utf8'
+  )
+  assert.match(source, /trafficSpeedMapInflight\.has\(fullKey\)/)
+  assert.match(source, /const sharesLaneResponse = enabled\.has\('speed'\)/)
+  assert.equal((source.match(/fetchTrafficSpeedMap\(bbox,/g) || []).length, 2)
+  assert.equal((source.match(/fetch\(`\/api\/traffic\/speed\/map/g) || []).length, 1)
+})
+
 test('WEGGEG lane colour is subordinate to accepted OSM authority', () => {
   const source = fs.readFileSync(path.join(root, 'web/speed.js'), 'utf8')
   const context = { console }

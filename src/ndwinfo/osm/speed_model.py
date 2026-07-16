@@ -11,6 +11,7 @@ route through a fork or merge.
 from __future__ import annotations
 
 import math
+import re
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ class SpeedSegment:
     travel_direction: str
     predecessor_ids: tuple[str, ...] = ()
     successor_ids: tuple[str, ...] = ()
+    road_class: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,18 +174,36 @@ def _validate_segments(segments: Iterable[SpeedSegment]) -> dict[str, SpeedSegme
 
 
 def _one_to_one_chains(segments: dict[str, SpeedSegment]) -> list[tuple[str, ...]]:
+    compatible_successors: dict[str, tuple[str, ...]] = {}
+    compatible_predecessors: dict[str, tuple[str, ...]] = {}
+    for segment_id, segment in segments.items():
+        # A clipped response cannot prove the identity of an omitted neighbour.
+        # Preserve the hard viewport boundary in that case.
+        compatible_successors[segment_id] = tuple(
+            next_id
+            for next_id in segment.successor_ids
+            if (next_segment := segments.get(next_id)) is not None
+            and segment_id in next_segment.predecessor_ids
+            and _compatible(segment, next_segment)
+        ) if all(next_id in segments for next_id in segment.successor_ids) else ()
+        compatible_predecessors[segment_id] = tuple(
+            previous_id
+            for previous_id in segment.predecessor_ids
+            if (previous_segment := segments.get(previous_id)) is not None
+            and segment_id in previous_segment.successor_ids
+            and _compatible(previous_segment, segment)
+        ) if all(previous_id in segments for previous_id in segment.predecessor_ids) else ()
+
     successor: dict[str, str] = {}
     predecessor: dict[str, str] = {}
     for segment_id, segment in segments.items():
-        if len(segment.successor_ids) != 1:
+        eligible = compatible_successors[segment_id]
+        if len(eligible) != 1:
             continue
-        next_id = segment.successor_ids[0]
-        next_segment = segments.get(next_id)
+        next_id = eligible[0]
         if (
-            next_segment is None
-            or len(next_segment.predecessor_ids) != 1
-            or next_segment.predecessor_ids[0] != segment_id
-            or not _compatible(segment, next_segment)
+            len(compatible_predecessors[next_id]) != 1
+            or compatible_predecessors[next_id][0] != segment_id
         ):
             continue
         successor[segment_id] = next_id
@@ -209,11 +229,14 @@ def _one_to_one_chains(segments: dict[str, SpeedSegment]) -> list[tuple[str, ...
 
 
 def _compatible(left: SpeedSegment, right: SpeedSegment) -> bool:
+    left_refs = _road_refs(left.road_ref)
+    right_refs = _road_refs(right.road_ref)
     return (
-        _identity(left.road_ref) is not None
-        and _identity(left.road_ref) == _identity(right.road_ref)
-        and _identity(left.carriageway_ref) == _identity(right.carriageway_ref)
+        bool(left_refs and right_refs and left_refs & right_refs)
+        and _carriageway(left.carriageway_ref) is not None
+        and _carriageway(left.carriageway_ref) == _carriageway(right.carriageway_ref)
         and left.travel_direction == right.travel_direction
+        and _is_link(left.road_class) == _is_link(right.road_class)
     )
 
 
@@ -390,6 +413,29 @@ def _combined_source(observations: list[SpeedObservation]) -> str:
 def _identity(value: str | None) -> str | None:
     normalized = str(value).strip().upper() if value is not None else ""
     return normalized or None
+
+
+def _road_refs(value: str | None) -> frozenset[str]:
+    raw = _identity(value)
+    if raw is None:
+        return frozenset()
+    return frozenset(
+        f"{prefix}{int(number)}"
+        for prefix, number in re.findall(r"\b([ANE])\s*0*(\d+)\b", raw)
+    )
+
+
+def _carriageway(value: str | None) -> str | None:
+    raw = re.sub(r"[^A-Z]", "", _identity(value) or "")
+    if raw in {"L", "LI", "LINKS", "LEFT"}:
+        return "L"
+    if raw in {"R", "RE", "RECHTS", "RIGHT"}:
+        return "R"
+    return raw or None
+
+
+def _is_link(value: str | None) -> bool:
+    return (_identity(value) or "").endswith("_LINK")
 
 
 def _finite(value: float) -> bool:

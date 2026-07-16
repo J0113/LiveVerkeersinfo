@@ -37,13 +37,13 @@ test('canonical speed takes precedence and is flattened consistently for MapLibr
   )
 })
 
-test('stale and low-confidence canonical speeds retain provenance but are not usable', () => {
+test('canonical derived confidence remains visible while stale state does not', () => {
   const low = state.speedState({ segment_state: { speed: {
     speed_kmh: 70, method: 'propagated', confidence: 0.59,
     observed_at: '2026-07-16T11:59:00Z', valid_until: '2026-07-16T12:04:00Z'
   } } }, NOW)
   assert.equal(low.value, 70)
-  assert.equal(low.usable, false)
+  assert.equal(low.usable, true)
 
   const stale = state.speedState({ segment_state: { speed: {
     speed_kmh: 70, method: 'measured', confidence: 0.9,
@@ -51,6 +51,36 @@ test('stale and low-confidence canonical speeds retain provenance but are not us
   } } }, NOW)
   assert.equal(stale.stale, true)
   assert.equal(stale.usable, false)
+})
+
+test('fresh canonical backend states are usable at accepted backend confidence', () => {
+  const now = Date.parse('2026-07-16T12:00:00Z')
+  const canonical = state.speedState({
+    segment_state: {
+      speed: {
+        speed_kmh: 84,
+        method: 'measured',
+        confidence: 0.5,
+        observed_at: '2026-07-16T11:59:00Z',
+        valid_until: '2026-07-16T12:09:00Z',
+        stale: false
+      }
+    }
+  }, now)
+  const propagated = state.speedState({
+    segment_state: {
+      speed: {
+        speed_kmh: 84,
+        method: 'propagated',
+        confidence: 0.35,
+        observed_at: '2026-07-16T11:59:00Z',
+        valid_until: '2026-07-16T12:09:00Z',
+        stale: false
+      }
+    }
+  }, now)
+  assert.equal(canonical.usable, true)
+  assert.equal(propagated.usable, true)
 })
 
 test('legacy flattened speed remains supported during migration', () => {

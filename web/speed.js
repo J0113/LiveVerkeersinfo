@@ -2,6 +2,45 @@
 
 // ─── Traffic speed HTML markers ───────────────────────────────────────────────
 
+function fetchTrafficSpeedMap (bbox, includeLanes, signal) {
+  const fullKey = `lanes:${bbox}`
+  const pointKey = `points:${bbox}`
+  // A lane response is a strict superset of the point response. Reuse it when
+  // Points and Lanes are enabled together instead of executing the same spatial
+  // measurement query twice.
+  const key = !includeLanes && (
+    trafficSpeedMapInflight.has(fullKey) ||
+    (trafficSpeedMapCache.get(fullKey)?.expires || 0) > Date.now()
+  ) ? fullKey : includeLanes ? fullKey : pointKey
+  const cached = trafficSpeedMapCache.get(key)
+  let request = cached?.expires > Date.now()
+    ? Promise.resolve(cached.data)
+    : trafficSpeedMapInflight.get(key)
+  if (!request) {
+    request = fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=${includeLanes}`)
+      .then(response => {
+        if (response.status === 400) return response.json().then(body => Promise.reject(Object.assign(new Error(body.detail || 'Bad Request'), { isBboxError: /bbox area/i.test(body.detail || '') })))
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return response.json()
+      })
+      .then(data => {
+        trafficSpeedMapCache.set(key, { expires: Date.now() + TRAFFIC_SPEED_MAP_CACHE_TTL_MS, data })
+        if (trafficSpeedMapCache.size > 8) trafficSpeedMapCache.delete(trafficSpeedMapCache.keys().next().value)
+        return data
+      })
+      .finally(() => trafficSpeedMapInflight.delete(key))
+    trafficSpeedMapInflight.set(key, request)
+  }
+  return request.then(data => {
+    if (signal?.aborted) {
+      const error = new Error('Aborted')
+      error.name = 'AbortError'
+      throw error
+    }
+    return data
+  })
+}
+
 // ── Traffic speed — lanes (zoom-gated line source + per-lane labels) ──────────
 function fetchSpeedLanes () {
   controllers['speed']?.abort()
@@ -18,12 +57,7 @@ function fetchSpeedLanes () {
   }
 
   const bbox = viewportBbox(false)
-  fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=true`, { signal: ctrl.signal })
-    .then(r => {
-      if (r.status === 400) return r.json().then(body => Promise.reject(Object.assign(new Error(body.detail || 'Bad Request'), { isBboxError: /bbox area/i.test(body.detail || '') })))
-      if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
-      return r.json()
-    })
+  fetchTrafficSpeedMap(bbox, true, ctrl.signal)
     .then(data => {
       setBboxTooLargeHint(false)
       refreshLocalOsmRoadStateForMeasurements(data.points || EMPTY_FC)
@@ -66,13 +100,9 @@ function fetchSpeedPoints () {
 
   // Pad the query only when zoomed in (small viewport) so edge markers show;
   // when zoomed out the raw viewport already covers a large area.
-  const bbox = viewportBbox(map.getZoom() >= 14)
-  fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=false`, { signal: ctrl.signal })
-    .then(r => {
-      if (r.status === 400) return r.json().then(body => Promise.reject(Object.assign(new Error(body.detail || 'Bad Request'), { isBboxError: /bbox area/i.test(body.detail || '') })))
-      if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
-      return r.json()
-    })
+  const sharesLaneResponse = enabled.has('speed') && map.getZoom() >= 14
+  const bbox = viewportBbox(sharesLaneResponse ? false : map.getZoom() >= 14)
+  fetchTrafficSpeedMap(bbox, sharesLaneResponse, ctrl.signal)
     .then(data => {
       setBboxTooLargeHint(false)
       refreshLocalOsmRoadStateForMeasurements(data.points || EMPTY_FC)
