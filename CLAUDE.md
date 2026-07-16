@@ -18,6 +18,16 @@ NDW files (national, gzip/xml/json/geojson)
   → Web UI (map; pick area; live layers)
 ```
 
+### Current road-matching direction (2026-07-15)
+
+The existing NWB/WEGGEG implementation remains operational, but new
+road-identification and live-speed association work follows the
+[OSM-first production backlog](docs/11-osm-production-backlog.md). OSM is the
+candidate canonical physical road graph; NDW remains the live source for speed,
+matrix signs, DRIPs, incidents and closures. Public Overpass is POC-only.
+NWB/WEGGEG runtime dependencies may be retired only after the backlog's shadow
+validation gates pass.
+
 ## Why this design
 
 NDW publishes only **flat files covering all of NL** — no per-area endpoint, no

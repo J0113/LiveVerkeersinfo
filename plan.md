@@ -1,5 +1,11 @@
 # Implementation Plan — LiveVerkeersinfo
 
+> **Status:** this is the historical plan used to build the current application.
+> For the next road-identification, map-matching and live-speed development
+> phases, use the [OSM-first production backlog](docs/11-osm-production-backlog.md).
+> Existing NDW ingest and non-driving feed work in this document remains useful
+> as implementation reference.
+
 Step-by-step build plan for an implementer (Claude Sonnet). Read
 [CLAUDE.md](CLAUDE.md) and [docs/](docs/README.md) first — they define every
 feed's format and the join keys. This plan is concrete: follow phases in order,

@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from ndwinfo.download import DownloadResult
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, json_safe, wkt_geom
 from ndwinfo.ingest.traveltime_geometry import rebuild_traveltime_geometry
+from ndwinfo.matching.live_object_job import rebuild_live_object_bindings
 from ndwinfo.models import (
     MeetlocatiePunt,
     MeetlocatieVak,
     MsiSign,
+    OsmImportRun,
     VildArea,
     VildLine,
     VildPoint,
@@ -99,6 +101,12 @@ class MsiShapefileIngester(Ingester):
             total += len(batch)
             session.flush()
 
+        graph_id = session.scalar(
+            select(OsmImportRun.id).where(OsmImportRun.is_active.is_(True)).limit(1)
+        )
+        if graph_id is not None:
+            rebuild_live_object_bindings(session, graph_id, kinds=("msi",))
+
         return total
 
 
@@ -139,6 +147,17 @@ class VildIngester(Ingester):
 
         # VILD just refreshed → rebuild road-following travel-time geometry.
         rebuild_traveltime_geometry(session)
+
+        # TMC/VILD topology is also the fail-closed direction fallback for
+        # measurement sites without OpenLR. Refresh bindings only as this
+        # infrequent static source changes; live speed updates stay cheap.
+        graph_id = session.scalar(
+            select(OsmImportRun.id).where(OsmImportRun.is_active.is_(True)).limit(1)
+        )
+        if graph_id is not None:
+            from ndwinfo.matching.source_binding import rebuild_measurement_bindings
+
+            rebuild_measurement_bindings(session, graph_id)
 
         return total
 

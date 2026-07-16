@@ -8,6 +8,8 @@ data/
 *.csv
 # but keep docs
 !docs/**
+# deterministic, synthetic test data is source code rather than a raw snapshot
+!tests/fixtures/**/*.geojson
 
 # Python
 *.pyc

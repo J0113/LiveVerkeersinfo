@@ -11,6 +11,93 @@ body {
   inset: 0;
 }
 
+/* ── OSM × live speed proof-of-concept inspector ───────────────────────── */
+
+.osm-poc-inspector {
+  position: fixed;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(10px, env(safe-area-inset-right));
+  z-index: 65;
+  width: min(350px, calc(100vw - 20px));
+  overflow: hidden;
+}
+
+.osm-poc-head {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  color: #effaff;
+  border-bottom: 1px solid rgba(141, 181, 214, 0.15);
+}
+
+.osm-poc-head > div { display: flex; align-items: center; gap: 8px; }
+.osm-poc-head button {
+  width: 28px;
+  height: 28px;
+  color: #a9bdce;
+  background: rgba(255,255,255,.06);
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.osm-poc-badge {
+  color: #031116;
+  background: #6ee7ff;
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .1em;
+}
+
+.osm-poc-content { max-height: min(66vh, 620px); overflow-y: auto; padding: 11px 12px 12px; }
+.osm-poc-status {
+  margin-bottom: 10px;
+  color: #9db0c0;
+  font-size: 11px;
+  font-weight: 650;
+}
+.osm-poc-status.loading { color: #6ee7ff; }
+.osm-poc-status.ready { color: #65d88d; }
+.osm-poc-status.warning { color: #ffbf3f; }
+.osm-poc-status.error { color: #ff718f; }
+
+.osm-poc-summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.osm-poc-summary-grid span {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 9px;
+  color: #8297aa;
+  background: rgba(255,255,255,.045);
+  border-radius: 9px;
+  font-size: 10px;
+}
+.osm-poc-summary-grid strong { color: #f2f8fc; font-size: 17px; }
+.osm-poc-help { margin: 10px 1px 2px; color: #8396a8; font-size: 11px; }
+.osm-poc-mode { color: #6ee7ff; font-size: 9px; font-weight: 850; letter-spacing: .11em; text-transform: uppercase; }
+.osm-poc-inspector h3 { margin: 3px 0 9px; color: #f7fbff; font-size: 18px; }
+.osm-poc-dl { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 4px 9px; margin: 0; }
+.osm-poc-dl dt { color: #7890a3; font-size: 10px; }
+.osm-poc-dl dd { margin: 0; overflow-wrap: anywhere; color: #dbe7ef; font-size: 11px; }
+.osm-poc-dl .osm-poc-live { color: #65d88d; font-size: 14px; font-weight: 850; }
+.osm-poc-inspector details { margin-top: 10px; color: #8ea4b5; font-size: 10px; }
+.osm-poc-inspector pre { max-height: 180px; overflow: auto; color: #bdcfdb; font: 10px/1.4 ui-monospace, monospace; white-space: pre-wrap; }
+.osm-poc-attribution { display: block; margin-top: 10px; color: #71889a; font-size: 9px; text-decoration: none; }
+
+@media (max-width: 680px) {
+  .osm-poc-inspector {
+    top: auto;
+    right: max(8px, env(safe-area-inset-right));
+    bottom: calc(108px + env(safe-area-inset-bottom));
+    width: min(330px, calc(100vw - 16px));
+  }
+  .osm-poc-content { max-height: 42vh; }
+}
+
 /* ── Panels ──────────────────────────────────────────────────────────────── */
 
 .panel {
@@ -294,6 +381,61 @@ input[type="radio"] {
   max-width: 100%;
 }
 
+/* Shared lane topology renderer. Keep this namespace independent from the
+   legacy .lane-road-svg so map and HUD adapters can adopt it incrementally. */
+.lane-topology {
+  display: block;
+  width: 100%;
+  min-width: 96px;
+  max-height: 112px;
+  overflow: visible;
+  color: #d9e4ed;
+}
+
+.lane-topology__path {
+  fill: none;
+  stroke: rgba(217, 228, 237, 0.74);
+  stroke-width: 4;
+  stroke-linecap: round;
+}
+
+.lane-topology__lane--unknown .lane-topology__path {
+  stroke: #8293a1;
+  stroke-dasharray: 4 5;
+}
+
+.lane-topology__lane--entry .lane-topology__path { stroke: #62d7a1; }
+.lane-topology__lane--exit .lane-topology__path { stroke: #ffbd5a; }
+.lane-topology__lane--weave .lane-topology__path { stroke: #72b9ff; }
+
+.lane-topology__lane--user .lane-topology__path {
+  stroke: #5ee7ff;
+  stroke-width: 7;
+  filter: drop-shadow(0 0 4px rgba(94, 231, 255, 0.7));
+}
+
+.lane-topology__lane--user .lane-topology__number {
+  fill: #5ee7ff;
+  font-size: 12px;
+  font-weight: 900;
+  filter: drop-shadow(0 0 3px rgba(94, 231, 255, 0.65));
+}
+
+.lane-topology__number,
+.lane-topology__state {
+  fill: currentColor;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 10px;
+  font-weight: 750;
+  pointer-events: none;
+}
+
+.lane-topology__state {
+  fill: #f5f9fc;
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── GPS speed dial (bottom-left) + current road label (bottom-centre) ────── */
 
 .gps-speed-badge {
@@ -350,6 +492,87 @@ input[type="radio"] {
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
+}
+
+/* ── Direction-aware MVP road match (current / under / ahead) ───────────── */
+
+.road-match-hud {
+  position: fixed;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  left: max(106px, calc(env(safe-area-inset-left) + 106px));
+  z-index: 61;
+  display: grid;
+  grid-template-columns: minmax(160px, .9fr) minmax(190px, 1.1fr) minmax(190px, .9fr);
+  gap: 14px;
+  max-width: 760px;
+  margin-left: auto;
+  padding: 10px 13px;
+  color: #eef7fb;
+  background: linear-gradient(135deg, rgba(11, 17, 25, .94), rgba(20, 28, 39, .91));
+  border: 1px solid rgba(130, 167, 194, .32);
+  border-top: 2px solid #ff66d8;
+  border-radius: 13px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .46);
+  backdrop-filter: blur(14px);
+  pointer-events: none;
+}
+
+.road-match-main,
+.road-match-values { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.road-match-lanes {
+  min-width: 0;
+  max-height: 86px;
+  align-self: center;
+  overflow: hidden;
+}
+.road-match-lanes::before {
+  display: block;
+  margin-bottom: -3px;
+  color: #8fa2b3;
+  content: attr(data-scope-label);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+.road-match-lanes .lane-topology { height: 72px; max-height: 72px; }
+.road-match-kicker {
+  color: #ff8cde;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.road-match-main strong {
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.road-match-state { color: #8fa2b3; font-size: 10px; }
+.road-match-values { justify-content: center; color: #b9c9d5; font-size: 11px; }
+.road-match-values span:first-child { color: #f4f8fb; font-size: 13px; font-weight: 800; }
+.road-match-hud[data-state="ready"] { border-top-color: #5ee7ff; }
+.road-match-hud[data-state="ready"] .road-match-state { color: #6ddc95; }
+.road-match-hud[data-state="uncertain"],
+.road-match-hud[data-state="error"] { border-top-color: #ffbf3f; }
+.road-match-hud[data-state="uncertain"] .road-match-state,
+.road-match-hud[data-state="error"] .road-match-state { color: #ffbf3f; }
+.road-match-active .current-road-label { display: none !important; }
+
+@media (max-width: 620px) {
+  .road-match-hud {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    left: max(100px, calc(env(safe-area-inset-left) + 100px));
+    padding: 8px 10px;
+  }
+  .road-match-lanes { grid-row: 2; max-height: 70px; }
+  .road-match-lanes .lane-topology { height: 58px; }
+  .road-match-values { display: grid; grid-template-columns: 1fr 1fr; }
+  .road-match-values #road-match-ahead { grid-column: 1 / -1; }
 }
 
 .road-sign-hud-header {
@@ -660,6 +883,17 @@ input[type="radio"] {
   transform-origin: center center;
 }
 .speed-site:hover { border-color: #aaa; }
+.speed-site-unbound {
+  border-color: #d8a843;
+  border-style: dashed;
+  opacity: 0.82;
+}
+.speed-site-stale {
+  border-color: #78838d;
+  filter: grayscale(1);
+  opacity: 0.64;
+}
+.speed-site-reliable { border-color: rgba(94, 231, 255, 0.72); }
 
 .speed-lane {
   width: 24px;
@@ -757,6 +991,31 @@ body.nwb-diagnostic #map::after {
 
 .control-btn:active {
   transform: scale(0.9);
+}
+
+#simulation-btn.simulation-active {
+  color: #67e8f9;
+  background: rgba(34, 211, 238, 0.14);
+  filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.55));
+}
+
+.simulation-status {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: 50%;
+  z-index: 85;
+  max-width: min(420px, calc(100vw - 140px));
+  padding: 7px 12px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(103, 232, 249, 0.35);
+  border-radius: 999px;
+  background: rgba(11, 14, 20, 0.88);
+  color: #cffafe;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+  font: 600 12px/1.3 system-ui, sans-serif;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* GPS Button States */

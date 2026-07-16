@@ -99,6 +99,42 @@ schema, geographic scope, and how the feeds relate to each other.
 Container dependency split, API compression/cache policy, spatial matching,
 browser scheduling, and operational resource tuning.
 
+### OSM × live speed proof of concept → [10-osm-speed-poc.md](10-osm-speed-poc.md)
+
+Bounded OSM road loading, directed edge identification, measurement-site
+association, confidence scoring and live-speed rendering.
+
+### OSM-first production backlog → [11-osm-production-backlog.md](11-osm-production-backlog.md)
+
+Phased path from the Overpass POC to a local canonical directed OSM graph,
+persistent live-source bindings, stateful GPS matching, corridor delivery,
+speed estimation and evidence-based retirement of redundant road sources.
+
+### Road-matching correctness benchmark → [12-road-matching-benchmark.md](12-road-matching-benchmark.md)
+
+Synthetic replay fixtures, hard direction/carriageway safety metrics and the
+external matcher observation contract used by the production browser core.
+
+### Validated driving core and A4 simulation → [13-validated-driving-core.md](13-validated-driving-core.md)
+
+Connected-path traversal, fail-closed branch handling, shadow graph import and
+the desk-test simulation that exercises the normal GPS and matching pipeline.
+
+### OSM lane topology in map and HUD → [14-osm-lane-topology.md](14-osm-lane-topology.md)
+
+Conservative directional lane metadata, schematic lane rendering, the
+lane-level live-state safety gate and the remaining production evidence gaps.
+
+### Canonical segment state → [15-canonical-segment-state.md](15-canonical-segment-state.md)
+
+Direction-safe speed estimation plus MSI/DRIP bindings on the confirmed OSM
+segment/path, including provenance, confidence and stale-data gates.
+
+### Driver validation and control audit → [16-driver-validation-audit.md](16-driver-validation-audit.md)
+
+Reliability-versus-usability policy, mobile scenario checks, performance
+measurements and release gates that must precede the next live-data iteration.
+
 > Sizes are compressed download sizes from the portal listing on 2026-05-29.
 > Decompressed sizes are much larger — e.g. `traveltime.xml.gz` 2.5M → ~73M XML,
 > `trafficspeed.xml.gz` 1.1M → ~52M XML.

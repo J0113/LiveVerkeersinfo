@@ -7,6 +7,52 @@
 // minZoom            → only fetch + render when map zoom >= this value
 
 const LAYERS = [
+  // ── Local OSM road graph ─────────────────────────────────────────────────
+  // Normal runtime path: geometry and accepted speed bindings are read from
+  // the local PostGIS graph. This never contacts Overpass.
+  {
+    key: 'osm_roads', label: 'OSM-wegen + gekoppelde snelheid', group: 'traffic',
+    endpoint: '/roads', geomType: 'local-osm-roads', minZoom: 12,
+    legendColor: '#5ba4d6', promoteId: 'internal_segment_id', arrows: true,
+    arrowOffset: [0, 3],
+    casing: {
+      'line-color': 'rgba(8, 20, 31, 0.86)',
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 3, 15, 6, 18, 12],
+      'line-opacity': 0.88,
+      'line-offset': ['match', ['get', 'travel_direction'], 'reverse', -1.3, 1.3]
+    },
+    paint: {
+      'line-color': ['case',
+        ['all',
+          ['==', ['get', 'speed_usable'], true],
+          ['!=', ['get', 'speed_kmh'], null],
+          ['!=', ['get', 'speed_stale'], true]
+        ],
+        ['interpolate', ['linear'], ['to-number', ['get', 'speed_kmh']],
+          0, '#c8324a', 25, '#e34b3f', 45, '#ef8b36',
+          65, '#f2d14a', 85, '#62c86b', 110, '#23a96a'
+        ],
+        '#73869b'
+      ],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 12, 1.6, 15, 3.6, 18, 8],
+      'line-opacity': ['case',
+        ['!=', ['get', 'speed_usable'], true], 0.52,
+        ['==', ['get', 'speed_method'], 'measured'], 0.98,
+        ['==', ['get', 'speed_method'], 'interpolated'], 0.76,
+        0.58
+      ],
+      'line-offset': ['match', ['get', 'travel_direction'], 'reverse', -1.3, 1.3]
+    }
+  },
+
+  // ── Legacy external Overpass proof of concept ───────────────────────────
+  // Explicit diagnostics only. The normal road layer above is local and fast.
+  {
+    key: 'osm_poc', label: 'Legacy Overpass-diagnose (traag)', group: 'poc',
+    endpoint: '/poc/osm/roads', geomType: 'osm-poc', minZoom: 13,
+    legendColor: '#6ee7ff'
+  },
+
   // ── Road network foundation ───────────────────────────────────────────────
   // Added first so all existing traffic layers and interactive markers remain
   // above the reference geometry.
@@ -209,6 +255,7 @@ const LAYERS = [
 
 // UI grouping order + labels
 const GROUPS = [
+  { key: 'poc',          label: 'Diagnostiek (handmatig)' },
   { key: 'traffic',      label: 'Traffic' },
   { key: 'situations',   label: 'Situations' },
   { key: 'signs',        label: 'Signs & VMS' },
@@ -221,10 +268,11 @@ const GROUPS = [
 // The detailed map overlays remain available in the layer panel, but the clean
 // driving view now starts with them off. Their data is fetched separately for
 // the HUD, so this is a reversible presentation default rather than a removal.
-const DEFAULT_ENABLED = new Set(['matrix', 'drips'])
+const DEFAULT_ENABLED = new Set(['osm_roads'])
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
 let nwbTruncated = false
+let osmRoadsTruncated = false
 
 // GPS-relative top HUD tiles. Toggled independently of the map layers via the
 // "HUD" section at the top of the layer panel. Only shown while GPS tracks.
@@ -259,6 +307,17 @@ function persistHud () {
 // ─── Runtime state ────────────────────────────────────────────────────────────
 
 const enabled = loadSavedSet('layers', new Set(LAYERS.map(l => l.key)), DEFAULT_ENABLED)
+// One-time runtime migration: remove the old automatically enabled external
+// Overpass POC and introduce the local graph. After this migration both toggles
+// remain fully user-controlled; Overpass can only be re-enabled explicitly.
+try {
+  if (!localStorage.getItem('osmLocalRuntimeV1')) {
+    enabled.delete('osm_poc')
+    enabled.add('osm_roads')
+    localStorage.setItem('osmLocalRuntimeV1', '1')
+    persistLayers()
+  }
+} catch {}
 const hudEnabled = loadSavedSet('hudLayers', new Set(HUD_ITEMS.map(i => i.key)), DEFAULT_HUD_ENABLED)
 const controllers = {}  // key → AbortController
 let debounceTimer = null
@@ -269,6 +328,8 @@ let msiMarkers = []    // { marker, el, bearing } for MSI gantries (map render)
 const MATRIX_MIN_ZOOM = 11
 const nwbCache = new Map() // viewport/profile key → { expires, data }
 const NWB_BROWSER_CACHE_TTL_MS = 5 * 60_000
+const osmRoadCache = new Map() // local viewport key → { expires, data }
+const OSM_ROAD_BROWSER_CACHE_TTL_MS = 60_000
 let publicConfig = { nwbDiagnosticMode: false }
 let laneSpeedMarkers = [] // upright numeric labels snapped to WEGGEG lanes
 
@@ -363,4 +424,3 @@ const BEARING_DEADBAND_DEG = 1.5
 // Exponential moving average factor for the travel heading (0..1): applied per
 // GPS fix. Lower = smoother heading, less corner jitter, slightly more lag.
 const HEADING_EMA_ALPHA = 0.4
-

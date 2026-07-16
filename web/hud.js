@@ -109,12 +109,21 @@ function fetchRoadSignHud (force = false) {
     side: 400
   })
   const requests = []
-  if (userHeading !== null && hudEnabled.has('hud_matrix')) requests.push(fetchRoadSignHudSource('matrix', bbox, ctrl.signal))
+  const canonicalSigns = typeof roadMatchCanonicalRoadSigns === 'function'
+    ? roadMatchCanonicalRoadSigns()
+    : null
+  if (!canonicalSigns && userHeading !== null && hudEnabled.has('hud_matrix')) requests.push(fetchRoadSignHudSource('matrix', bbox, ctrl.signal))
   else roadSignHudCache.matrix = EMPTY_FC
-  if (userHeading !== null && hudEnabled.has('hud_drips')) requests.push(fetchRoadSignHudSource('drips', bbox, ctrl.signal))
+  if (!canonicalSigns && userHeading !== null && hudEnabled.has('hud_drips')) requests.push(fetchRoadSignHudSource('drips', bbox, ctrl.signal))
   else roadSignHudCache.drips = EMPTY_FC
-  if (hudEnabled.has('hud_speed')) requests.push(fetchRoadSignHudSpeedSource(speedBbox, ctrl.signal))
-  else roadSignHudCache.speedPoints = EMPTY_FC
+  // The production driving matcher supplies fail-closed segment/lane state.
+  // Do not run the legacy nearest-point lane picker alongside it: that fallback
+  // cannot distinguish every opposite carriageway when source bearing is absent.
+  if (!canonicalLanePipelineAvailable() && hudEnabled.has('hud_speed')) {
+    requests.push(fetchRoadSignHudSpeedSource(speedBbox, ctrl.signal))
+  } else {
+    roadSignHudCache.speedPoints = EMPTY_FC
+  }
 
   Promise.allSettled(requests).then(results => {
     for (const result of results) {
@@ -152,24 +161,37 @@ function renderRoadSignHud () {
     return
   }
 
-  const selected = userHeading === null
+  const canonical = typeof roadMatchCanonicalRoadSigns === 'function'
+    ? roadMatchCanonicalRoadSigns()
+    : null
+  const selected = canonical || (userHeading === null
     ? { matrix: null, drip: null }
     : selectUpcomingRoadSigns(
         hudEnabled.has('hud_matrix') ? roadSignHudCache.matrix : EMPTY_FC,
         hudEnabled.has('hud_drips') ? roadSignHudCache.drips : EMPTY_FC,
         { coords: userCoords, heading: userHeading },
         ROAD_SIGN_HUD_MAX_DISTANCE_M
-      )
+      ))
 
   selected.gpsKmh = Number.isFinite(userSpeedMps) ? userSpeedMps * 3.6 : null
-  selected.upcoming = (userHeading === null || !hudEnabled.has('hud_speed'))
+  selected.upcoming = (canonicalLanePipelineAvailable() || userHeading === null ||
+    !hudEnabled.has('hud_speed'))
     ? null
     : selectUpcomingLaneSpeeds(roadSignHudCache.speedPoints, { coords: userCoords, heading: userHeading }, 2500)
 
   // Keep a just-passed selection on screen briefly instead of flickering off in
   // the gap before the next one. Disabled channels hold null (cleared instantly).
-  selected.matrix = holdSelection('matrix', hudEnabled.has('hud_matrix') ? selected.matrix : null)
-  selected.drip = holdSelection('drip', hudEnabled.has('hud_drips') ? selected.drip : null)
+  // Canonical state is authoritative and already validity-filtered. Do not
+  // linger a legacy nearest-point sign after the path says no fact applies.
+  if (canonical) {
+    roadSignHudHold.matrix = null
+    roadSignHudHold.drip = null
+    selected.matrix = hudEnabled.has('hud_matrix') ? selected.matrix : null
+    selected.drip = hudEnabled.has('hud_drips') ? selected.drip : null
+  } else {
+    selected.matrix = holdSelection('matrix', hudEnabled.has('hud_matrix') ? selected.matrix : null)
+    selected.drip = holdSelection('drip', hudEnabled.has('hud_drips') ? selected.drip : null)
+  }
   selected.upcoming = holdSelection('speed', hudEnabled.has('hud_speed') ? selected.upcoming : null)
   scheduleHudHoldClear()
   startHudTimeTicker()
@@ -188,7 +210,8 @@ function renderRoadSignHudSelection (selected) {
   renderMatrixHudTile(selected.matrix)
   renderDripHudTile(selected.drip)
   updateGpsSpeedBadge(selected.gpsKmh, selected.upcoming)
-  const speedVisible = gpsState !== GPS_STATES.OFF && hudEnabled.has('hud_speed')
+  const speedVisible = gpsState !== GPS_STATES.OFF && hudEnabled.has('hud_speed') &&
+    !canonicalLanePipelineAvailable()
   const visibleCount = [speedVisible, selected.matrix, selected.drip].filter(Boolean).length
   const visible = visibleCount > 0
   speedTile.classList.toggle('hidden', !speedVisible)
@@ -201,6 +224,10 @@ function renderRoadSignHudSelection (selected) {
   // First matrix build measures 0 width while the tile is hidden; refit once the
   // HUD is shown and laid out.
   if (visible && selected.matrix) requestAnimationFrame(fitMatrixLanes)
+}
+
+function canonicalLanePipelineAvailable () {
+  return typeof LaneTopology !== 'undefined' && typeof roadMatchAccepted !== 'undefined'
 }
 
 function renderSpeedHudTile (upcoming) {
@@ -374,4 +401,3 @@ function clearRoadSignHud () {
   roadSignHudLastFetchHeading = null
   renderRoadSignHud()
 }
-

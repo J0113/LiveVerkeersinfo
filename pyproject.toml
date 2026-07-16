@@ -21,7 +21,12 @@ dependencies = [
     "ijson",
     "pyogrio",
     "geopandas",
+    "osmium>=4.0",
 ]
+
+[project.scripts]
+ndwinfo-osm-import = "ndwinfo.ingest.osm:main"
+ndwinfo-osm-bootstrap = "ndwinfo.osm.bootstrap:main"
 
 [project.optional-dependencies]
 dev = [

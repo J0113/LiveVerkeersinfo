@@ -9,6 +9,10 @@ function initGPS() {
 
   // Click handler to toggle GPS state machine
   gpsBtn.addEventListener('click', () => {
+    if (typeof simulationActive !== 'undefined' && simulationActive) {
+      stopSimulationDrive()
+      return
+    }
     let nextState
     if (gpsState === GPS_STATES.OFF) {
       nextState = GPS_STATES.FOLLOW
@@ -76,6 +80,7 @@ function initGPS() {
   // The map is now a driving HUD by default. Start in follow mode immediately;
   // the GPS control still cycles follow → navigation → off when desired.
   setGPSState(GPS_STATES.FOLLOW)
+  if (typeof initSimulationDrive === 'function') initSimulationDrive()
 }
 
 function setGPSState(state) {
@@ -108,6 +113,7 @@ function setGPSState(state) {
     map.easeTo({ bearing: 0, pitch: 0, duration: 500 })
     stopGPSWatcher()
     clearRoadSignHud()
+    resetRoadMatching()
   } else if (state === GPS_STATES.FOLLOW) {
     gpsBtn.classList.add('state-follow')
     if (isTrackingSuspended) recenterBtn.classList.remove('hidden')
@@ -119,6 +125,7 @@ function setGPSState(state) {
     startGPSWatcher()
     startFollowLoop()
     renderRoadSignHud()
+    renderRoadMatchHud('waiting')
   } else if (state === GPS_STATES.NAVIGATION) {
     gpsBtn.classList.add('state-navigation')
     if (isTrackingSuspended) recenterBtn.classList.remove('hidden')
@@ -129,6 +136,7 @@ function setGPSState(state) {
     startGPSWatcher()
     startFollowLoop()
     renderRoadSignHud()
+    renderRoadMatchHud('waiting')
   }
 }
 
@@ -281,6 +289,7 @@ function onDeviceOrientation (e) {
 }
 
 function startGPSWatcher() {
+  if (typeof simulationActive !== 'undefined' && simulationActive) return
   if (geolocationWatchId !== null || document.visibilityState !== 'visible') return
 
   if (!navigator.geolocation) {
@@ -355,6 +364,14 @@ function onGeolocationUpdate(position) {
 
   updateUserMarker()
   updateAccuracyCircle()
+  updateRoadMatching({
+    coords: userCoords,
+    heading: movementHeading ?? currentHeading(),
+    accuracy: userAccuracy,
+    speedMps: userSpeedMps,
+    timestamp: now
+  })
+  updateOsmPocUserMatch(userCoords, movementHeading, userAccuracy)
   startFollowLoop()   // camera + marker are driven by the rAF follow loop
   renderRoadSignHud()
   fetchRoadSignHud()

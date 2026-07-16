@@ -86,7 +86,7 @@ map.on('load', () => {
 
   for (const layer of LAYERS) {
     // MSI gantries and speed points are HTML markers, not MapLibre layers.
-    if (layer.geomType === 'msi' || layer.geomType === 'speed-points') continue
+    if (layer.geomType === 'msi' || layer.geomType === 'speed-points' || layer.geomType === 'osm-poc') continue
 
     const srcOpts = { type: 'geojson', data: EMPTY_FC }
     if (layer.promoteId) srcOpts.promoteId = layer.promoteId
@@ -171,6 +171,53 @@ map.on('load', () => {
       }
       setupClickPopup(layer.key)
       if (layer.promoteId) setupLineSelection(layer.key)
+    } else if (layer.geomType === 'local-osm-roads') {
+      map.addLayer({
+        id: `${layer.key}-casing`, type: 'line', source: layer.key,
+        paint: layer.casing,
+        layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' },
+        minzoom: layer.minZoom
+      })
+      map.addLayer({
+        id: layer.key, type: 'line', source: layer.key,
+        paint: layer.paint,
+        layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' },
+        minzoom: layer.minZoom
+      })
+      map.addLayer({
+        id: `${layer.key}-propagated`, type: 'line', source: layer.key,
+        filter: ['all', ['==', ['get', 'speed_usable'], true], ['==', ['get', 'speed_method'], 'propagated']],
+        paint: {
+          'line-color': ['interpolate', ['linear'], ['to-number', ['get', 'speed_kmh']],
+            0, '#c8324a', 25, '#e34b3f', 45, '#ef8b36',
+            65, '#f2d14a', 85, '#62c86b', 110, '#23a96a'
+          ],
+          'line-width': layer.paint['line-width'],
+          'line-opacity': 0.82,
+          'line-dasharray': [1.2, 1.8],
+          'line-offset': layer.paint['line-offset']
+        },
+        layout: { visibility: vis, 'line-cap': 'butt', 'line-join': 'round' },
+        minzoom: layer.minZoom
+      })
+      map.addLayer({
+        id: `${layer.key}-arrows`, type: 'symbol', source: layer.key,
+        minzoom: Math.max(layer.minZoom, 14),
+        layout: {
+          'symbol-placement': 'line',
+          'symbol-spacing': 110,
+          'icon-image': 'tt-arrow',
+          'icon-size': 0.6,
+          'icon-rotation-alignment': 'map',
+          'icon-offset': layer.arrowOffset || [0, 0],
+          'icon-allow-overlap': false,
+          'icon-ignore-placement': true,
+          visibility: vis
+        },
+        paint: { 'icon-opacity': 0.68 }
+      })
+      setupClickPopup(layer.key)
+      if (layer.promoteId) setupLineSelection(layer.key)
     } else {
       map.addLayer({ id: layer.key, type: 'circle', source: layer.key, paint: layer.paint, layout: { visibility: vis } })
       setupClickPopup(layer.key)
@@ -180,6 +227,12 @@ map.on('load', () => {
   // Traffic is the primary visualization; keep it above optional references.
   if (map.getLayer('speed-lanes-casing')) map.moveLayer('speed-lanes-casing')
   if (map.getLayer('speed-lanes')) map.moveLayer('speed-lanes')
+
+  // Diagnostic Overpass and the GPS corridor have dedicated sources. Add the
+  // corridor last so its current/ahead highlights remain visible above the
+  // lightweight local viewport context without duplicating viewport requests.
+  initOsmPoc()
+  initRoadMatching()
 
   buildLayerPanel()
   setupPanelToggles()
@@ -234,7 +287,7 @@ map.on('moveend', (e) => {
 
 // Slide lane-speed labels along their line during pan/zoom/rotate so they
 // stay on screen between refetches, instead of waiting on the debounced fetch.
-map.on('move', updateLaneSpeedLayout)
+map.on('move', () => updateLaneSpeedLayout())
 
 // Re-evaluate verkeersborden hint + re-fetch on zoom change
 map.on('zoom', () => {
@@ -252,4 +305,3 @@ map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout(); updateLaneSp
 
 // Refit the HUD matrix lanes when the viewport width changes (rotate phone, resize).
 window.addEventListener('resize', () => fitMatrixLanes())
-

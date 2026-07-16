@@ -55,6 +55,12 @@ function renderMatrixMarkers (fc) {
   for (const [, gantry] of gantries) {
     gantry.lanes.sort((a, b) => (a.lane ?? 0) - (b.lane ?? 0))
 
+    // The national feed also contains fully blank/off gantries. Rendering
+    // those produces large black rectangles without actionable information,
+    // especially in the navigation view. Keep blank lanes only when another
+    // lane on the same physical gantry carries an active signal.
+    if (!gantry.lanes.some(matrixLaneHasValue)) continue
+
     // Outer wrapper: maplibre owns its transform for positioning.
     // Inner gantry: we apply scale + bearing rotation (won't be clobbered).
     const wrapper = document.createElement('div')
@@ -116,4 +122,3 @@ function updateMatrixLayout () {
     m.marker.setOffset([dx, dy])
   }
 }
-

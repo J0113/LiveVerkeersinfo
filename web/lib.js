@@ -189,8 +189,10 @@ function classifyFeature (device, featCoords, featBearing, opts) {
   if (Math.abs(rp.cross) > crossLimit) return null
   if (rp.along > o.maxAhead || rp.along < -o.maxBehind) return null
 
-  if (o.directed && featBearing !== null && featBearing !== undefined) {
-    if (Math.abs(angleDiff(featBearing, device.heading)) > o.headingTol) return null
+  if (o.directed) {
+    if (featBearing === null || featBearing === undefined || featBearing === '' ||
+        !Number.isFinite(Number(featBearing))) return null
+    if (Math.abs(angleDiff(Number(featBearing), device.heading)) > o.headingTol) return null
   }
 
   return {

@@ -14,10 +14,12 @@ function fetchAll () {
 }
 
 function fetchLayer (layer) {
+  if (layer.geomType === 'osm-poc') { fetchOsmPoc(layer); return }
   if (layer.geomType === 'msi') { fetchMatrixSigns(); return }
   if (layer.geomType === 'speed') { fetchSpeedLanes(); return }
   if (layer.geomType === 'speed-points') { fetchSpeedPoints(); return }
   if (layer.geomType === 'road-network') { fetchNwbRoads(layer); return }
+  if (layer.geomType === 'local-osm-roads') { fetchLocalOsmRoads(layer); return }
 
   if (layer.minZoom && map.getZoom() < layer.minZoom) {
     map.getSource(layer.key)?.setData(EMPTY_FC)
@@ -50,6 +52,74 @@ function fetchLayer (layer) {
       if (e.isBboxError) { setBboxTooLargeHint(true); return }
       console.warn(`[${layer.key}]`, e.message)
     })
+}
+
+// Local OSM viewport rendering is independent from GPS map matching. It only
+// runs through fetchAll (initial load, user moveend, 60 s refresh), never for an
+// individual GPS fix; driving fixes use /roads/corridor in road-match.js.
+function fetchLocalOsmRoads (layer) {
+  if (map.getZoom() < layer.minZoom) {
+    controllers[layer.key]?.abort()
+    map.getSource(layer.key)?.setData(EMPTY_FC)
+    osmRoadsTruncated = false
+    updateZoomHint()
+    return
+  }
+
+  controllers[layer.key]?.abort()
+  const ctrl = new AbortController()
+  controllers[layer.key] = ctrl
+  const bbox = viewportBbox()
+  const cached = osmRoadCache.get(bbox)
+  if (cached && cached.expires > Date.now()) {
+    renderLocalOsmRoads(layer, cached.data)
+    return
+  }
+
+  fetch(`/api${layer.endpoint}?bbox=${bbox}`, { signal: ctrl.signal })
+    .then(async response => {
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(body.detail || `HTTP ${response.status}`)
+      }
+      return response.json()
+    })
+    .then(data => {
+      osmRoadCache.set(bbox, { expires: Date.now() + OSM_ROAD_BROWSER_CACHE_TTL_MS, data })
+      if (osmRoadCache.size > 30) osmRoadCache.delete(osmRoadCache.keys().next().value)
+      renderLocalOsmRoads(layer, data)
+    })
+    .catch(error => {
+      if (error.name === 'AbortError') return
+      console.warn('[osm_roads]', error.message)
+    })
+}
+
+function renderLocalOsmRoads (layer, data) {
+  if (!enabled.has(layer.key)) return
+  const rendered = typeof CanonicalSegmentState === 'undefined'
+    ? data
+    : CanonicalSegmentState.enrichFeatureCollection(data)
+  map.getSource(layer.key)?.setData(rendered)
+  if (layer.promoteId) reapplySelection(layer.key)
+  osmRoadsTruncated = Boolean(data?.metadata?.truncated)
+  updateZoomHint()
+}
+
+function refreshLocalOsmRoadStateForMeasurements (points) {
+  const layer = LAYERS.find(item => item.key === 'osm_roads')
+  if (!layer || !enabled.has(layer.key) || typeof CanonicalSegmentState === 'undefined') return
+  const bbox = viewportBbox()
+  const cached = osmRoadCache.get(bbox)
+  if (!cached) return
+  const newerSegments = CanonicalSegmentState.newerPointSegments(points, cached.data)
+  if (!newerSegments.length) return
+
+  // Geometry and live state currently share one lightweight viewport response.
+  // Invalidate only the current viewport when its accepted source observations
+  // are newer; unrelated cached viewports remain reusable.
+  osmRoadCache.delete(bbox)
+  fetchLocalOsmRoads(layer)
 }
 
 function fetchNwbRoads (layer) {
@@ -148,4 +218,3 @@ function viewportBbox (includeNearbyPoints = false) {
   }
   return [west, south, east, north].map(v => v.toFixed(6)).join(',')
 }
-

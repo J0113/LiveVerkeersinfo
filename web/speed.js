@@ -26,9 +26,10 @@ function fetchSpeedLanes () {
     })
     .then(data => {
       setBboxTooLargeHint(false)
+      refreshLocalOsmRoadStateForMeasurements(data.points || EMPTY_FC)
       // Colour the section as a gradient between the sensors covering it; the raw
       // lanes (one feature per section, with a `sensors` list) drive the labels.
-      const laneFc = data.lanes || EMPTY_FC
+      const laneFc = materializeSpeedLaneGeometry(data.lanes || EMPTY_FC)
       map.getSource('speed')?.setData(buildGradientLanes(laneFc))
       for (const m of laneSpeedMarkers) m.marker.remove()
       laneSpeedMarkers = []
@@ -39,6 +40,22 @@ function fetchSpeedLanes () {
       if (e.isBboxError) { setBboxTooLargeHint(true); return }
       console.warn('[speed]', e.message)
     })
+}
+
+// WEGGEG features already contain surveyed lane lines. When WEGGEG has no
+// safely validated match, an accepted OSM segment may provide a schematic
+// per-lane fallback. Its display-only offset never participates in matching.
+function materializeSpeedLaneGeometry (laneFc) {
+  if (typeof LaneTopology === 'undefined') return laneFc
+  return {
+    type: 'FeatureCollection',
+    features: (laneFc.features || []).map(feature => {
+      const p = feature.properties || {}
+      if (p.geometry_source !== 'osm_schematic') return feature
+      const geometry = LaneTopology.offsetGeometry(feature.geometry, Number(p.lane_offset_m) || 0)
+      return geometry ? { ...feature, geometry } : feature
+    })
+  }
 }
 
 // ── Traffic speed — points (roadside markers, shown at any zoom) ──────────────
@@ -58,6 +75,7 @@ function fetchSpeedPoints () {
     })
     .then(data => {
       setBboxTooLargeHint(false)
+      refreshLocalOsmRoadStateForMeasurements(data.points || EMPTY_FC)
       renderSpeedPoints(data.points || EMPTY_FC)
     })
     .catch(e => {
@@ -78,21 +96,28 @@ function renderSpeedPoints (fc) {
     const p = f.properties
     const lanes = p.lanes || []
     if (!lanes.length) continue
+    const pointState = typeof CanonicalSegmentState === 'undefined'
+      ? { reliable: false, fresh: false, status: 'unbound', label: 'status onbekend' }
+      : CanonicalSegmentState.pointStatus(p)
 
     // Outer wrapper for maplibre positioning; inner row gets our rotate+scale.
     const wrapper = document.createElement('div')
     const el = document.createElement('div')
-    el.className = 'speed-site'
+    el.className = `speed-site speed-site-${pointState.reliable ? 'reliable' : pointState.fresh ? 'unbound' : 'stale'}`
+    el.dataset.bindingStatus = pointState.status
+    el.title = `Traffic Speed Point · ${pointState.label}`
     wrapper.appendChild(el)
 
     for (const lane of lanes) {
       const box = document.createElement('div')
       const kmh = lane.speed_kmh
       box.className = 'speed-lane'
-      box.style.background = speedColor(kmh)
-      box.style.color = speedTextColor(kmh)
+      // Always show the measured number, but reserve traffic colours for a
+      // fresh point that is accepted onto one direction-specific OSM segment.
+      box.style.background = pointState.reliable ? speedColor(kmh) : '#59636d'
+      box.style.color = pointState.reliable ? speedTextColor(kmh) : '#f4f7fa'
       box.textContent = kmh !== null ? Math.round(kmh) : '?'
-      box.title = `Lane ${lane.lane} · ${kmh !== null ? Math.round(kmh) + ' km/h' : 'no data'}${lane.flow_veh_h !== null ? ' · ' + Math.round(lane.flow_veh_h) + ' veh/h' : ''}`
+      box.title = `Lane ${lane.lane} · ${kmh !== null ? Math.round(kmh) + ' km/h' : 'no data'}${lane.flow_veh_h !== null ? ' · ' + Math.round(lane.flow_veh_h) + ' veh/h' : ''} · ${pointState.label}`
       el.appendChild(box)
     }
 
@@ -108,6 +133,8 @@ function renderSpeedPoints (fc) {
         ...(p.measured_at ? { measured: p.measured_at } : {}),
         ...(p.bearing != null ? { bearing: p.bearing + '°' } : {}),
         ...(p.side ? { side: p.side } : {}),
+        binding: pointState.label,
+        ...(p.binding_reason ? { binding_reason: p.binding_reason } : {}),
       })
       const lanesHtml = lanes.map(l =>
         `<b style="color:#6688aa;font-size:11px">Lane ${l.lane ?? '?'}</b>` +
@@ -145,6 +172,10 @@ function renderLaneSpeedLabels (laneFc) {
 
   for (const feature of laneFc.features || []) {
     const p = feature.properties || {}
+    // OSM decides whether a speed may activate line geometry. WEGGEG only
+    // supplies the optional physical lane line beneath that accepted binding.
+    if (p.binding_status !== 'accepted' || p.measurement_stale === true ||
+        !p.internal_segment_id || p.road_authority !== 'osm') continue
     if (!feature.geometry) continue
 
     // One label per sensor covering this section, so both readings show; fall
@@ -308,6 +339,8 @@ function buildGradientLanes (laneFc) {
   const out = []
   for (const f of laneFc.features || []) {
     const p = f.properties || {}
+    if (p.binding_status !== 'accepted' || p.measurement_stale === true ||
+        !p.internal_segment_id || p.road_authority !== 'osm') continue
     const geom = f.geometry
     const sensors = (Array.isArray(p.sensors) ? p.sensors : []).filter(
       s => s && s.speed_kmh !== null && s.speed_kmh !== undefined && Array.isArray(s.measurement_coords)
@@ -415,4 +448,3 @@ function setBboxTooLargeHint (show) {
   bboxTooLarge = show
   updateZoomHint()
 }
-

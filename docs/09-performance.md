@@ -58,3 +58,26 @@ docker images 'liveverkeersinfo-*'
 Cold calls include PDOK reference retrieval when its cache is empty. Warm calls
 should report `X-Lane-Response-Cache: HIT`. Optimize using these measurements,
 not nationwide unbounded requests or synthetic frontend-only timings.
+
+## Local control baseline — 2026-07-16
+
+Measured on the local regional stack; these are not production SLOs:
+
+| Request/work | Result |
+|---|---|
+| road corridor, 26 segments | about 57-59 ms median; 8.6 KB gzip |
+| connected path, 8 segments | about 48 ms median; 1.8 KB gzip |
+| road viewport, 214 segments | about 80-90 ms; 33.5 KB gzip |
+| capped road viewport, 2,000 segments | about 390 ms; 293 KB gzip / 2.57 MB JSON |
+| national speed-map request, 500 output points | 3.27 s; 438 KB JSON; 35,951 grouped rows materialized |
+| full regional source binding | 14.6 s for 16,187 locations |
+
+The corridor geography query itself used the PostGIS index and took about
+11.9 ms in the captured plan. The immediate P0 is the speed-map endpoint: its
+response cap is applied after the large query result and Python merge. See
+[the driver validation audit](16-driver-validation-audit.md) and OSM-V08 in
+[the production backlog](11-osm-production-backlog.md).
+
+Browser main-thread duration, heap and battery use were not instrumented in
+this run. Do not infer those improvements from API timing; OSM-V11 requires
+real mobile traces and explicit budgets.

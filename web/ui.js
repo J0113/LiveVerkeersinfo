@@ -244,6 +244,18 @@ function syncGroupCb (cb, groupLayers) {
 }
 
 function setLayerVisibility (layer, visible) {
+  if (layer.geomType === 'osm-poc') {
+    const vis = visible ? 'visible' : 'none'
+    for (const id of ['osm-poc-casing', 'osm-poc-roads', 'osm-poc-direction', 'osm-poc-hit', 'osm-poc-measurements']) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', vis)
+    }
+    document.getElementById('osm-poc-inspector')?.classList.toggle('hidden', !visible)
+    if (!visible) {
+      map.getSource(OSM_POC_SOURCE)?.setData(EMPTY_FC)
+      map.getSource(OSM_POC_MEASUREMENTS_SOURCE)?.setData(EMPTY_FC)
+    }
+    return
+  }
   if (layer.geomType === 'msi') {
     // Enable path: the change handler calls fetchLayer → fetchMatrixSigns.
     if (!visible) { for (const m of msiMarkers) m.marker.remove(); msiMarkers = [] }
@@ -271,6 +283,17 @@ function setLayerVisibility (layer, visible) {
   if (layer.geomType === 'road-network') {
     if (map.getLayer(`${layer.key}-casing`)) map.setLayoutProperty(`${layer.key}-casing`, 'visibility', vis)
     if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
+    return
+  }
+  if (layer.geomType === 'local-osm-roads') {
+    if (map.getLayer(`${layer.key}-casing`)) map.setLayoutProperty(`${layer.key}-casing`, 'visibility', vis)
+    if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
+    if (map.getLayer(`${layer.key}-propagated`)) map.setLayoutProperty(`${layer.key}-propagated`, 'visibility', vis)
+    if (map.getLayer(`${layer.key}-arrows`)) map.setLayoutProperty(`${layer.key}-arrows`, 'visibility', vis)
+    if (!visible) {
+      map.getSource(layer.key)?.setData(EMPTY_FC)
+      osmRoadsTruncated = false
+    }
     return
   }
   if (layer.geomType === 'line') {
@@ -404,6 +427,9 @@ function updateZoomHint () {
   } else if (nwbTruncated && enabled.has('nwb_roads')) {
     hint.textContent = 'NWB viewport reached the feature cap — zoom in for complete road detail'
     hint.classList.remove('hidden')
+  } else if (osmRoadsTruncated && enabled.has('osm_roads')) {
+    hint.textContent = 'OSM-viewport bereikte de segmentlimiet — zoom verder in voor complete wegdata'
+    hint.classList.remove('hidden')
   } else if (enabled.has('verkeersborden') && map.getZoom() < 13) {
     hint.textContent = 'Zoom in further to see traffic signs (zoom 13+)'
     hint.classList.remove('hidden')
@@ -411,4 +437,3 @@ function updateZoomHint () {
     hint.classList.add('hidden')
   }
 }
-

@@ -7,15 +7,18 @@ from geoalchemy2 import Geometry
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
     PrimaryKeyConstraint,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -187,6 +190,194 @@ class NwbRoadSegment(Base):
     )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
+class OsmImportRun(Base):
+    """One immutable OSM graph build, activated only after a complete import.
+
+    Consumers determine the production graph through ``is_active`` on this
+    small table.  Segment rows do not carry a mutable active flag: activating a
+    graph therefore changes one row rather than rewriting the national graph.
+    """
+
+    __tablename__ = "osm_import_run"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('importing', 'ready', 'active', 'superseded', 'failed')",
+            name="ck_osm_import_run_status",
+        ),
+        Index(
+            "uq_osm_import_run_one_active",
+            "is_active",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    graph_version: Mapped[str] = mapped_column(String(96), nullable=False, unique=True)
+    source_path: Mapped[str] = mapped_column(Text, nullable=False)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_timestamp: Mapped[Optional[datetime]] = mapped_column(_tz)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="importing")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    node_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    segment_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    way_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    started_at: Mapped[datetime] = mapped_column(
+        _tz, nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[Optional[datetime]] = mapped_column(_tz)
+    activated_at: Mapped[Optional[datetime]] = mapped_column(_tz)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class OsmRoadNode(Base):
+    """A graph endpoint/intersection retained for topological traversal."""
+
+    __tablename__ = "osm_road_node"
+    __table_args__ = (
+        PrimaryKeyConstraint("import_run_id", "internal_node_id"),
+        UniqueConstraint(
+            "graph_version", "internal_node_id", name="uq_osm_road_node_version_id"
+        ),
+        Index("ix_osm_road_node_osm_id", "osm_node_id"),
+        Index("ix_osm_road_node_geom", "geom", postgresql_using="gist"),
+    )
+
+    import_run_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("osm_import_run.id", ondelete="CASCADE"), nullable=False
+    )
+    internal_node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    graph_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    osm_node_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    geom: Mapped[Any] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=False
+    )
+
+
+class OsmRoadSegment(Base):
+    """A directed, homogeneous edge in an imported OSM road graph."""
+
+    __tablename__ = "osm_road_segment"
+    __table_args__ = (
+        PrimaryKeyConstraint("import_run_id", "internal_segment_id"),
+        UniqueConstraint(
+            "graph_version", "internal_segment_id", name="uq_osm_road_segment_version_id"
+        ),
+        ForeignKeyConstraint(
+            ["import_run_id", "from_node_id"],
+            ["osm_road_node.import_run_id", "osm_road_node.internal_node_id"],
+            ondelete="CASCADE",
+            name="fk_osm_segment_from_node",
+        ),
+        ForeignKeyConstraint(
+            ["import_run_id", "to_node_id"],
+            ["osm_road_node.import_run_id", "osm_road_node.internal_node_id"],
+            ondelete="CASCADE",
+            name="fk_osm_segment_to_node",
+        ),
+        CheckConstraint(
+            "travel_direction IN ('forward', 'backward', 'reverse')",
+            name="ck_osm_road_segment_direction",
+        ),
+        Index("ix_osm_road_segment_geom", "geom", postgresql_using="gist"),
+        Index(
+            "ix_osm_road_segment_geog",
+            text("(geom::geography)"),
+            postgresql_using="gist",
+        ),
+        Index("ix_osm_road_segment_way", "osm_way_id"),
+        Index("ix_osm_road_segment_graph_from", "graph_version", "from_node_id"),
+        Index("ix_osm_road_segment_graph_to", "graph_version", "to_node_id"),
+        Index("ix_osm_road_segment_graph_ref", "graph_version", "road_number"),
+    )
+
+    import_run_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("osm_import_run.id", ondelete="CASCADE"), nullable=False
+    )
+    # Stable across graph versions while source way, split endpoints, direction
+    # and material matching attributes remain unchanged.
+    internal_segment_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    graph_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    osm_way_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    osm_version: Mapped[Optional[int]] = mapped_column(Integer)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_from_node_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_to_node_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    from_node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    to_node_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    travel_direction: Mapped[str] = mapped_column(String(12), nullable=False)
+    highway: Mapped[str] = mapped_column(String(32), nullable=False)
+    road_number: Mapped[Optional[str]] = mapped_column(String(64))
+    name: Mapped[Optional[str]] = mapped_column(String)
+    oneway: Mapped[str] = mapped_column(String(16), nullable=False)
+    junction: Mapped[Optional[str]] = mapped_column(String(32))
+    carriageway_ref: Mapped[Optional[str]] = mapped_column(String(64))
+    lanes: Mapped[Optional[int]] = mapped_column(Integer)
+    lane_schema: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    maxspeed: Mapped[Optional[str]] = mapped_column(String(64))
+    access: Mapped[Optional[str]] = mapped_column(String(32))
+    bridge: Mapped[Optional[str]] = mapped_column(String(32))
+    tunnel: Mapped[Optional[str]] = mapped_column(String(32))
+    layer: Mapped[Optional[int]] = mapped_column(Integer)
+    length_m: Mapped[Any] = mapped_column(Numeric, nullable=False)
+    tags: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    geom: Mapped[Any] = mapped_column(
+        Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=False
+    )
+
+
+class SourceLocationBinding(Base):
+    """Versioned, fail-closed association from an external location to OSM."""
+
+    __tablename__ = "source_location_binding"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('accepted', 'ambiguous', 'rejected')",
+            name="ck_source_location_binding_status",
+        ),
+        CheckConstraint(
+            "(status = 'accepted' AND internal_segment_id IS NOT NULL) OR "
+            "(status IN ('ambiguous', 'rejected') AND internal_segment_id IS NULL)",
+            name="ck_source_binding_fail_closed_segment",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+            name="ck_source_binding_confidence_range",
+        ),
+        UniqueConstraint(
+            "source_type",
+            "source_id",
+            "graph_version",
+            "algorithm_version",
+            name="uq_source_location_binding_evaluation",
+        ),
+        ForeignKeyConstraint(
+            ["graph_version", "internal_segment_id"],
+            ["osm_road_segment.graph_version", "osm_road_segment.internal_segment_id"],
+            ondelete="CASCADE",
+            name="fk_source_binding_segment",
+        ),
+        Index("ix_source_binding_status_segment", "status", "internal_segment_id"),
+        Index("ix_source_binding_source", "source_type", "source_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[str] = mapped_column(String, nullable=False)
+    internal_segment_id: Mapped[Optional[str]] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    distance_m: Mapped[Optional[Any]] = mapped_column(Numeric)
+    heading_delta_deg: Mapped[Optional[Any]] = mapped_column(Numeric)
+    score: Mapped[Optional[Any]] = mapped_column(Numeric)
+    margin: Mapped[Optional[Any]] = mapped_column(Numeric)
+    confidence: Mapped[Optional[Any]] = mapped_column(Numeric)
+    graph_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(
+        _tz, nullable=False, server_default=func.now()
+    )
 
 
 class WeggegLane(Base):

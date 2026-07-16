@@ -18,6 +18,8 @@ from ndwinfo.api.routers import (
     emission,
     feeds,
     nwb,
+    osm_poc,
+    roads,
     signs,
     situations,
     traffic,
@@ -78,6 +80,8 @@ app.include_router(feeds.router, prefix="/api")
 app.include_router(vild.router, prefix="/api")
 app.include_router(nwb.router, prefix="/api")
 app.include_router(weggeg.router, prefix="/api")
+app.include_router(osm_poc.router, prefix="/api")
+app.include_router(roads.router, prefix="/api")
 
 
 @app.get("/api/config", tags=["configuration"])

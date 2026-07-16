@@ -31,6 +31,10 @@ services:
       DATA_DIR: /app/data
       DB_POOL_SIZE: ${DB_POOL_SIZE:-4}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
+      POLLER_MAX_WORKERS: ${POLLER_MAX_WORKERS:-3}
+      POLLER_BULK_MAX_INFLIGHT: ${POLLER_BULK_MAX_INFLIGHT:-1}
+      POLLER_IDLE_TIMEOUT_S: ${POLLER_IDLE_TIMEOUT_S:-300}
+      POLLER_MAINTENANCE_IDLE_S: ${POLLER_MAINTENANCE_IDLE_S:-900}
       DISABLED_FEEDS: ${DISABLED_FEEDS:-verkeersborden_csv}
       NWB_WEGVAKKEN_URL: ${NWB_WEGVAKKEN_URL:-https://downloads.rijkswaterstaatdata.nl/nwb-wegen/geogegevens/geopackage/NWB-dagelijks/Wegvakken/Wegvakken.gpkg}
     depends_on:
@@ -53,6 +57,23 @@ services:
       NWB_DIAGNOSTIC_MODE: ${NWB_DIAGNOSTIC_MODE:-false}
     ports:
       - "3500:3500"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./data:/app/data
+
+  osm-bootstrap:
+    profiles: ["osm"]
+    build: .
+    command: ndwinfo-osm-bootstrap
+    environment:
+      DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
+      DATA_DIR: /app/data
+      OSM_PBF_URL: ${OSM_PBF_URL:-https://download.geofabrik.de/europe/netherlands-latest.osm.pbf}
+      OSM_PBF_PATH: /app/data/netherlands-latest.osm.pbf
+      OSM_IMPORT_BATCH_SIZE: ${OSM_IMPORT_BATCH_SIZE:-5000}
+      OSM_IMPORT_TEMP_DIR: /tmp
     depends_on:
       migrate:
         condition: service_completed_successfully

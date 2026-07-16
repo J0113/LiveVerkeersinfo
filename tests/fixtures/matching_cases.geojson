@@ -1,0 +1,146 @@
+{
+  "type": "FeatureCollection",
+  "name": "LiveVerkeersInfo synthetic road-matching safety benchmark",
+  "benchmark_version": 1,
+  "coordinate_reference_system": "EPSG:4326",
+  "privacy": "Synthetic coordinates and trajectories; no device or person data.",
+  "scenarios": [
+    {
+      "id": "dual_carriageway_opposite",
+      "description": "Northbound fixes on the western A4 carriageway while the reverse carriageway is 14 metres east.",
+      "safety_risk": "Nearest-line matching can select the opposite carriageway after lateral GPS error.",
+      "fixes": [
+        {"timestamp_ms": 1000, "coordinates": [4.90003, 52.00035], "heading": 1, "speed_mps": 25, "accuracy_m": 7, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["dual-a4-north"]},
+        {"timestamp_ms": 3000, "coordinates": [4.90004, 52.00085], "heading": 359, "speed_mps": 26, "accuracy_m": 8, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["dual-a4-north"]},
+        {"timestamp_ms": 5000, "coordinates": [4.90010, 52.00135], "heading": 2, "speed_mps": 24, "accuracy_m": 15, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["dual-a4-north"]},
+        {"timestamp_ms": 7000, "coordinates": [4.90005, 52.00190], "heading": 0, "speed_mps": 25, "accuracy_m": 9, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["dual-a4-north"]}
+      ]
+    },
+    {
+      "id": "parallel_service_road",
+      "description": "A vehicle remains on A10 while GPS points drift toward a same-direction parallel service road.",
+      "safety_risk": "Distance and heading alone cannot distinguish two same-direction parallel roads.",
+      "fixes": [
+        {"timestamp_ms": 1000, "coordinates": [4.92002, 52.02030], "heading": 0, "speed_mps": 20, "accuracy_m": 6, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["parallel-a10"]},
+        {"timestamp_ms": 3000, "coordinates": [4.92006, 52.02080], "heading": 1, "speed_mps": 21, "accuracy_m": 10, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["parallel-a10"]},
+        {"timestamp_ms": 5000, "coordinates": [4.92013, 52.02130], "heading": 358, "speed_mps": 19, "accuracy_m": 18, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["parallel-a10"]},
+        {"timestamp_ms": 7000, "coordinates": [4.92009, 52.02185], "heading": 2, "speed_mps": 20, "accuracy_m": 12, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["parallel-a10"]}
+      ]
+    },
+    {
+      "id": "ramp_fork",
+      "description": "The trajectory approaches a fork on N201 and then takes a connected A4 entry ramp.",
+      "safety_risk": "A branch must not be committed before repeat evidence selects it.",
+      "fixes": [
+        {"timestamp_ms": 1000, "coordinates": [4.94025, 52.04001], "heading": 90, "speed_mps": 18, "accuracy_m": 7, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["fork-approach"]},
+        {"timestamp_ms": 3000, "coordinates": [4.94085, 52.04000], "heading": 91, "speed_mps": 18, "accuracy_m": 8, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["fork-approach"]},
+        {"timestamp_ms": 5000, "coordinates": [4.94135, 52.03999], "heading": 95, "speed_mps": 17, "accuracy_m": 10, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["fork-approach", "fork-main", "fork-ramp"]},
+        {"timestamp_ms": 7000, "coordinates": [4.94185, 52.03982], "heading": 118, "speed_mps": 16, "accuracy_m": 8, "allowed_statuses": ["ambiguous", "unmatched", "accepted"], "expected_segment_ids": ["fork-ramp"]},
+        {"timestamp_ms": 9000, "coordinates": [4.94220, 52.03964], "heading": 124, "speed_mps": 15, "accuracy_m": 8, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["fork-ramp"]},
+        {"timestamp_ms": 11000, "coordinates": [4.94265, 52.03942], "heading": 126, "speed_mps": 15, "accuracy_m": 7, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["fork-ramp"]}
+      ]
+    },
+    {
+      "id": "grade_separated_crossing",
+      "description": "A northbound N247 passes underneath an eastbound bridge with no shared graph node.",
+      "safety_risk": "A geometric intersection is not a legal road transition when layer topology differs.",
+      "fixes": [
+        {"timestamp_ms": 1000, "coordinates": [4.96001, 52.05935], "heading": 0, "speed_mps": 17, "accuracy_m": 8, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["grade-under"]},
+        {"timestamp_ms": 3000, "coordinates": [4.95998, 52.05978], "heading": 2, "speed_mps": 17, "accuracy_m": 9, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["grade-under"]},
+        {"timestamp_ms": 5000, "coordinates": [4.96002, 52.06002], "heading": 359, "speed_mps": 16, "accuracy_m": 12, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["grade-under"]},
+        {"timestamp_ms": 7000, "coordinates": [4.96001, 52.06045], "heading": 1, "speed_mps": 18, "accuracy_m": 8, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["grade-under"]}
+      ]
+    },
+    {
+      "id": "stationary_heading_drift",
+      "description": "After acquiring a northbound A9 carriageway the vehicle stops and compass/GPS samples drift sideways.",
+      "safety_risk": "Compass noise at standstill can flip both carriageway and direction.",
+      "fixes": [
+        {"timestamp_ms": 1000, "coordinates": [4.98001, 52.08060], "heading": 0, "speed_mps": 8, "accuracy_m": 6, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["stationary-a9-north"]},
+        {"timestamp_ms": 3000, "coordinates": [4.98004, 52.08062], "heading": 173, "speed_mps": 0, "accuracy_m": 11, "allowed_statuses": ["accepted", "ambiguous", "unmatched"], "expected_segment_ids": ["stationary-a9-north"]},
+        {"timestamp_ms": 5000, "coordinates": [4.98010, 52.08060], "heading": 241, "speed_mps": 0, "accuracy_m": 16, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["stationary-a9-north"]},
+        {"timestamp_ms": 7000, "coordinates": [4.98006, 52.08063], "heading": 88, "speed_mps": 0.1, "accuracy_m": 13, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["stationary-a9-north"]},
+        {"timestamp_ms": 9000, "coordinates": [4.98002, 52.08061], "heading": 190, "speed_mps": 0, "accuracy_m": 10, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["stationary-a9-north"]}
+      ]
+    },
+    {
+      "id": "moving_gps_drift",
+      "description": "Noisy moving samples oscillate laterally between two close A2 carriageways but trajectory remains northbound.",
+      "safety_risk": "Individual inaccurate fixes can cause carriageway oscillation despite a stable trajectory.",
+      "fixes": [
+        {"timestamp_ms": 1000, "coordinates": [5.00001, 52.10025], "heading": 1, "speed_mps": 22, "accuracy_m": 7, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["drift-a2-north"]},
+        {"timestamp_ms": 2500, "coordinates": [5.00008, 52.10070], "heading": 359, "speed_mps": 23, "accuracy_m": 16, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["drift-a2-north"]},
+        {"timestamp_ms": 4000, "coordinates": [5.00002, 52.10115], "heading": 3, "speed_mps": 22, "accuracy_m": 10, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["drift-a2-north"]},
+        {"timestamp_ms": 5500, "coordinates": [5.00011, 52.10160], "heading": 357, "speed_mps": 21, "accuracy_m": 20, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["drift-a2-north"]},
+        {"timestamp_ms": 7000, "coordinates": [5.00004, 52.10205], "heading": 2, "speed_mps": 22, "accuracy_m": 12, "allowed_statuses": ["accepted", "ambiguous"], "expected_segment_ids": ["drift-a2-north"]}
+      ]
+    }
+  ],
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "dual_carriageway_opposite", "internal_segment_id": "dual-a4-north", "road_ref": "A4", "carriageway_ref": "A", "travel_direction": "northbound", "from_node_id": "dual-n0", "to_node_id": "dual-n1", "highway": "motorway", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[4.90000, 52.00000], [4.90000, 52.00250]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "dual_carriageway_opposite", "internal_segment_id": "dual-a4-south", "road_ref": "A4", "carriageway_ref": "B", "travel_direction": "southbound", "from_node_id": "dual-s1", "to_node_id": "dual-s0", "highway": "motorway", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[4.90020, 52.00250], [4.90020, 52.00000]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "parallel_service_road", "internal_segment_id": "parallel-a10", "road_ref": "A10", "carriageway_ref": "A", "travel_direction": "northbound", "from_node_id": "parallel-a0", "to_node_id": "parallel-a1", "highway": "motorway", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[4.92000, 52.02000], [4.92000, 52.02230]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "parallel_service_road", "internal_segment_id": "parallel-service", "road_ref": "S112", "carriageway_ref": "service", "travel_direction": "northbound", "from_node_id": "parallel-s0", "to_node_id": "parallel-s1", "highway": "secondary", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[4.92028, 52.02000], [4.92028, 52.02230]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "ramp_fork", "internal_segment_id": "fork-approach", "road_ref": "N201", "carriageway_ref": "east", "travel_direction": "eastbound", "from_node_id": "fork-start", "to_node_id": "fork-node", "highway": "primary", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[4.94000, 52.04000], [4.94150, 52.04000]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "ramp_fork", "internal_segment_id": "fork-main", "road_ref": "N201", "carriageway_ref": "east", "travel_direction": "eastbound", "from_node_id": "fork-node", "to_node_id": "fork-main-end", "highway": "primary", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[4.94150, 52.04000], [4.94310, 52.04000]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "ramp_fork", "internal_segment_id": "fork-ramp", "road_ref": "A4", "carriageway_ref": "entry", "travel_direction": "southeast", "from_node_id": "fork-node", "to_node_id": "fork-ramp-end", "highway": "motorway_link", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[4.94150, 52.04000], [4.94300, 52.03925]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "grade_separated_crossing", "internal_segment_id": "grade-under", "road_ref": "N247", "carriageway_ref": "north", "travel_direction": "northbound", "from_node_id": "grade-u0", "to_node_id": "grade-u1", "highway": "primary", "bridge": false, "tunnel": false, "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[4.96000, 52.05900], [4.96000, 52.06080]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "grade_separated_crossing", "internal_segment_id": "grade-bridge", "road_ref": "A8", "carriageway_ref": "east", "travel_direction": "eastbound", "from_node_id": "grade-b0", "to_node_id": "grade-b1", "highway": "motorway", "bridge": true, "tunnel": false, "layer": 1},
+      "geometry": {"type": "LineString", "coordinates": [[4.95880, 52.06000], [4.96120, 52.06000]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "stationary_heading_drift", "internal_segment_id": "stationary-a9-north", "road_ref": "A9", "carriageway_ref": "A", "travel_direction": "northbound", "from_node_id": "stationary-n0", "to_node_id": "stationary-n1", "highway": "motorway", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[4.98000, 52.08000], [4.98000, 52.08130]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "stationary_heading_drift", "internal_segment_id": "stationary-a9-south", "road_ref": "A9", "carriageway_ref": "B", "travel_direction": "southbound", "from_node_id": "stationary-s1", "to_node_id": "stationary-s0", "highway": "motorway", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[4.98018, 52.08130], [4.98018, 52.08000]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "moving_gps_drift", "internal_segment_id": "drift-a2-north", "road_ref": "A2", "carriageway_ref": "A", "travel_direction": "northbound", "from_node_id": "drift-n0", "to_node_id": "drift-n1", "highway": "motorway", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[5.00000, 52.10000], [5.00000, 52.10240]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"scenario_id": "moving_gps_drift", "internal_segment_id": "drift-a2-south", "road_ref": "A2", "carriageway_ref": "B", "travel_direction": "southbound", "from_node_id": "drift-s1", "to_node_id": "drift-s0", "highway": "motorway", "layer": 0},
+      "geometry": {"type": "LineString", "coordinates": [[5.00023, 52.10240], [5.00023, 52.10000]]}
+    }
+  ]
+}

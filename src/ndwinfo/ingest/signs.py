@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from ndwinfo.download import DownloadResult, open_feed
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, wkt_geom
-from ndwinfo.models import Drip, MsiSign, MsiState
+from ndwinfo.matching.live_object_job import rebuild_live_object_bindings
+from ndwinfo.models import Drip, MsiSign, MsiState, OsmImportRun
 from ndwinfo.parsers.datex_v3 import parse_drip
 from ndwinfo.parsers.ndw_vms import parse_matrix_signs
 
@@ -92,11 +93,14 @@ class DripIngester(Ingester):
     feed_name = "drips"
 
     def _ingest(self, result: DownloadResult, session: Session) -> int:
+        run_start = datetime.now(UTC)
         total = 0
         batch: list[dict] = []
+        saw_any = False
 
         with open_feed(result.path) as f:
             for row in parse_drip(f):
+                saw_any = True
                 r = dict(row)
                 r["geom"] = wkt_geom(r.get("geom"))
                 batch.append(r)
@@ -108,5 +112,19 @@ class DripIngester(Ingester):
         if batch:
             total += bulk_upsert(session, Drip, batch, ["controller_id", "vms_index"])
             session.flush()
+
+        # This feed is a latest-state publication. A panel omitted from the
+        # current snapshot must not remain eligible for path/HUD matching.
+        if saw_any:
+            session.execute(delete(Drip).where(Drip.ingested_at < run_start))
+        else:
+            session.execute(delete(Drip))
+        session.flush()
+
+        graph_id = session.scalar(
+            select(OsmImportRun.id).where(OsmImportRun.is_active.is_(True)).limit(1)
+        )
+        if graph_id is not None:
+            rebuild_live_object_bindings(session, graph_id, kinds=("drip",))
 
         return total
