@@ -21,6 +21,7 @@ dependencies = [
     "ijson",
     "pyogrio",
     "geopandas",
+    "osmium",
 ]
 
 [project.optional-dependencies]

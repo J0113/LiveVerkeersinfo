@@ -193,6 +193,16 @@ FEEDS: list[FeedDef] = [
         "parser_fn": None,
         "ingester_cls": None,
     },
+    {
+        # Geofabrik province extract, not an NDW file. Driving-road ways only
+        # (motorway/trunk/primary/secondary + _link) -- see docs/11-osm-pbf.md.
+        "name": "osm_noord_holland",
+        "filename": "noord-holland-latest.osm.pbf",
+        "cadence_s": 86400,
+        "parser_fn": None,
+        "ingester_cls": None,
+        "url": settings.osm_noord_holland_url,
+    },
 ]
 
 FEEDS_BY_NAME: dict[str, FeedDef] = {f["name"]: f for f in FEEDS}

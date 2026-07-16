@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     )
     nwb_max_features: int = 5000  # per-viewport row cap for /api/nwb/roads
     nwb_diagnostic_mode: bool = False
+    osm_noord_holland_url: str = (
+        "https://download.geofabrik.de/europe/netherlands/noord-holland-latest.osm.pbf"
+    )
+    osm_max_features: int = 5000  # per-viewport row cap for /api/osm/roads
+    osm_lane_max_features: int = 8000  # per-viewport row cap for /api/osm/lanes
 
 
 settings = Settings()

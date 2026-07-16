@@ -204,6 +204,45 @@ const LAYERS = [
       'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1, 17, 3, 20, 7],
       'line-opacity': 0.98
     }
+  },
+
+  // ── OpenStreetMap ──────────────────────────────────────────────────────────
+  {
+    // Driving-road network from a Geofabrik province extract (currently
+    // Noord-Holland). highway=motorway/trunk/primary/secondary + their _link
+    // ramp variants only — see docs/11-osm-pbf.md. All OSM tags are stored and
+    // shown in the click popup, not a curated subset.
+    // sendZoom: the API tiers highway classes by zoom (see api/routers/osm.py)
+    // but the generic fetch path only sends bbox unless a layer opts in here.
+    key: 'osm_roads', label: 'Driving Roads', group: 'osm',
+    endpoint: '/osm/roads', geomType: 'line', minZoom: 7, sendZoom: true, legendColor: '#e8a33d',
+    paint: {
+      'line-color': ['match', ['get', 'highway'],
+        'motorway', '#e8a33d', 'motorway_link', '#e8a33d',
+        'trunk', '#d97b3f', 'trunk_link', '#d97b3f',
+        'primary', '#c9584a', 'primary_link', '#c9584a',
+        'secondary', '#b0455a', 'secondary_link', '#b0455a',
+        '#888888'
+      ],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 8, 1, 12, 2.5, 16, 6],
+      'line-opacity': 0.85
+    }
+  },
+  {
+    // Individual lane centerlines derived from osm_roads' `lanes` tag —
+    // see docs/11-osm-pbf.md for the direction model and the scope note on
+    // which turn:lanes tokens taper a lane (only merge_to_left/right).
+    key: 'osm_lanes', label: 'Lane Detail', group: 'osm',
+    endpoint: '/osm/lanes', geomType: 'line', minZoom: 15, sendZoom: true, legendColor: '#ffb020',
+    paint: {
+      'line-color': ['match', ['get', 'role'],
+        'merge_left', '#ff8800', 'merge_right', '#ff8800',
+        'both_ways', '#66ccff',
+        '#ffb020'
+      ],
+      'line-width': ['interpolate', ['linear'], ['zoom'], 15, 1, 17, 3, 20, 7],
+      'line-opacity': 0.9
+    }
   }
 ]
 
@@ -215,7 +254,8 @@ const GROUPS = [
   { key: 'charging',     label: 'EV Charging' },
   { key: 'truckparking', label: 'Truck Parking' },
   { key: 'other',        label: 'Zones & Signs' },
-  { key: 'reference',    label: 'Reference' }
+  { key: 'reference',    label: 'Reference' },
+  { key: 'osm',          label: 'OpenStreetMap' }
 ]
 
 // The detailed map overlays remain available in the layer panel, but the clean

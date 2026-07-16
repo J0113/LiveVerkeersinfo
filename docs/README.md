@@ -105,6 +105,17 @@ Why `carriageway` resolves for only 23% of traffic-speed sites today, how
 `alertCDirectionCoded` + the VILD TMC chain give the real travel direction,
 and a bearing-computation plan using data already ingested.
 
+### OpenStreetMap driving roads (non-NDW source) → [11-osm-pbf.md](11-osm-pbf.md)
+
+| File | Format | ~Size | Refresh |
+|---|---|---|---|
+| Geofabrik `noord-holland-latest.osm.pbf` | OSM PBF, ODbL-licensed | ~180M | ~daily |
+
+`highway=motorway,trunk,primary,secondary` (+ `_link` variants) only, all
+OSM tags stored. Not part of the NDW catalog above — see
+[docs/08](08-nwb-road-network.md) for the same non-NDW-source ingest
+pattern (`nwb_wegvakken`, `weggeg_rijstroken`).
+
 > Sizes are compressed download sizes from the portal listing on 2026-05-29.
 > Decompressed sizes are much larger — e.g. `traveltime.xml.gz` 2.5M → ~73M XML,
 > `trafficspeed.xml.gz` 1.1M → ~52M XML.

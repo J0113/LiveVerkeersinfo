@@ -17,6 +17,16 @@ from ndwinfo.config import settings
 logger = logging.getLogger(__name__)
 MAX_RESUME_ATTEMPTS = 5
 
+
+class _RangeNotHonored(Exception):
+    """Raised when a Range-resume request gets a non-206 response.
+
+    A server that ignores Range and returns 200 with the full body would
+    otherwise get silently appended onto the partial file already on disk,
+    corrupting it with no error. Caught alongside transport errors so the
+    retry loop restarts the download from byte zero instead.
+    """
+
 _VERSIONED_ZIP_RE = re.compile(r'href=["\'](\d{2}-\d{2}-\d{4}\.zip)["\']', re.I)
 
 
@@ -84,7 +94,8 @@ def fetch(
         for attempt in range(1, MAX_RESUME_ATTEMPTS + 1):
             req_headers = dict(base_headers)
             mode = "wb"
-            if resume_from:
+            is_resume = bool(resume_from)
+            if is_resume:
                 req_headers.pop("If-None-Match", None)
                 req_headers.pop("If-Modified-Since", None)
                 req_headers["Range"] = f"bytes={resume_from}-"
@@ -111,6 +122,11 @@ def fetch(
                         )
                     resp.raise_for_status()
 
+                    if is_resume and resp.status_code != 206:
+                        raise _RangeNotHonored(
+                            f"expected 206 Partial Content on resume, got {resp.status_code}"
+                        )
+
                     if resume_from == 0:
                         resp_etag = resp.headers.get("ETag")
                         resp_lm = resp.headers.get("Last-Modified")
@@ -120,7 +136,13 @@ def fetch(
                             f.write(chunk)
                             resume_from += len(chunk)
                 break  # streamed to completion without the connection dropping
-            except (httpx.TransportError, httpx.StreamError) as exc:
+            except (httpx.TransportError, httpx.StreamError, _RangeNotHonored) as exc:
+                if isinstance(exc, _RangeNotHonored):
+                    # Server can't resume this download — the partial file is
+                    # unusable as a base for further Range requests. Discard it
+                    # and restart from byte zero on the next attempt.
+                    tmp_path.unlink(missing_ok=True)
+                    resume_from = 0
                 if attempt >= MAX_RESUME_ATTEMPTS:
                     raise
                 logger.warning(

@@ -8,6 +8,7 @@ from ndwinfo.ingest.measurement import (
     TraveltimeIngester,
 )
 from ndwinfo.ingest.nwb import NwbWegvakkenIngester
+from ndwinfo.ingest.osm_roads import OsmRoadIngester
 from ndwinfo.ingest.parking import TruckParkingStatusIngester, TruckParkingTableIngester
 from ndwinfo.ingest.reference import (
     MeetlocatiesIngester,
@@ -31,6 +32,7 @@ INGESTERS: dict[str, object] = {
     "meetlocaties_shapefile": MeetlocatiesIngester(),
     "vild_shapefile": VildIngester(),
     "nwb_wegvakken": NwbWegvakkenIngester(),
+    "osm_noord_holland": OsmRoadIngester(feed_name="osm_noord_holland", extract_key="noord-holland"),
     "weggeg_rijstroken": WeggegLaneIngester(),
     "trafficspeed": TrafficspeedIngester(),
     "traveltime": TraveltimeIngester(),

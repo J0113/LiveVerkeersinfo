@@ -4,7 +4,8 @@
 
 // Selectable basemaps. Each is a raster tile source; switching swaps the
 // 'carto' source + 'basemap' layer while leaving all feed layers on top intact.
-const CARTO_ATTR = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attribution">CARTO</a>'
+const OSM_ATTR = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+const CARTO_ATTR = OSM_ATTR + ' © <a href="https://carto.com/attribution">CARTO</a>'
 const BASEMAPS = {
   default: {
     label: 'Standaard',
@@ -19,7 +20,10 @@ const BASEMAPS = {
     label: 'Satelliet',
     tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
     tileSize: 256, maxzoom: 19,
-    attribution: '© <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics'
+    // The imagery itself needs no OSM credit, but the OSM Driving Roads layer
+    // (config.js) draws OSM/ODbL-licensed data on top of every basemap
+    // including this one, which otherwise carries no OSM attribution at all.
+    attribution: '© <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics — ' + OSM_ATTR
   },
   light: {
     label: 'Licht',

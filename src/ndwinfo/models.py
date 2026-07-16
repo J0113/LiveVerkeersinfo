@@ -189,6 +189,79 @@ class NwbRoadSegment(Base):
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
 
+class OsmRoad(Base):
+    """OSM driving-road ways (motorway/trunk/primary/secondary + _link).
+
+    osm_id is the OSM way id -- globally unique across all of OSM, used
+    directly as PK. A way can appear in more than one Geofabrik extract
+    (boundary-crossing ways are kept whole in each overlapping extract), so
+    membership is tracked separately in OsmRoadExtract rather than deleting
+    by a single run's timestamp.
+    """
+
+    __tablename__ = "osm_road"
+    __table_args__ = (Index("ix_osm_road_geom", "geom", postgresql_using="gist"),)
+
+    osm_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    highway: Mapped[Optional[str]] = mapped_column(String)  # motorway|trunk|primary|secondary(+_link)
+    name: Mapped[Optional[str]] = mapped_column(String)
+    ref: Mapped[Optional[str]] = mapped_column(String)  # route number, e.g. A7, N99
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True
+    )
+    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)  # full OSM tag dict, verbatim
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
+class OsmRoadExtract(Base):
+    """Which Geofabrik extract(s) last confirmed seeing a given way.
+
+    Lets ingesting one extract prune only its own stale memberships, never
+    another extract's. OsmRoad rows with zero remaining memberships are the
+    only ones eligible for deletion.
+    """
+
+    __tablename__ = "osm_road_extract"
+    __table_args__ = (PrimaryKeyConstraint("extract_key", "osm_id"),)
+
+    extract_key: Mapped[str] = mapped_column(String)  # e.g. "noord-holland", later "netherlands"
+    osm_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("osm_road.osm_id"))
+    # bulk_upsert() stamps this on every row automatically (see ingest/base.py) --
+    # doubles as "last confirmed present in this extract" for pruning.
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
+class OsmRoadLane(Base):
+    """One offset lane centerline derived from an osm_road way + its lanes tag.
+
+    id = f"{source_id}:{direction}:{lane}". source_id has ON DELETE CASCADE
+    to osm_road so pruning a stale way (OsmRoadIngester's extract-scoped
+    prune) automatically drops its lanes -- no separate lane-level prune.
+    """
+
+    __tablename__ = "osm_road_lane"
+    __table_args__ = (
+        Index("ix_osm_road_lane_geom", "geom", postgresql_using="gist"),
+        Index("ix_osm_road_lane_source_id", "source_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("osm_road.osm_id", ondelete="CASCADE"))
+    lane: Mapped[int] = mapped_column(Integer)  # 1-indexed physical position, left to right
+    lane_count: Mapped[int] = mapped_column(Integer)  # total lanes this row's direction contributes to
+    direction: Mapped[Optional[str]] = mapped_column(String)  # fwd|bwd|unknown
+    role: Mapped[Optional[str]] = mapped_column(String)  # normal|merge_left|merge_right|both_ways|unknown
+    highway: Mapped[Optional[str]] = mapped_column(String)
+    name: Mapped[Optional[str]] = mapped_column(String)  # denormalized from parent way, like highway
+    ref: Mapped[Optional[str]] = mapped_column(String)
+    width_m: Mapped[Optional[Any]] = mapped_column(Numeric)  # 3.5 or 2.75
+    # offset_curve() can return MultiLineString -- GEOMETRY, not LINESTRING,
+    # matches WeggegLane's handling of the same situation.
+    geom: Mapped[Optional[Any]] = mapped_column(Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True)
+    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
 class WeggegLane(Base):
     """One displayable lane derived from a WEGGEG Rijstroken road section."""
 
