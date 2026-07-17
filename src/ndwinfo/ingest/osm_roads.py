@@ -19,7 +19,8 @@ from sqlalchemy.orm import Session
 from ndwinfo.download import DownloadResult
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, json_safe, wkt_geom
 from ndwinfo.models import OsmRoad, OsmRoadExtract, OsmRoadLane
-from ndwinfo.parsers.osm_lanes import make_lane_rows
+from ndwinfo.parsers.osm_junctions import junction_record, make_connector_rows
+from ndwinfo.parsers.osm_lanes import has_merge_tokens, make_all_lane_rows, make_lane_rows
 from ndwinfo.parsers.osm_pbf import parse_roads
 
 UTC = timezone.utc
@@ -35,11 +36,26 @@ class OsmRoadIngester(Ingester):
         total = 0
         batch: list[dict] = []
         lane_batch: list[dict] = []
+        # A merging lane's geometry depends on the chain of merge-tagged ways
+        # it continues into, which a single streaming pass hasn't seen yet --
+        # so those ways (a few hundred per extract) wait until the end. Every
+        # other way still streams straight through.
+        merge_ways: list[tuple] = []
+        # Junction connectors need both sides of a turn, so they also wait for
+        # the end -- but only two coordinates per lane are kept, not geometry.
+        junctions: dict[int, dict] = {}
 
         for row in parse_roads(result.path):
-            lane_batch.extend(
-                make_lane_rows(row["osm_id"], row["highway"], row["raw"], from_wkt(row["geom"]))
-            )
+            if has_merge_tokens(row["raw"]):
+                merge_ways.append(
+                    (row["osm_id"], row["highway"], dict(row["raw"]), from_wkt(row["geom"]))
+                )
+            else:
+                rows = make_lane_rows(
+                    row["osm_id"], row["highway"], row["raw"], from_wkt(row["geom"])
+                )
+                self._record_junction(junctions, row["osm_id"], row["raw"], rows)
+                lane_batch.extend(rows)
             row["geom"] = wkt_geom(row["geom"])
             row["raw"] = json_safe(row["raw"])
             batch.append(row)
@@ -56,6 +72,11 @@ class OsmRoadIngester(Ingester):
         # roads" and prune away a previously-good layer.
         if total == 0:
             raise RuntimeError(f"{self.feed_name}: parsed 0 road ways, aborting without pruning")
+
+        # Safe after the loop: every batch above already deleted its ways'
+        # existing lane rows, and these ways' road rows are all committed.
+        self._flush_merge_lanes(session, merge_ways, junctions)
+        self._flush_connectors(session, junctions)
 
         # Extract-scoped prune only -- never touches another extract's ways.
         session.execute(
@@ -85,10 +106,39 @@ class OsmRoadIngester(Ingester):
         # ways' lanes first and reinsert fresh.
         osm_ids = [row["osm_id"] for row in batch]
         session.execute(delete(OsmRoadLane).where(OsmRoadLane.source_id.in_(osm_ids)))
-        for lane_row in lane_batch:
-            lane_row["geom"] = wkt_geom(lane_row["geom"])
-            lane_row["raw"] = json_safe(lane_row["raw"])
-        bulk_upsert(session, OsmRoadLane, lane_batch, ["id"])
+        self._insert_lanes(session, lane_batch)
 
         session.flush()
         return n
+
+    def _flush_merge_lanes(self, session: Session, merge_ways: list[tuple], junctions: dict) -> None:
+        rows = make_all_lane_rows(merge_ways)
+        by_way: dict[int, list[dict]] = {}
+        for row in rows:
+            by_way.setdefault(row["source_id"], []).append(row)
+        for osm_id, highway, tags, _line in merge_ways:
+            self._record_junction(junctions, osm_id, tags, by_way.get(osm_id, []))
+        for start in range(0, len(rows), BATCH_SIZE):
+            self._insert_lanes(session, rows[start:start + BATCH_SIZE])
+            session.flush()
+
+    def _flush_connectors(self, session: Session, junctions: dict) -> None:
+        rows = make_connector_rows(junctions)
+        for start in range(0, len(rows), BATCH_SIZE):
+            self._insert_lanes(session, rows[start:start + BATCH_SIZE])
+            session.flush()
+
+    @staticmethod
+    def _record_junction(junctions: dict, osm_id: int, tags: dict, lane_rows: list[dict]) -> None:
+        if not lane_rows:
+            return
+        record = junction_record(osm_id, tags, lane_rows)
+        if record is not None:
+            junctions[osm_id] = record
+
+    @staticmethod
+    def _insert_lanes(session: Session, lane_rows: list[dict]) -> None:
+        for lane_row in lane_rows:
+            lane_row["geom"] = wkt_geom(lane_row["geom"])
+            lane_row["raw"] = json_safe(lane_row["raw"])
+        bulk_upsert(session, OsmRoadLane, lane_rows, ["id"])

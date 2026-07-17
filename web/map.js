@@ -77,6 +77,20 @@ const map = new maplibregl.Map({
 // through the standard compact information button.
 map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
 
+// Lane arrow glyphs are generated on demand: turn:lanes tokens combine freely,
+// so the set of icons a viewport needs isn't known until its features arrive.
+// MapLibre asks for each missing icon-image once and caches what we hand back.
+function setupLaneArrowImages () {
+  map.on('styleimagemissing', (e) => {
+    const id = e.id
+    if (!id.startsWith(LANE_ARROW_PREFIX) || map.hasImage(id)) return
+    const image = laneArrowImage(id.slice(LANE_ARROW_PREFIX.length).split(';'))
+    // Register a blank for token sets we don't draw (`reverse`, or anything new
+    // OSM grows) — without an image on the id, MapLibre re-asks every frame.
+    map.addImage(id, image || new ImageData(1, 1), { pixelRatio: ARROW_ICON_RATIO })
+  })
+}
+
 // ─── Map load: wire up sources, layers, and UI ────────────────────────────────
 
 map.on('load', () => {
@@ -87,6 +101,7 @@ map.on('load', () => {
   }
 
   addArrowImage()
+  setupLaneArrowImages()
 
   for (const layer of LAYERS) {
     // MSI gantries and speed points are HTML markers, not MapLibre layers.
@@ -149,10 +164,41 @@ map.on('load', () => {
       if (layer.casing) {
         map.addLayer({
           id: `${layer.key}-casing`, type: 'line', source: layer.key,
-          paint: layer.casing, layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' }
+          ...(layer.casingFilter ? { filter: layer.casingFilter } : {}),
+          paint: layer.casing,
+          // A casing that outlines a metre-scaled band has to end where the band
+          // does, so it follows the band's own caps rather than rounding past it.
+          layout: {
+            visibility: vis,
+            'line-cap': layer.lineCap || 'round',
+            'line-join': layer.lineJoin || 'round'
+          }
         })
       }
-      map.addLayer({ id: layer.key, type: 'line', source: layer.key, paint: layer.paint, layout: { visibility: vis, 'line-cap': 'round' } })
+      map.addLayer({
+        id: layer.key, type: 'line', source: layer.key, paint: layer.paint,
+        // 'miter' is MapLibre's own default for line-join — spelled out here only
+        // so a layer can override it; round caps would overshoot a metre-scaled
+        // band by half its width past the geometry's end.
+        layout: { visibility: vis, 'line-cap': layer.lineCap || 'round', 'line-join': layer.lineJoin || 'miter' }
+      })
+      for (const ov of layer.overlays || []) {
+        map.addLayer({
+          id: `${layer.key}-${ov.suffix}`, type: 'line', source: layer.key,
+          ...(ov.filter ? { filter: ov.filter } : {}),
+          paint: ov.paint, layout: { visibility: vis, 'line-cap': 'butt', 'line-join': 'round' }
+        })
+      }
+      if (layer.laneArrows) {
+        map.addLayer({
+          id: `${layer.key}-lane-arrows`,
+          type: 'symbol',
+          source: layer.key,
+          minzoom: layer.laneArrows.minZoom,
+          filter: layer.laneArrows.filter,
+          layout: { ...layer.laneArrows.layout, visibility: vis }
+        })
+      }
       if (layer.arrows) {
         map.addLayer({
           id: `${layer.key}-arrows`,

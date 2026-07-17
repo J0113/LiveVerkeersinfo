@@ -276,7 +276,11 @@ function setLayerVisibility (layer, visible) {
   if (layer.geomType === 'line') {
     if (map.getLayer(`${layer.key}-casing`)) map.setLayoutProperty(`${layer.key}-casing`, 'visibility', vis)
     if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
+    for (const ov of layer.overlays || []) {
+      if (map.getLayer(`${layer.key}-${ov.suffix}`)) map.setLayoutProperty(`${layer.key}-${ov.suffix}`, 'visibility', vis)
+    }
     if (map.getLayer(`${layer.key}-arrows`)) map.setLayoutProperty(`${layer.key}-arrows`, 'visibility', vis)
+    if (map.getLayer(`${layer.key}-lane-arrows`)) map.setLayoutProperty(`${layer.key}-lane-arrows`, 'visibility', vis)
     return
   }
   if (layer.geomType === 'polygon') {
