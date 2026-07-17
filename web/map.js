@@ -161,6 +161,16 @@ map.on('load', () => {
       map.addLayer({ id: `${layer.key}-line`, type: 'line', source: layer.key, paint: layer.paint.line, layout: { visibility: vis } })
       setupClickPopup(`${layer.key}-fill`)
     } else if (layer.geomType === 'line') {
+      for (const fill of layer.fills || []) {
+        map.addLayer({
+          id: `${layer.key}-${fill.suffix}`,
+          type: 'fill',
+          source: layer.key,
+          filter: fill.filter,
+          paint: fill.paint,
+          layout: { visibility: vis }
+        })
+      }
       if (layer.casing) {
         map.addLayer({
           id: `${layer.key}-casing`, type: 'line', source: layer.key,
@@ -176,7 +186,9 @@ map.on('load', () => {
         })
       }
       map.addLayer({
-        id: layer.key, type: 'line', source: layer.key, paint: layer.paint,
+        id: layer.key, type: 'line', source: layer.key,
+        ...(layer.filter ? { filter: layer.filter } : {}),
+        paint: layer.paint,
         // 'miter' is MapLibre's own default for line-join — spelled out here only
         // so a layer can override it; round caps would overshoot a metre-scaled
         // band by half its width past the geometry's end.
@@ -282,24 +294,18 @@ map.on('moveend', (e) => {
   debounceTimer = setTimeout(fetchAll, 300)
 })
 
-// Slide lane-speed labels along their line during pan/zoom/rotate so they
-// stay on screen between refetches, instead of waiting on the debounced fetch.
-map.on('move', updateLaneSpeedLayout)
-
 // Re-evaluate verkeersborden hint + re-fetch on zoom change
 map.on('zoom', () => {
   updateZoomHint()
   updateMatrixLayout()
   updateSpeedLayout()
-  updateLaneSpeedLayout()
   // If verkeersborden just crossed zoom 13, trigger a fetch
   const layer = LAYERS.find(l => l.key === 'verkeersborden')
   if (layer && enabled.has('verkeersborden')) fetchLayer(layer)
 })
 
 // Keep roadside offsets correct while the map rotates (e.g. navigation mode).
-map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout(); updateLaneSpeedLayout() })
+map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout() })
 
 // Refit the HUD matrix lanes when the viewport width changes (rotate phone, resize).
 window.addEventListener('resize', () => fitMatrixLanes())
-

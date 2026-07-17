@@ -242,14 +242,15 @@ width (`LANE_SEAM_OVERLAP_M`) so neighbouring bands overlap. Butted exactly,
 their shared edge antialiases against whatever is below and every lane boundary
 shows a pale hairline.
 
-**The outside line is a casing under the bands, not a layer per edge.** Every
-lane casts a `LANE_MARKING` outline slightly wider than itself; a lane with a
-neighbour gets its outline painted over by that neighbour's band. What survives
-is exactly the edge no lane sits beyond — the carriageway's outside — with no
-filter enumerating which edges qualify. Being *under* is the point: where a lane
-tapers away into a merge, the lane it merges into covers the stale edge rather
-than leaving it stranded mid-asphalt. Connectors are filtered out (`casingFilter`):
-a junction interior has no edge lines.
+**Outside lines are explicit edge strokes, not a casing under every band.** The
+parser marks exactly one lane `edge_left` and one `edge_right` per physical
+cross-section. The style offsets a narrow `LANE_MARKING` stroke to that lane's
+outer edge. A wide casing under each independent lane feature gets a butt cap
+across the full lane at every OSM way boundary; those transverse caps leak
+through as pale seams or square protrusions when adjacent ways bend or change
+lane count. A longitudinal edge stroke has no paint underneath the asphalt, so
+there is no transverse cap to leak. Connectors carry neither edge flag: a
+junction interior has no edge lines.
 
 **Dividers** are an overlay over the band (`overlays:` in the layer config,
 rendered by `map.js` as `<key>-<suffix>`), so no divider geometry is generated.
@@ -267,7 +268,7 @@ per-feature style filter can't see next door. Each internal boundary is drawn
 once, as the left edge of the lane on its right:
 
 - The cross-section's leftmost lane gets none — that edge is the outside, which
-  the casing already draws. This is per *cross-section*, not per direction block:
+  the `edge_left` overlay already draws. This is per *cross-section*, not per direction block:
   on a two-way road the forward block's lane 1 is the centreline, not an outside
   edge, so it does get one.
 - A boundary two lanes are merging across gets none: the merging lane's edge
@@ -364,21 +365,55 @@ changing 20 existing targets, so it isn't worth the ambiguity it buys.
 (`NOT_CONNECTOR` in `web/config.js`) — a junction interior carries no lane
 lines in reality, and a connector is a path across the box rather than a lane
 of a carriageway. The band still draws, so the asphalt reads as continuous.
+Continuation joins are lane-width polygons rather than thick line strings.
+Their end cross-sections extend five centimetres into both adjoining lane
+bands. That local overlap closes antialiasing cracks without exposing a line
+cap: on a sub-metre join, a full-width butt cap otherwise reads as a blue
+rectangle whenever the adjoining tangents differ.
+At a mixed-topology handover between one two-way way and separate one-way ways,
+the adjoining normal lane lines are retracted 0.75m (capped at a quarter of a
+short lane's length) and the polygon spans those trimmed cross-sections. Their
+independent flat caps therefore sit underneath the polygon instead of
+protruding at the split. Ordinary one-way continuations and unmatched road ends
+keep their conservative butt caps unchanged.
+
+### Shared-node continuation joins
+
+Not every discontinuity has a `turn:lanes` movement. Consecutive OSM ways can
+change lane count, or two separate one-way carriageways can become the two
+directional halves of one two-way way. Their source centre lines share a node,
+but their offset lane endpoints do not, which otherwise leaves rectangular
+steps and triangular holes in the rendered surface.
+
+`continuation_records` builds one travel-oriented record per known direction,
+including `fwd` and `bwd` halves of a two-way way. `make_continuation_rows` then
+bridges only an exact shared source node, only to the straightest continuation
+within 55°, and only when `ref` or `name` agrees. Lane pairs are monotone across
+the cross-section. If the lane counts differ, every lane on the wider side gets
+a join surface and the nearest normalised lane on the narrower side is reused,
+so the road surface fans in or out without connector bands crossing.
+
+This pass also emits a tiny overlapping polygon when corresponding offset
+endpoints touch exactly, covering antialiasing cracks at a way split without
+enabling round caps at unrelated road ends.
 
 ## Where lanes don't join up (and why)
 
-Each way's lanes are their own features, so MapLibre can't join across a
-shared node — that's a data-model limit, not a paint one. Two distinct
-symptoms, neither currently fixed:
+Each way's lanes are their own features, so MapLibre can't natively join across
+a shared node. The continuation pass above now covers exact, same-road handovers
+with a clear travel direction. Two limitations remain outside that safe match:
 
 **Bend wedges.** Where consecutive ways kink (~22° at the A200 chain's
 shared node), each way's offset lane ends perpendicular to *its own* end
 segment, so the outside of the bend opens a small wedge and the markings
 step across it. Measured over the 9,012 lane handovers between ways with
 matching cross-sections: average 0.10m, but 460 over 30cm and 220 over 1m
-(the worst are near-hairpin link geometry, up to 4.5m).
+(the worst are near-hairpin link geometry, up to 4.5m). Exact same-road
+handovers within the continuation angle are patched now; unnamed/ref-less
+handovers, ambiguous forks, and sharper bends deliberately retain the
+conservative butt caps.
 
-`line-cap: round` on the band closes these — and was tried and reverted.
+`line-cap: round` on every band closes these — and was tried and reverted.
 It also pushes a 1.75m semicircle past *every* way end, and wherever the
 next way is narrower or diverges there's nothing to cover it, so ~3.7k
 lane-count drops sprout a visible bulge into the gore. Fixing it properly
@@ -401,16 +436,12 @@ way 565536411 → 6627417 + 565536408 is one. Nothing is lost here, so it isn't 
 gore: each branch continues one of the parent's lanes, and the only reason it
 doesn't join up is that OSM starts both branch centrelines *at* the shared node.
 Their bands then cover ~3.5m where the parent covers 7m, leaving a half-lane
-(~1.75m) step at the node.
-
-The fix is the merge taper run backwards: start each branch's lane at the
-parent's matching lane offset and settle it onto its own centreline over a short
-distance. Unlike a true gore that's well defined. It needs what the merge index
-needs and then some — node ids off the PBF (`parse_roads` doesn't surface them
-today) and every lane-carrying way buffered rather than just the merge-tagged
-ones. A further 512 such nodes are missing a `lanes` tag on some way (OSM's 1+1
-default would cover most), and only **196** genuinely don't conserve their lane
-count.
+(~1.75m) step at the node. Directional continuation joins now bridge these
+offset endpoints directly. Original endpoint coordinates are bit-identical in
+OSM and provide a stable topology key, so no second PBF pass or stored node id
+is needed. A further 512 such nodes are missing a `lanes` tag on some way
+(OSM's 1+1 default covers most), and only **196** genuinely don't conserve
+their lane count.
 
 ## Scaling to the full Netherlands
 

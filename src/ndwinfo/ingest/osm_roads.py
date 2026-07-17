@@ -19,7 +19,12 @@ from sqlalchemy.orm import Session
 from ndwinfo.download import DownloadResult
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, json_safe, wkt_geom
 from ndwinfo.models import OsmRoad, OsmRoadExtract, OsmRoadLane
-from ndwinfo.parsers.osm_junctions import junction_record, make_connector_rows
+from ndwinfo.parsers.osm_junctions import (
+    continuation_records,
+    junction_record,
+    make_connector_rows,
+    make_continuation_rows,
+)
 from ndwinfo.parsers.osm_lanes import has_merge_tokens, make_all_lane_rows, make_lane_rows
 from ndwinfo.parsers.osm_pbf import parse_roads
 
@@ -44,17 +49,24 @@ class OsmRoadIngester(Ingester):
         # Junction connectors need both sides of a turn, so they also wait for
         # the end -- but only two coordinates per lane are kept, not geometry.
         junctions: dict[int, dict] = {}
+        continuations: dict[tuple[int, str], dict] = {}
+        lane_rows_by_id: dict[str, dict] = {}
 
         for row in parse_roads(result.path):
+            line = from_wkt(row["geom"])
             if has_merge_tokens(row["raw"]):
                 merge_ways.append(
-                    (row["osm_id"], row["highway"], dict(row["raw"]), from_wkt(row["geom"]))
+                    (row["osm_id"], row["highway"], dict(row["raw"]), line)
                 )
             else:
                 rows = make_lane_rows(
-                    row["osm_id"], row["highway"], row["raw"], from_wkt(row["geom"])
+                    row["osm_id"], row["highway"], row["raw"], line
                 )
                 self._record_junction(junctions, row["osm_id"], row["raw"], rows)
+                self._record_continuations(
+                    continuations, row["osm_id"], row["raw"], line, rows
+                )
+                lane_rows_by_id.update((lane_row["id"], lane_row) for lane_row in rows)
                 lane_batch.extend(rows)
             row["geom"] = wkt_geom(row["geom"])
             row["raw"] = json_safe(row["raw"])
@@ -75,8 +87,12 @@ class OsmRoadIngester(Ingester):
 
         # Safe after the loop: every batch above already deleted its ways'
         # existing lane rows, and these ways' road rows are all committed.
-        self._flush_merge_lanes(session, merge_ways, junctions)
-        self._flush_connectors(session, junctions)
+        self._flush_merge_lanes(
+            session, merge_ways, junctions, continuations, lane_rows_by_id
+        )
+        self._flush_connectors(
+            session, junctions, continuations, lane_rows_by_id
+        )
 
         # Extract-scoped prune only -- never touches another extract's ways.
         session.execute(
@@ -111,19 +127,45 @@ class OsmRoadIngester(Ingester):
         session.flush()
         return n
 
-    def _flush_merge_lanes(self, session: Session, merge_ways: list[tuple], junctions: dict) -> None:
+    def _flush_merge_lanes(
+        self,
+        session: Session,
+        merge_ways: list[tuple],
+        junctions: dict,
+        continuations: dict,
+        lane_rows_by_id: dict[str, dict],
+    ) -> None:
         rows = make_all_lane_rows(merge_ways)
         by_way: dict[int, list[dict]] = {}
         for row in rows:
             by_way.setdefault(row["source_id"], []).append(row)
-        for osm_id, highway, tags, _line in merge_ways:
+        for osm_id, highway, tags, line in merge_ways:
             self._record_junction(junctions, osm_id, tags, by_way.get(osm_id, []))
+            self._record_continuations(
+                continuations, osm_id, tags, line, by_way.get(osm_id, [])
+            )
+        lane_rows_by_id.update((row["id"], row) for row in rows)
         for start in range(0, len(rows), BATCH_SIZE):
             self._insert_lanes(session, rows[start:start + BATCH_SIZE])
             session.flush()
 
-    def _flush_connectors(self, session: Session, junctions: dict) -> None:
-        rows = make_connector_rows(junctions)
+    def _flush_connectors(
+        self,
+        session: Session,
+        junctions: dict,
+        continuations: dict,
+        lane_rows_by_id: dict[str, dict],
+    ) -> None:
+        continuation_rows = make_continuation_rows(continuations, lane_rows_by_id)
+        trimmed_rows = [
+            row
+            for row in lane_rows_by_id.values()
+            if row["raw"].get("continuation_trim")
+        ]
+        for start in range(0, len(trimmed_rows), BATCH_SIZE):
+            self._insert_lanes(session, trimmed_rows[start:start + BATCH_SIZE])
+            session.flush()
+        rows = make_connector_rows(junctions) + continuation_rows
         for start in range(0, len(rows), BATCH_SIZE):
             self._insert_lanes(session, rows[start:start + BATCH_SIZE])
             session.flush()
@@ -137,8 +179,22 @@ class OsmRoadIngester(Ingester):
             junctions[osm_id] = record
 
     @staticmethod
+    def _record_continuations(
+        continuations: dict,
+        osm_id: int,
+        tags: dict,
+        line,
+        lane_rows: list[dict],
+    ) -> None:
+        for record in continuation_records(osm_id, tags, line, lane_rows):
+            continuations[record["key"]] = record
+
+    @staticmethod
     def _insert_lanes(session: Session, lane_rows: list[dict]) -> None:
+        prepared = []
         for lane_row in lane_rows:
-            lane_row["geom"] = wkt_geom(lane_row["geom"])
-            lane_row["raw"] = json_safe(lane_row["raw"])
-        bulk_upsert(session, OsmRoadLane, lane_rows, ["id"])
+            row = dict(lane_row)
+            row["geom"] = wkt_geom(row["geom"])
+            row["raw"] = json_safe(row["raw"])
+            prepared.append(row)
+        bulk_upsert(session, OsmRoadLane, prepared, ["id"])

@@ -98,7 +98,7 @@ def _turn_value(tokens: Optional[set[str]]) -> Optional[str]:
 class _Lane:
     __slots__ = (
         "offset_idx", "end_offset_idx", "direction", "role", "travel_dir", "turn",
-        "divider_left",
+        "divider_left", "edge_left", "edge_right",
     )
 
     def __init__(
@@ -109,13 +109,17 @@ class _Lane:
         travel_dir: int,
         turn: Optional[set[str]] = None,
     ):
-        self.offset_idx = offset_idx  # position across the cross-section, left(+) to right(-), in lane units
-        self.end_offset_idx = offset_idx  # where it sits once the merge completes; see _resolve_merge_transition
+        # Position across the cross-section, left(+) to right(-), in lane units.
+        self.offset_idx = offset_idx
+        # Where it sits once the merge completes; see _resolve_merge_transition.
+        self.end_offset_idx = offset_idx
         self.direction = direction
         self.role = role
         self.travel_dir = travel_dir  # +1 = travels toward the line's end, -1 = toward its start
         self.turn = turn  # this lane's turn:lanes token set, or None if untagged/untrustworthy
         self.divider_left = False  # see _mark_dividers
+        self.edge_left = False
+        self.edge_right = False
 
 
 def _oneway_lanes(total: int, turn_tokens: Optional[list[set[str]]]) -> list[_Lane]:
@@ -183,7 +187,8 @@ def _two_way_lanes(tags: dict) -> Optional[list[_Lane]]:
         elif idx < n_bwd + n_both:
             lanes.append(_Lane(offset_idx, "unknown", "both_ways", 1))
         else:
-            pos_in_block = idx - n_bwd - n_both  # 0 = closest to centre, matches turn:lanes:forward order
+            # 0 = closest to centre; matches turn:lanes:forward order.
+            pos_in_block = idx - n_bwd - n_both
             tokens = None if fwd_tokens is None else fwd_tokens[pos_in_block]
             role = "unknown" if fwd_mismatched else _role_for_token(tokens)
             lanes.append(_Lane(offset_idx, "fwd", role, 1, tokens))
@@ -240,8 +245,8 @@ def _mark_dividers(lanes: list[_Lane]) -> None:
     drawn once, as the left edge of the lane on its right:
 
     - the leftmost lane of the whole cross-section has no divider; that edge is
-      the outside of the carriageway, which the style draws as a casing under
-      the bands.
+      the outside of the carriageway. ``edge_left`` / ``edge_right`` identify
+      the two physical outside edges for the style.
     - a boundary two lanes are merging across gets none either. The merging
       lane's edge sweeps sideways as it converges, so a line on it would drag a
       diagonal across the carriageway -- the merge arrows carry that meaning.
@@ -250,6 +255,8 @@ def _mark_dividers(lanes: list[_Lane]) -> None:
     """
     ordered = sorted(lanes, key=lambda lane: lane.offset_idx, reverse=True)  # left to right
     for idx, lane in enumerate(ordered):
+        lane.edge_left = idx == 0
+        lane.edge_right = idx == len(ordered) - 1
         if idx == 0:
             lane.divider_left = False
             continue
@@ -294,7 +301,8 @@ def _plan_lanes(highway: str, tags: dict) -> Optional[tuple[float, list[_Lane], 
         assumed = False
         if total is None:
             if turn_tokens:
-                total = len(turn_tokens)  # one token per lane, by definition -- a count, not a guess
+                # One token per lane, by definition -- a count, not a guess.
+                total = len(turn_tokens)
             else:
                 total, assumed = 1, True  # an untagged oneway road is one lane
         return width, _oneway_lanes(total, turn_tokens), flip, assumed
@@ -612,6 +620,8 @@ def make_lane_rows(
         wgs84_geom = transform(_RD_TO_WGS84.transform, lane_geom)
         lane_raw = dict(raw)
         lane_raw["divider_left"] = lane.divider_left
+        lane_raw["edge_left"] = lane.edge_left
+        lane_raw["edge_right"] = lane.edge_right
         turn = _turn_value(lane.turn)
         if turn is not None:
             lane_raw["turn"] = turn

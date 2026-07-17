@@ -274,6 +274,11 @@ function setLayerVisibility (layer, visible) {
     return
   }
   if (layer.geomType === 'line') {
+    for (const fill of layer.fills || []) {
+      if (map.getLayer(`${layer.key}-${fill.suffix}`)) {
+        map.setLayoutProperty(`${layer.key}-${fill.suffix}`, 'visibility', vis)
+      }
+    }
     if (map.getLayer(`${layer.key}-casing`)) map.setLayoutProperty(`${layer.key}-casing`, 'visibility', vis)
     if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
     for (const ov of layer.overlays || []) {
@@ -415,4 +420,3 @@ function updateZoomHint () {
     hint.classList.add('hidden')
   }
 }
-

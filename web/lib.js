@@ -581,19 +581,6 @@ function metresWideMin (metres, floorPx, minZoom = 12, maxZoom = 22) {
   return ['interpolate', ['exponential', 2], ['zoom'], ...stops]
 }
 
-// `metres` wide plus an edge of `edgeM` on each side, the edge never thinner
-// than floorPx. Used to draw a band's outline as a casing under it: only the
-// part no band covers survives, which on a carriageway is exactly its outside.
-// Same per-stop folding as metresWideMin — ['zoom'] can't nest inside anything.
-function metresWidePlusEdge (metres, edgeM, floorPx, minZoom = 12, maxZoom = 22) {
-  const stops = []
-  for (let z = minZoom; z <= maxZoom; z++) {
-    const ppm = pxPerMetre(z)
-    stops.push(z, ['+', ['*', metres, ppm], 2 * Math.max(floorPx, edgeM * ppm)])
-  }
-  return ['interpolate', ['exponential', 2], ['zoom'], ...stops]
-}
-
 // ─── Lane turn arrows ─────────────────────────────────────────────────────────
 
 // Road-marking arrows, one glyph per lane's turn:lanes token set. Drawn rather

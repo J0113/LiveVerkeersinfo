@@ -67,8 +67,14 @@ def test_oneway_secondary_lanes_are_275m_apart():
 
 
 def test_link_class_inherits_parent_width():
-    assert make_lane_rows(1, "motorway_link", {"lanes": "1", "oneway": "yes"}, REAL_LINE)[0]["width_m"] == 3.5
-    assert make_lane_rows(1, "secondary_link", {"lanes": "1", "oneway": "yes"}, REAL_LINE)[0]["width_m"] == 2.75
+    motorway = make_lane_rows(
+        1, "motorway_link", {"lanes": "1", "oneway": "yes"}, REAL_LINE
+    )
+    secondary = make_lane_rows(
+        1, "secondary_link", {"lanes": "1", "oneway": "yes"}, REAL_LINE
+    )
+    assert motorway[0]["width_m"] == 3.5
+    assert secondary[0]["width_m"] == 2.75
 
 
 def _end_gap_m(row_a: dict, row_b: dict) -> float:
@@ -87,7 +93,8 @@ def _start_gap_m(row_a: dict, row_b: dict) -> float:
 
 
 def test_merge_to_right_lane_converges_onto_its_right_neighbour():
-    ways = [(1, "motorway", {"lanes": "2", "oneway": "yes", "turn:lanes": "merge_to_right|through"}, REAL_LINE)]
+    tags = {"lanes": "2", "oneway": "yes", "turn:lanes": "merge_to_right|through"}
+    ways = [(1, "motorway", tags, REAL_LINE)]
     rows = make_all_lane_rows(ways)
     by_lane = {row["lane"]: row for row in rows}
     assert by_lane[1]["role"] == "merge_right"
@@ -110,7 +117,8 @@ def test_merge_end_recentres_the_survivor_onto_the_ways_own_line():
     # next way (one lane, 273 chains here go 2->1) is centred on the shared
     # node. Holding lane 2 at its 2-lane offset leaves it half a lane short of
     # meeting it.
-    ways = [(1, "motorway", {"lanes": "2", "oneway": "yes", "turn:lanes": "merge_to_right|none"}, REAL_LINE)]
+    tags = {"lanes": "2", "oneway": "yes", "turn:lanes": "merge_to_right|none"}
+    ways = [(1, "motorway", tags, REAL_LINE)]
     rows = make_all_lane_rows(ways)
     for row in rows:
         assert _dist_from_m(row, -1, REAL_LINE.coords[-1]) < 0.2, row["id"]
@@ -123,7 +131,8 @@ def test_merge_end_recentres_the_survivor_onto_the_ways_own_line():
 
 def test_three_lane_merge_recentres_both_survivors():
     # 3 -> 2: the survivors end at +/-1.75, not at their 3-lane +3.5/0.
-    ways = [(1, "motorway", {"lanes": "3", "oneway": "yes", "turn:lanes": "merge_to_right|none|none"}, REAL_LINE)]
+    tags = {"lanes": "3", "oneway": "yes", "turn:lanes": "merge_to_right|none|none"}
+    ways = [(1, "motorway", tags, REAL_LINE)]
     rows = make_all_lane_rows(ways)
     by_lane = {r["lane"]: r for r in rows}
     assert by_lane[1]["role"] == "merge_right"
@@ -148,7 +157,8 @@ def test_no_merge_means_no_recentring():
 
 def test_merge_on_an_edge_lane_with_no_neighbour_is_left_alone():
     # Nothing to the right of the rightmost lane to converge onto.
-    ways = [(1, "motorway", {"lanes": "2", "oneway": "yes", "turn:lanes": "through|merge_to_right"}, REAL_LINE)]
+    tags = {"lanes": "2", "oneway": "yes", "turn:lanes": "through|merge_to_right"}
+    ways = [(1, "motorway", tags, REAL_LINE)]
     rows = make_all_lane_rows(ways)
     by_lane = {row["lane"]: row for row in rows}
     assert by_lane[2]["role"] == "merge_right"
@@ -273,13 +283,19 @@ def test_two_way_odd_total_without_directional_tags_stays_unknown():
 
 
 def test_leftmost_lane_has_no_divider():
-    # Its left edge is the outside of the carriageway, drawn as a casing under
-    # the bands -- a divider there would double up on it.
+    # Its left edge is the outside of the carriageway -- a divider there would
+    # double up on the explicit outside-edge stroke.
     rows = make_lane_rows(1, "motorway", {"lanes": "3", "oneway": "yes"}, REAL_LINE)
     by_lane = {r["lane"]: r for r in rows}
     assert by_lane[1]["raw"]["divider_left"] is False
     assert by_lane[2]["raw"]["divider_left"] is True
     assert by_lane[3]["raw"]["divider_left"] is True
+    assert by_lane[1]["raw"]["edge_left"] is True
+    assert by_lane[1]["raw"]["edge_right"] is False
+    assert by_lane[2]["raw"]["edge_left"] is False
+    assert by_lane[2]["raw"]["edge_right"] is False
+    assert by_lane[3]["raw"]["edge_left"] is False
+    assert by_lane[3]["raw"]["edge_right"] is True
 
 
 def test_two_way_centreline_gets_a_divider():
@@ -292,6 +308,8 @@ def test_two_way_centreline_gets_a_divider():
     assert bwd[1]["raw"]["divider_left"] is False  # outside of the road
     assert fwd[1]["raw"]["divider_left"] is True   # centreline
     assert len([r for r in rows if r["raw"]["divider_left"]]) == 3  # 4 lanes, 3 boundaries
+    assert len([r for r in rows if r["raw"]["edge_left"]]) == 1
+    assert len([r for r in rows if r["raw"]["edge_right"]]) == 1
 
 
 def test_no_divider_on_a_boundary_a_lane_merges_across():
@@ -350,7 +368,9 @@ def test_untagged_two_way_matches_the_even_split_rule():
     # they must not disagree about which side is oncoming.
     assumed = make_lane_rows(1, "secondary", {}, REAL_LINE)
     counted = make_lane_rows(2, "secondary", {"lanes": "2"}, REAL_LINE)
-    side = lambda rows, d: round(_side_delta_deg(next(r for r in rows if r["direction"] == d)))
+    def side(rows, direction):
+        row = next(r for r in rows if r["direction"] == direction)
+        return round(_side_delta_deg(row))
     assert side(assumed, "fwd") == side(counted, "fwd")
     assert side(assumed, "bwd") == side(counted, "bwd")
 
@@ -396,7 +416,8 @@ def test_tagged_lane_count_is_not_marked_assumed():
 
 def test_untagged_oneway_takes_its_count_from_turn_lanes():
     # turn:lanes carries one token per lane by definition, so it's a count.
-    rows = make_lane_rows(1, "primary", {"oneway": "yes", "turn:lanes": "left|through|right"}, REAL_LINE)
+    tags = {"oneway": "yes", "turn:lanes": "left|through|right"}
+    rows = make_lane_rows(1, "primary", tags, REAL_LINE)
     assert len(rows) == 3
     assert [r["role"] for r in sorted(rows, key=lambda r: r["lane"])] == ["normal"] * 3
     assert all("lanes_assumed" not in r["raw"] for r in rows)

@@ -256,25 +256,20 @@ const LAYERS = [
     // ~460 bend wedges over 30cm, against ~3.7k lane-count drops that would
     // sprout a visible bulge. See docs/11-osm-pbf.md.
     lineCap: 'butt', lineJoin: 'round',
-    // The carriageway's outside line, drawn UNDER every band. Each lane casts
-    // its own outline, but a lane that has a neighbour gets that outline
-    // painted over by the neighbour's band — so what survives is exactly the
-    // edge no lane sits beyond: the outside of the carriageway. That falls out
-    // of layer order rather than needing a filter per edge, and it's why it
-    // goes under: where a lane tapers away into a merge, the lane it merges
-    // into covers the stale edge instead of leaving it stranded mid-asphalt.
-    casing: {
-      'line-color': LANE_MARKING,
-      'line-width': metresWidePlusEdge(['get', 'width_m'], 0.2, 0.9, 15)
-    },
-    // Connectors get no casing: a junction interior has no edge lines, and an
-    // outline around each connector would draw them across the box.
-    casingFilter: NOT_CONNECTOR,
+    // Shared-node continuation patches are lane-width polygons. Rendering the
+    // same tiny joins as thick line strings produces a full-width butt cap
+    // that sticks out as a blue rectangle whenever the two tangents differ.
+    fills: [{
+      suffix: 'continuation',
+      filter: ['==', ['get', 'continuation'], true],
+      paint: { 'fill-color': LANE_ASPHALT, 'fill-opacity': 1 }
+    }],
+    filter: ['!=', ['get', 'continuation'], true],
     paint: {
       'line-color': LANE_ASPHALT,
       // Slightly over true width so neighbouring bands overlap by a few cm.
       // Butted exactly, their shared edge antialiases against whatever is below
-      // — here the casing — and every lane boundary shows a pale hairline.
+      // and every lane boundary shows a pale hairline from the basemap.
       'line-width': metresWide(['+', ['get', 'width_m'], LANE_SEAM_OVERLAP_M], 15),
       'line-opacity': 1
     },
@@ -291,6 +286,27 @@ const LAYERS = [
     // Connectors carry no divider_left at all, so they drop out here without
     // needing NOT_CONNECTOR — a junction interior has no lane lines.
     overlays: [
+      {
+        // Outside road edges are narrow offset strokes, not a wide casing
+        // underneath every independent lane feature. A wide casing has a butt
+        // cap across the full lane at every OSM way boundary; those caps leak
+        // through as transverse seams. Edge strokes only end along the road's
+        // perimeter, so there is nothing underneath the asphalt to leak.
+        suffix: 'edge-left', filter: ['==', ['get', 'edge_left'], true],
+        paint: {
+          'line-color': LANE_MARKING,
+          'line-offset': metresWide(['*', ['get', 'width_m'], -0.5], 15),
+          'line-width': metresWideMin(0.2, 0.9, 15)
+        }
+      },
+      {
+        suffix: 'edge-right', filter: ['==', ['get', 'edge_right'], true],
+        paint: {
+          'line-color': LANE_MARKING,
+          'line-offset': metresWide(['*', ['get', 'width_m'], 0.5], 15),
+          'line-width': metresWideMin(0.2, 0.9, 15)
+        }
+      },
       {
         // 0.15m stroke × dasharray [20, 60] (units are line widths) is NL's
         // 3m-line/9m-gap lane marking at true scale, so it lands on the real
@@ -506,4 +522,3 @@ const BEARING_DEADBAND_DEG = 1.5
 // Exponential moving average factor for the travel heading (0..1): applied per
 // GPS fix. Lower = smoother heading, less corner jitter, slightly more lag.
 const HEADING_EMA_ALPHA = 0.4
-

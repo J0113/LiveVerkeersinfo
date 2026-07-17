@@ -205,12 +205,6 @@ function renderLaneSpeedLabels (laneFc) {
   }
 }
 
-// Lane-speed labels are pinned to their sensor's position (one per sensor), so
-// several sensors on a section no longer collapse onto one spot. MapLibre keeps
-// each marker anchored to its lng/lat during pan/zoom/rotate, so no per-frame
-// repositioning is needed; labels that scroll off-screen reappear on refetch.
-function updateLaneSpeedLayout () {}
-
 function currentBoundsBox () {
   const b = map.getBounds()
   return { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth() }
@@ -415,4 +409,3 @@ function setBboxTooLargeHint (show) {
   bboxTooLarge = show
   updateZoomHint()
 }
-
