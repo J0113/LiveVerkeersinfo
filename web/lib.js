@@ -543,3 +543,179 @@ function formatAgeNl (isoTs) {
   if (ageS < 7 * 86400) return `${Math.round(ageS / 86400)} dag${Math.round(ageS / 86400) === 1 ? '' : 'en'} geleden`
   return new Date(t).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short', year: 'numeric' })
 }
+
+// ─── Ground-scale sizing for MapLibre line widths ──────────────────────────────
+// MapLibre line-width is screen pixels and has no metre unit. The Web Mercator
+// world is 512·2^zoom px wide, so px-per-metre doubles every zoom level, and an
+// ['exponential', 2] zoom interpolation reproduces it exactly rather than
+// approximating it. Latitude is pinned to the middle of the Netherlands —
+// cos(lat) varies ~6% between Zeeland and Groningen, i.e. under 0.2m on a 3.5m
+// lane, which is well inside OSM's own positional accuracy.
+
+const NL_REF_LAT_DEG = 52.2
+const EARTH_CIRCUMFERENCE_M = 40075016.686
+
+function pxPerMetre (zoom) {
+  return (512 * Math.pow(2, zoom)) / (EARTH_CIRCUMFERENCE_M * Math.cos(NL_REF_LAT_DEG * Math.PI / 180))
+}
+
+// Render `metres` (a number, or any expression yielding one — e.g.
+// ['get', 'width_m']) at true ground scale. The zoom interpolation has to be
+// the outermost expression: MapLibre rejects ['zoom'] nested inside anything
+// else, so the scale factor is folded into each stop's output rather than
+// multiplied over the whole interpolation. Anchors only need to bracket the
+// zooms the layer is visible at.
+function metresWide (metres, minZoom = 12, maxZoom = 22) {
+  return ['interpolate', ['exponential', 2], ['zoom'],
+    minZoom, ['*', metres, pxPerMetre(minZoom)],
+    maxZoom, ['*', metres, pxPerMetre(maxZoom)]
+  ]
+}
+
+// Same, but never thinner than floorPx — for markings whose true width falls
+// under a pixel at low zoom. The floor can't be an outer ['max'] for the same
+// nesting reason, so it's applied per stop, one stop per integer zoom.
+function metresWideMin (metres, floorPx, minZoom = 12, maxZoom = 22) {
+  const stops = []
+  for (let z = minZoom; z <= maxZoom; z++) stops.push(z, Math.max(floorPx, metres * pxPerMetre(z)))
+  return ['interpolate', ['exponential', 2], ['zoom'], ...stops]
+}
+
+// `metres` wide plus an edge of `edgeM` on each side, the edge never thinner
+// than floorPx. Used to draw a band's outline as a casing under it: only the
+// part no band covers survives, which on a carriageway is exactly its outside.
+// Same per-stop folding as metresWideMin — ['zoom'] can't nest inside anything.
+function metresWidePlusEdge (metres, edgeM, floorPx, minZoom = 12, maxZoom = 22) {
+  const stops = []
+  for (let z = minZoom; z <= maxZoom; z++) {
+    const ppm = pxPerMetre(z)
+    stops.push(z, ['+', ['*', metres, ppm], 2 * Math.max(floorPx, edgeM * ppm)])
+  }
+  return ['interpolate', ['exponential', 2], ['zoom'], ...stops]
+}
+
+// ─── Lane turn arrows ─────────────────────────────────────────────────────────
+
+// Road-marking arrows, one glyph per lane's turn:lanes token set. Drawn rather
+// than shipped as sprites because the token sets combine freely
+// (`left;through`, `through;right`, …) — there's no fixed list to pre-draw, so
+// each combination is generated on demand and cached by MapLibre.
+
+// Where each token's arrowhead ends up, in degrees off the travel direction.
+// MapLibre's line placement aligns a symbol's +x with the line, so the glyph is
+// drawn pointing +x and a left turn bends toward -y (canvas y grows downward,
+// and the driver's left is up when travel runs to the right).
+//
+// `reverse` is absent on purpose: a U-turn needs a looping stem this
+// stem-and-bend construction can't draw, and it would fold back over itself.
+const TURN_ARROW_DEG = {
+  through: 0,
+  none: 0,
+  slight_left: -35,
+  slight_right: 35,
+  left: -90,
+  right: 90,
+  sharp_left: -135,
+  sharp_right: 135,
+  // A merge is a lateral movement, so it reads as a shallow bend.
+  merge_to_left: -30,
+  merge_to_right: 30
+}
+
+const LANE_ARROW_PREFIX = 'lane-arrow-'
+const ARROW_ICON_PX = 64
+const ARROW_ICON_RATIO = 2 // => 32px natural size; icon-size scales from that
+
+// Glyph proportions, as fractions of the icon's span. Shared with the sizing
+// below, which derives from them rather than repeating a measured constant.
+const ARROW_REACH = 0.26 // stem end → arrowhead base
+const ARROW_HEAD = 0.15
+
+// How long the glyph is on the ground, per metre of lane width. A 90° turn puts
+// its arrowhead (ARROW_REACH + ARROW_HEAD) of the span sideways off the lane's
+// centreline, so keeping that inside a lane of width w means
+// span ≤ w / (2 × (REACH + HEAD)). Scaling off `width_m` rather than fixing a
+// length matters: a secondary lane is 2.75m, not 3.5m, and a fixed length sized
+// for motorways hangs the turn arrows over the edge line of every secondary.
+// The margin keeps the arrowhead off the edge line instead of exactly on it.
+const ARROW_LANE_MARGIN = 0.9
+const ARROW_SPAN_PER_LANE_WIDTH = (0.5 / (ARROW_REACH + ARROW_HEAD)) * ARROW_LANE_MARGIN
+
+// White paint with a dark edge, so the glyph holds up on both the orange lane
+// band and the satellite basemap's real asphalt.
+const ARROW_FILL = '#ffffff'
+const ARROW_EDGE = 'rgba(40, 28, 6, 0.62)'
+
+function laneArrowImage (tokens) {
+  const branches = tokens
+    .map(t => TURN_ARROW_DEG[t])
+    .filter(deg => deg !== undefined)
+    .map(deg => {
+      const a = deg * Math.PI / 180
+      return { ux: Math.cos(a), uy: Math.sin(a) }
+    })
+  if (!branches.length) return null
+
+  const S = ARROW_ICON_PX
+  const cy = S * 0.5
+  const baseX = S * 0.08 // tail
+  const stemX = S * 0.42 // where the branches split off
+  const reach = S * ARROW_REACH
+  const head = S * ARROW_HEAD
+  const stemW = S * 0.11
+  const edge = S * 0.045
+
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = S
+  const ctx = canvas.getContext('2d')
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+
+  for (const b of branches) {
+    b.tipX = stemX + reach * b.ux
+    b.tipY = cy + reach * b.uy
+  }
+
+  // Shared stem, then one bend per token. The control point carries on along
+  // travel so each branch leaves the stem tangentially instead of kinking.
+  const traceStems = () => {
+    for (const b of branches) {
+      ctx.beginPath()
+      ctx.moveTo(baseX, cy)
+      ctx.lineTo(stemX, cy)
+      ctx.quadraticCurveTo(stemX + reach * 0.55, cy, b.tipX, b.tipY)
+      ctx.stroke()
+    }
+  }
+  const traceHeads = () => {
+    for (const b of branches) {
+      const px = -b.uy
+      const py = b.ux
+      ctx.beginPath()
+      ctx.moveTo(b.tipX + b.ux * head, b.tipY + b.uy * head)
+      ctx.lineTo(b.tipX + px * head * 0.62, b.tipY + py * head * 0.62)
+      ctx.lineTo(b.tipX - px * head * 0.62, b.tipY - py * head * 0.62)
+      ctx.closePath()
+      ctx.fill()
+      ctx.stroke()
+    }
+  }
+
+  // Every dark part first: an arrowhead's edge drawn later would cut into a
+  // white stem it overlaps.
+  ctx.strokeStyle = ARROW_EDGE
+  ctx.fillStyle = ARROW_EDGE
+  ctx.lineWidth = stemW + edge * 2
+  traceStems()
+  ctx.lineWidth = edge * 2
+  traceHeads()
+
+  ctx.strokeStyle = ARROW_FILL
+  ctx.fillStyle = ARROW_FILL
+  ctx.lineWidth = stemW
+  traceStems()
+  ctx.lineWidth = 0.1
+  traceHeads()
+
+  return ctx.getImageData(0, 0, S, S)
+}

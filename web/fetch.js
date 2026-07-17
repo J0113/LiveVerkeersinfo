@@ -32,7 +32,8 @@ function fetchLayer (layer) {
   const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
     .map(v => v.toFixed(6)).join(',')
   const sep = layer.endpoint.includes('?') ? '&' : '?'
-  const url = `/api${layer.endpoint}${sep}bbox=${bbox}`
+  let url = `/api${layer.endpoint}${sep}bbox=${bbox}`
+  if (layer.sendZoom) url += `&zoom=${map.getZoom().toFixed(2)}`
 
   fetch(url, { signal: ctrl.signal })
     .then(r => {

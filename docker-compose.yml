@@ -33,6 +33,7 @@ services:
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-2}
       DISABLED_FEEDS: ${DISABLED_FEEDS:-verkeersborden_csv}
       NWB_WEGVAKKEN_URL: ${NWB_WEGVAKKEN_URL:-https://downloads.rijkswaterstaatdata.nl/nwb-wegen/geogegevens/geopackage/NWB-dagelijks/Wegvakken/Wegvakken.gpkg}
+      OSM_NOORD_HOLLAND_URL: ${OSM_NOORD_HOLLAND_URL:-https://download.geofabrik.de/europe/netherlands/noord-holland-latest.osm.pbf}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -51,6 +52,7 @@ services:
       DB_POOL_RECYCLE_S: ${DB_POOL_RECYCLE_S:-1800}
       NWB_MAX_FEATURES: ${NWB_MAX_FEATURES:-5000}
       NWB_DIAGNOSTIC_MODE: ${NWB_DIAGNOSTIC_MODE:-false}
+      OSM_MAX_FEATURES: ${OSM_MAX_FEATURES:-5000}
     ports:
       - "3500:3500"
     depends_on:
