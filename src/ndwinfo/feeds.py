@@ -194,14 +194,14 @@ FEEDS: list[FeedDef] = [
         "ingester_cls": None,
     },
     {
-        # Geofabrik province extract, not an NDW file. Driving-road ways only
+        # Geofabrik country extract, not an NDW file. Driving-road ways only
         # (motorway/trunk/primary/secondary + _link) -- see docs/11-osm-pbf.md.
-        "name": "osm_noord_holland",
-        "filename": "noord-holland-latest.osm.pbf",
-        "cadence_s": 86400,
+        "name": "osm_netherlands",
+        "filename": "netherlands-latest.osm.pbf",
+        "cadence_s": 604800,
         "parser_fn": None,
         "ingester_cls": None,
-        "url": settings.osm_noord_holland_url,
+        "url": settings.osm_netherlands_url,
     },
 ]
 

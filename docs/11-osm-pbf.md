@@ -21,7 +21,7 @@ OSM-sourced independent of the basemap underneath it.
 ## Source
 
 - **Provider**: Geofabrik, https://download.geofabrik.de/europe/netherlands.html
-- **Ingested file**: `noord-holland-latest.osm.pbf` (province extract, ~180 MB)
+- **Ingested file**: `netherlands-latest.osm.pbf` (country extract, ~1.3 GB gz)
 - **Format**: OSM PBF (protobuf), parsed with `osmium` (pyosmium)'s
   `FileProcessor` streaming iterator — not `SimpleHandler`, whose
   `way()`/`node()` callbacks can't `yield` to an outer generator.
@@ -29,8 +29,8 @@ OSM-sourced independent of the basemap underneath it.
   coordinates in one pass (verified ~910MB peak RSS for this extract's
   ~18.6M nodes; a full-Netherlands extract will need its own RSS check
   before deploying — see "Scaling to the full Netherlands" below).
-- **Update cadence**: Geofabrik regenerates ~daily; ingested on the same
-  cadence (`cadence_s: 86400` in `feeds.py`).
+- **Update cadence**: Geofabrik regenerates ~daily; ingested weekly
+  (`cadence_s: 604800` in `feeds.py`) since the full-NL extract is large.
 - **CRS**: WGS84 (EPSG:4326) — matches project convention
 - **No live data** — snapshot per extract, upserted; see "Extract model"
   below for how staleness is pruned.
@@ -414,11 +414,12 @@ count.
 
 ## Scaling to the full Netherlands
 
-The plan is to switch from the Noord-Holland extract to the full
-`netherlands-latest.osm.pbf` once proven. Before that switch:
-**re-benchmark peak RSS** — nationwide node count could push
+Switched from the Noord-Holland extract to `netherlands-latest.osm.pbf`
+(`config.py`'s `osm_netherlands_url`, feed `osm_netherlands`). **Peak RSS on
+this extract is not yet re-benchmarked** — nationwide node count could push
 `with_locations("sparse_mem_array")` into multi-GB territory (Noord-Holland's
-18.6M nodes cost ~910MB). If it does, fall back to a two-pass parse
+18.6M nodes cost ~910MB; NL has ~10x the population/road density). Watch the
+first real ingest's memory use; if it blows up, fall back to a two-pass parse
 (collect matching ways' referenced node ids first, then resolve only those
 coordinates in a second pass) rather than assuming the single-pass approach
 scales. `/api/osm/roads` is already zoom-tiered (`_highway_types_for_zoom`

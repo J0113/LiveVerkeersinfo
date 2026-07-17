@@ -32,7 +32,7 @@ INGESTERS: dict[str, object] = {
     "meetlocaties_shapefile": MeetlocatiesIngester(),
     "vild_shapefile": VildIngester(),
     "nwb_wegvakken": NwbWegvakkenIngester(),
-    "osm_noord_holland": OsmRoadIngester(feed_name="osm_noord_holland", extract_key="noord-holland"),
+    "osm_netherlands": OsmRoadIngester(feed_name="osm_netherlands", extract_key="netherlands"),
     "weggeg_rijstroken": WeggegLaneIngester(),
     "trafficspeed": TrafficspeedIngester(),
     "traveltime": TraveltimeIngester(),

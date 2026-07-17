@@ -109,7 +109,7 @@ and a bearing-computation plan using data already ingested.
 
 | File | Format | ~Size | Refresh |
 |---|---|---|---|
-| Geofabrik `noord-holland-latest.osm.pbf` | OSM PBF, ODbL-licensed | ~180M | ~daily |
+| Geofabrik `netherlands-latest.osm.pbf` | OSM PBF, ODbL-licensed | ~1.3G | ~weekly |
 
 `highway=motorway,trunk,primary,secondary` (+ `_link` variants) only, all
 OSM tags stored. Not part of the NDW catalog above — see
