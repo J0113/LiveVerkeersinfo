@@ -638,7 +638,7 @@ const ARROW_HEAD = 0.15
 // length matters: a secondary lane is 2.75m, not 3.5m, and a fixed length sized
 // for motorways hangs the turn arrows over the edge line of every secondary.
 // The margin keeps the arrowhead off the edge line instead of exactly on it.
-const ARROW_LANE_MARGIN = 0.9
+const ARROW_LANE_MARGIN = 0.6
 const ARROW_SPAN_PER_LANE_WIDTH = (0.5 / (ARROW_REACH + ARROW_HEAD)) * ARROW_LANE_MARGIN
 
 // White paint with a dark edge, so the glyph holds up on both the orange lane
