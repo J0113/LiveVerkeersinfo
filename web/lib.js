@@ -56,6 +56,63 @@ function addFlashingLamps (box) {
 
 // ─── Speed color scales ─────────────────────────────────────────────────────────
 
+const SPEED_LIMIT_COLOR_STOPS = [
+  [0, '#cc2200'],
+  [0.3, '#ff3333'],
+  [0.5, '#ff8800'],
+  [0.7, '#ffdd00'],
+  [0.9, '#00cc44'],
+]
+const SPEED_LIMIT_UNKNOWN_COLOR = '#777777'
+
+function speedLimitLineColorExpression () {
+  return ['case',
+    ['>', ['coalesce', ['get', 'maxspeed_kmh'], 0], 0],
+    ['interpolate', ['linear'],
+      ['/', ['get', 'speed_kmh'], ['get', 'maxspeed_kmh']],
+      ...SPEED_LIMIT_COLOR_STOPS.flat()
+    ],
+    SPEED_LIMIT_UNKNOWN_COLOR
+  ]
+}
+
+// CSS equivalent of MapLibre's line-color interpolation, so the opaque number
+// label and translucent line use the same measured-speed/maxspeed colour.
+function speedLimitColor (kmh, maxspeedKmh) {
+  const speed = Number(kmh)
+  const limit = Number(maxspeedKmh)
+  if (!Number.isFinite(speed) || !Number.isFinite(limit) || limit <= 0) {
+    return SPEED_LIMIT_UNKNOWN_COLOR
+  }
+  const ratio = speed / limit
+  if (ratio <= SPEED_LIMIT_COLOR_STOPS[0][0]) return SPEED_LIMIT_COLOR_STOPS[0][1]
+
+  for (let i = 1; i < SPEED_LIMIT_COLOR_STOPS.length; i++) {
+    const [upperRatio, upperColor] = SPEED_LIMIT_COLOR_STOPS[i]
+    if (ratio <= upperRatio) {
+      const [lowerRatio, lowerColor] = SPEED_LIMIT_COLOR_STOPS[i - 1]
+      const t = (ratio - lowerRatio) / (upperRatio - lowerRatio)
+      return interpolateHexColor(lowerColor, upperColor, t)
+    }
+  }
+  return SPEED_LIMIT_COLOR_STOPS[SPEED_LIMIT_COLOR_STOPS.length - 1][1]
+}
+
+function interpolateHexColor (from, to, t) {
+  const rgb = color => [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16))
+  const a = rgb(from)
+  const b = rgb(to)
+  return '#' + a.map((channel, i) =>
+    Math.round(channel + (b[i] - channel) * t).toString(16).padStart(2, '0')
+  ).join('')
+}
+
+function speedLimitTextColor (kmh, maxspeedKmh) {
+  const color = speedLimitColor(kmh, maxspeedKmh)
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16))
+  return (r * 299 + g * 587 + b * 114) / 1000 > 150 ? '#111' : '#fff'
+}
+
 function speedColor (kmh) {
   if (kmh === null || kmh === undefined) return '#444'
   if (kmh <= 0)   return '#cc2200'

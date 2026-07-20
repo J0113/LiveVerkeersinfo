@@ -190,10 +190,10 @@ function renderLaneSpeedLabels (laneFc) {
 
       const el = document.createElement('div')
       el.className = 'lane-speed-label'
-      el.style.background = speedColor(kmh)
-      el.style.color = speedTextColor(kmh)
+      el.style.background = speedLimitColor(kmh, p.maxspeed_kmh)
+      el.style.color = speedLimitTextColor(kmh, p.maxspeed_kmh)
       el.textContent = Math.round(kmh)
-      el.title = `${p.road || p.road_number || ''} ${p.carriageway || ''} · lane ${p.lane} · ${Math.round(kmh)} km/h`
+      el.title = `${p.road || p.road_number || ''} ${p.carriageway || ''} · lane ${p.lane} · ${Math.round(kmh)} km/h${p.maxspeed_kmh ? ` · limit ${p.maxspeed_kmh} km/h` : ''}`
 
       const flow = s.flow_veh_h
       el.addEventListener('click', e => {
@@ -207,6 +207,7 @@ function renderLaneSpeedLabels (laneFc) {
             km: p.km,
             lane: p.lane,
             speed_kmh: Math.round(kmh) + ' km/h',
+            maxspeed_kmh: p.maxspeed_kmh != null ? p.maxspeed_kmh + ' km/h' : '—',
             flow_veh_h: flow != null ? Math.round(flow) + ' veh/h' : '—',
             measured: s.measured_at || p.measured_at,
           }))

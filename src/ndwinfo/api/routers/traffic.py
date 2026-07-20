@@ -28,6 +28,8 @@ router = APIRouter(prefix="/traffic", tags=["traffic"])
 
 OSM_MATCH_MAX_DISTANCE_M = 25
 OSM_MATCH_MAX_ANGLE_DEG = 45
+OSM_CLOSE_MATCH_MAX_DISTANCE_M = 5
+OSM_CLOSE_MATCH_MAX_ANGLE_DEG = 15
 OSM_MAXSPEED_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(mph|km/?h|kph)?\s*$", re.I)
 
 
@@ -300,13 +302,45 @@ def get_speed(
 
 def _normalized_road_ref(value: str | None) -> str | None:
     """Normalize OSM/VILD/measurement road references for comparison."""
+    refs = _normalized_road_refs(value)
+    return next(iter(refs), None)
+
+
+def _normalized_road_refs(value: str | None) -> tuple[str, ...]:
+    """Normalize every road reference in values such as ``A9;A200``."""
     if not value:
-        return None
-    match = re.search(r"\b([AN])?\s*0*(\d+)([A-Z]?)\b", value.upper())
-    if not match:
-        return None
-    prefix, number, suffix = match.groups()
-    return f"{prefix or ''}{int(number)}{suffix or ''}"
+        return ()
+    refs = []
+    for prefix, number, suffix in re.findall(
+        r"(?<![A-Z0-9])([AN])?\s*0*(\d+)([A-Z]?)(?![A-Z0-9])",
+        value.upper(),
+    ):
+        normalized = f"{prefix or ''}{int(number)}{suffix or ''}"
+        if normalized not in refs:
+            refs.append(normalized)
+    return tuple(refs)
+
+
+def _road_ref_quality(site_ref: str | None, candidate_ref: str | None) -> int:
+    """Rank exact refs above same-number A/N transitions.
+
+    Returns 2 for an exact reference, 1 for the same numbered corridor with a
+    different or absent A/N prefix, 0 when either side has no usable reference,
+    and -1 for a genuinely different road number.
+    """
+    site_refs = _normalized_road_refs(site_ref)
+    candidate_refs = _normalized_road_refs(candidate_ref)
+    if not site_refs or not candidate_refs:
+        return 0
+    if set(site_refs) & set(candidate_refs):
+        return 2
+
+    def corridor(ref: str) -> str:
+        return ref[1:] if ref[:1] in {"A", "N"} else ref
+
+    if {corridor(ref) for ref in site_refs} & {corridor(ref) for ref in candidate_refs}:
+        return 1
+    return -1
 
 
 def _angular_difference(a: float, b: float) -> float:
@@ -322,16 +356,22 @@ def _pick_osm_candidate(site: dict, candidates: list):
 
     eligible = []
     for candidate in candidates:
-        candidate_ref = _normalized_road_ref(candidate.ref)
-        if road_ref and candidate_ref and road_ref != candidate_ref:
+        ref_quality = _road_ref_quality(road_ref, candidate.ref)
+        if ref_quality < 0:
             continue
         angle = _angular_difference(float(candidate.bearing), float(bearing))
         if angle > OSM_MATCH_MAX_ANGLE_DEG:
             continue
+        close_reference_match = (
+            ref_quality >= 1
+            and float(candidate.distance_m) < OSM_CLOSE_MATCH_MAX_DISTANCE_M
+            and angle <= OSM_CLOSE_MATCH_MAX_ANGLE_DEG
+        )
         eligible.append(
             (
                 candidate,
-                bool(road_ref and candidate_ref == road_ref),
+                close_reference_match,
+                ref_quality,
                 bool(site.get("num_lanes") and candidate.lane_count == site["num_lanes"]),
                 angle,
             )
@@ -342,8 +382,9 @@ def _pick_osm_candidate(site: dict, candidates: list):
     eligible.sort(
         key=lambda item: (
             not item[1],
-            not item[2],
-            item[3],
+            -item[2],
+            not item[3],
+            item[4],
             float(item[0].distance_m),
         )
     )
@@ -356,8 +397,8 @@ def _pick_osm_candidate(site: dict, candidates: list):
             not in (getattr(best[0], "connected_source_ids", None) or [])
             and best[0].source_id
             not in (getattr(second[0], "connected_source_ids", None) or [])
-            and best[1:3] == second[1:3]
-            and abs(best[3] - second[3]) <= 2
+            and best[1:4] == second[1:4]
+            and abs(best[4] - second[4]) <= 2
             and abs(float(best[0].distance_m) - float(second[0].distance_m)) <= 1
         )
         if indistinguishable:
@@ -371,11 +412,7 @@ def _osm_failure_reason(site: dict, candidates: list) -> str:
     road_compatible = [
         candidate
         for candidate in candidates
-        if not (
-            road_ref
-            and _normalized_road_ref(candidate.ref)
-            and road_ref != _normalized_road_ref(candidate.ref)
-        )
+        if _road_ref_quality(road_ref, candidate.ref) >= 0
     ]
     if not road_compatible:
         return "road_ref_conflict"

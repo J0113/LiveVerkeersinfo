@@ -118,15 +118,7 @@ map.on('load', () => {
         type: 'line',
         source: layer.key,
         paint: {
-          'line-color': ['case',
-            ['>', ['coalesce', ['get', 'maxspeed_kmh'], 0], 0],
-            ['interpolate', ['linear'],
-              ['/', ['get', 'speed_kmh'], ['get', 'maxspeed_kmh']],
-              0, '#cc2200', 0.3, '#ff3333', 0.5, '#ff8800',
-              0.7, '#ffdd00', 0.9, '#00cc44'
-            ],
-            '#777777'
-          ],
+          'line-color': speedLimitLineColorExpression(),
           'line-width': metresWide(['coalesce', ['get', 'width_m'], 3.5], 14),
           // The OSM lane markings and direction arrows remain readable below
           // the live-speed tint. HTML number labels are separate and stay opaque.

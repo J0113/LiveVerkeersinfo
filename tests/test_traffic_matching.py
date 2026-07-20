@@ -69,6 +69,47 @@ def test_osm_match_prefers_road_and_lane_count_before_distance():
     assert _pick_osm_candidate(site, candidates).source_id == 3
 
 
+def test_osm_match_allows_a_n_transition_and_prefers_it_over_missing_ref():
+    site = {"road_ref": "N200", "bearing": 91.1, "num_lanes": 2}
+    candidates = [
+        osm_candidate(7400222, 9.9, 94.6, ref=None, lane_count=1),
+        osm_candidate(561881901, 9.2, 93.2, ref="A200", lane_count=2),
+    ]
+
+    assert _pick_osm_candidate(site, candidates).source_id == 561881901
+
+
+def test_osm_match_prefers_exact_prefix_over_a_n_transition():
+    site = {"road_ref": "N208", "bearing": 20, "num_lanes": 2}
+    candidates = [
+        osm_candidate(1, 5, 20, ref="A208", lane_count=2),
+        osm_candidate(2, 12, 21, ref="N208", lane_count=2),
+    ]
+
+    assert _pick_osm_candidate(site, candidates).source_id == 2
+
+
+def test_close_reference_match_overrides_lane_count_mismatch():
+    site = {"road_ref": "N200", "bearing": 355, "num_lanes": 3}
+    candidates = [
+        osm_candidate(7400311, 2.5, 350, ref="A200", lane_count=2),
+        osm_candidate(490597686, 23.9, 356.4, ref="N200", lane_count=3),
+    ]
+
+    assert _pick_osm_candidate(site, candidates).source_id == 7400311
+
+
+def test_close_override_requires_less_than_five_metres_and_close_bearing():
+    site = {"road_ref": "A9", "bearing": 0, "num_lanes": 3}
+    candidates = [
+        osm_candidate(1, 5.0, 0, ref="A9", lane_count=2),
+        osm_candidate(2, 2.0, 16, ref="A9", lane_count=2),
+        osm_candidate(3, 10, 1, ref="A9", lane_count=3),
+    ]
+
+    assert _pick_osm_candidate(site, candidates).source_id == 3
+
+
 def test_osm_match_returns_none_for_indistinguishable_candidates():
     site = {"road_ref": "A9", "bearing": 0, "num_lanes": 2}
     candidates = [
