@@ -88,8 +88,13 @@ payloadPublication (MeasuredDataPublication)
 The `Traffic Speed` layer is rendered as a pinned, glanceable HUD and as OSM
 lane ribbons. It uses the same signed VILD bearings for direction filtering and
 `osm_lane_count` for grouping, while keeping official NDW lane numbers attached
-to their speed and flow values. There is deliberately no lane fallback for an
-ambiguous, adjacent, or opposite road; missing context stays point-only.
+to their speed and flow values. Measured-speed colors are scaled against the
+directional OSM `maxspeed`; unknown or symbolic limits use the neutral unknown
+color. The GPS dial resolves its current road from the matched lane geometry,
+falling back to a small `/api/osm/lanes` query when no live-speed lane is nearby,
+and shows a numeric OSM limit as a compact overlapping sign. There is
+deliberately no speed-lane fallback for an ambiguous, adjacent, or opposite
+road; missing measurement context stays point-only.
 The adjacent DRIP/VMS panel uses the same selection rule and displays the
 nearest message without changing the road-following lane visualization.
 

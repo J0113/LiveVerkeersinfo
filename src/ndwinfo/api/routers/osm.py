@@ -11,6 +11,7 @@ from ndwinfo.api.deps import BBoxDep, DbDep
 from ndwinfo.api.geo import make_fc
 from ndwinfo.config import settings
 from ndwinfo.models import OsmRoad, OsmRoadLane
+from ndwinfo.osm_tags import osm_maxspeed_kmh
 
 router = APIRouter(prefix="/osm", tags=["osm"])
 
@@ -80,7 +81,12 @@ def get_osm_lanes(b: BBoxDep, db: DbDep) -> Response:
     cap = settings.osm_lane_max_features
     bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
     q = (
-        select(OsmRoadLane, func.ST_AsGeoJSON(OsmRoadLane.geom, 6).label("geom_json"))
+        select(
+            OsmRoadLane,
+            OsmRoad.raw.label("osm_tags"),
+            func.ST_AsGeoJSON(OsmRoadLane.geom, 6).label("geom_json"),
+        )
+        .join(OsmRoad, OsmRoad.osm_id == OsmRoadLane.source_id)
         .where(func.ST_Intersects(OsmRoadLane.geom, bbox_geom))
         .order_by(OsmRoadLane.id)
         .limit(cap + 1)
@@ -102,6 +108,7 @@ def get_osm_lanes(b: BBoxDep, db: DbDep) -> Response:
             "name": r.OsmRoadLane.name,
             "ref": r.OsmRoadLane.ref,
             "width_m": float(r.OsmRoadLane.width_m) if r.OsmRoadLane.width_m is not None else None,
+            "maxspeed_kmh": osm_maxspeed_kmh(r.osm_tags, r.OsmRoadLane.direction),
         }
 
     fc = make_fc(rows, "geom_json", props)

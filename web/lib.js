@@ -79,6 +79,7 @@ function speedLimitLineColorExpression () {
 // CSS equivalent of MapLibre's line-color interpolation, so the opaque number
 // label and translucent line use the same measured-speed/maxspeed colour.
 function speedLimitColor (kmh, maxspeedKmh) {
+  if (kmh === null || kmh === undefined || kmh === '') return SPEED_LIMIT_UNKNOWN_COLOR
   const speed = Number(kmh)
   const limit = Number(maxspeedKmh)
   if (!Number.isFinite(speed) || !Number.isFinite(limit) || limit <= 0) {
@@ -402,6 +403,133 @@ function selectUpcomingLaneSpeeds (pointFc, device, maxDistanceM) {
   return best
 }
 
+// Add the OSM metadata belonging to an upcoming point. Point and lane features
+// share the confidently matched source/direction pair, while maxspeed/name/ref
+// live on the lane response returned by include_lanes=true.
+function enrichLaneSpeedSelection (selection, laneFc) {
+  if (!selection) return null
+  const point = selection.data || {}
+  const lane = (laneFc?.features || []).find(feature => {
+    const p = feature.properties || {}
+    return p.osm_source_id === point.osm_source_id &&
+      p.osm_direction === point.osm_direction
+  })
+  if (!lane) return selection
+  const p = lane.properties || {}
+  return {
+    ...selection,
+    data: {
+      ...point,
+      osm_name: p.name,
+      osm_ref: p.ref,
+      maxspeed_kmh: p.maxspeed_kmh,
+    }
+  }
+}
+
+const CURRENT_ROAD_MAX_DISTANCE_M = 35
+const CURRENT_ROAD_HEADING_TOLERANCE_DEG = 55
+const CURRENT_ROAD_HYSTERESIS_M = 5
+
+// Closest point and local way bearing for LineString/MultiLineString geometry.
+// The equirectangular projection is accurate enough for a 35m map-matching gate.
+function projectCurrentRoadGeometry (geometry, target) {
+  if (!geometry || !Array.isArray(target)) return null
+  const lines = geometry.type === 'LineString'
+    ? [geometry.coordinates]
+    : geometry.type === 'MultiLineString' ? geometry.coordinates : []
+  const latScale = 110540
+  const lonScale = 111320 * Math.cos(target[1] * Math.PI / 180)
+  let best = null
+
+  for (const line of lines) {
+    if (!Array.isArray(line) || line.length < 2) continue
+    for (let i = 0; i < line.length - 1; i++) {
+      const a = line[i]
+      const b = line[i + 1]
+      const ax = (a[0] - target[0]) * lonScale
+      const ay = (a[1] - target[1]) * latScale
+      const dx = (b[0] - a[0]) * lonScale
+      const dy = (b[1] - a[1]) * latScale
+      const denom = dx * dx + dy * dy
+      const t = denom ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / denom)) : 0
+      const px = ax + t * dx
+      const py = ay + t * dy
+      const distance = Math.hypot(px, py)
+      if (!best || distance < best.distance) {
+        best = {
+          distance,
+          bearing: calculateBearing(a, b),
+          coords: [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t],
+        }
+      }
+    }
+  }
+  return best
+}
+
+function currentRoadSourceId (properties) {
+  return properties?.osm_source_id ?? properties?.source_id ?? null
+}
+
+function currentRoadDirection (properties) {
+  return properties?.osm_direction ?? properties?.direction ?? null
+}
+
+function currentRoadIdentity (selection) {
+  if (!selection) return null
+  const p = selection.data || {}
+  return `${currentRoadSourceId(p) ?? ''}|${currentRoadDirection(p) ?? ''}`
+}
+
+// Select the lane physically under the device. Directed lanes use their local
+// travel bearing (backward lane geometry follows OSM way order, so reverse it).
+// Undirected/both-ways lanes use the closest road axis instead.
+function selectCurrentOsmLane (laneFc, device, previous) {
+  if (!device || !Array.isArray(device.coords)) return null
+  const headingKnown = Number.isFinite(device.heading)
+  const candidates = []
+
+  for (const feature of (laneFc?.features || [])) {
+    if (!feature.geometry || !feature.properties) continue
+    const p = feature.properties
+    if (p.role === 'connector') continue
+    const projected = projectCurrentRoadGeometry(feature.geometry, device.coords)
+    if (!projected || projected.distance > CURRENT_ROAD_MAX_DISTANCE_M) continue
+
+    const direction = currentRoadDirection(p)
+    let travelBearing = projected.bearing
+    if (direction === 'bwd') travelBearing = (travelBearing + 180) % 360
+    if (headingKnown) {
+      const directed = direction === 'fwd' || direction === 'bwd'
+      const headingError = directed
+        ? Math.abs(angleDiff(travelBearing, device.heading))
+        : Math.min(
+            Math.abs(angleDiff(projected.bearing, device.heading)),
+            Math.abs(angleDiff((projected.bearing + 180) % 360, device.heading))
+          )
+      if (headingError > CURRENT_ROAD_HEADING_TOLERANCE_DEG) continue
+    }
+
+    candidates.push({
+      data: p,
+      coords: projected.coords,
+      distance: projected.distance,
+      bearing: travelBearing,
+    })
+  }
+
+  candidates.sort((a, b) => a.distance - b.distance)
+  const best = candidates[0] || null
+  if (!best || !previous) return best
+
+  const previousId = currentRoadIdentity(previous)
+  const retained = candidates.find(candidate => currentRoadIdentity(candidate) === previousId)
+  return retained && retained.distance <= best.distance + CURRENT_ROAD_HYSTERESIS_M
+    ? retained
+    : best
+}
+
 // Split a site's lanes into main through-lanes and extra entry/exit/weave lanes.
 // NDW numbers lanes 1..N left→right; WEGGEG reports the count of main through
 // lanes. When more lanes are measured than WEGGEG's main count, the surplus
@@ -479,7 +607,7 @@ function buildLaneSpeedRoad (props) {
 
     const poly = document.createElementNS(NS, 'polygon')
     poly.setAttribute('points', `${bl},${H} ${br},${H} ${br + shear},0 ${bl + shear},0`)
-    poly.setAttribute('fill', shadeColor(speedColor(kmh), -0.5))
+    poly.setAttribute('fill', shadeColor(speedLimitColor(kmh, props.maxspeed_kmh), -0.5))
     svg.appendChild(poly)
 
     // Right boundary: solid road edge on the group's outer lane, dashed between lanes.
@@ -495,7 +623,7 @@ function buildLaneSpeedRoad (props) {
     rect.setAttribute('x', cx - pw / 2); rect.setAttribute('y', cy - ph / 2)
     rect.setAttribute('width', pw); rect.setAttribute('height', ph)
     rect.setAttribute('rx', 8)
-    rect.setAttribute('fill', speedColor(kmh))
+    rect.setAttribute('fill', speedLimitColor(kmh, props.maxspeed_kmh))
     rect.setAttribute('stroke', '#ffffff'); rect.setAttribute('stroke-width', '2')
     svg.appendChild(rect)
 
@@ -503,7 +631,7 @@ function buildLaneSpeedRoad (props) {
     txt.setAttribute('x', cx); txt.setAttribute('y', cy + 1)
     txt.setAttribute('text-anchor', 'middle')
     txt.setAttribute('dominant-baseline', 'central')
-    txt.setAttribute('fill', speedTextColor(kmh))
+    txt.setAttribute('fill', speedLimitTextColor(kmh, props.maxspeed_kmh))
     txt.setAttribute('font-size', '15'); txt.setAttribute('font-weight', '800')
     txt.textContent = (kmh !== null && kmh !== undefined) ? String(Math.round(kmh)) : '?'
     svg.appendChild(txt)
@@ -518,7 +646,8 @@ function laneSpeedRoadKey (selection) {
   if (!selection) return null
   const p = selection.data
   const lanes = (p.lanes || []).map(l => `${l.lane}:${l.speed_kmh}`).join(',')
-  return [p.site_id, p.osm_lane_count, lanes, Math.round(selection.cls.along / 25)].join('|')
+  return [p.site_id, p.osm_lane_count, p.maxspeed_kmh, lanes,
+    Math.round(selection.cls.along / 25)].join('|')
 }
 
 

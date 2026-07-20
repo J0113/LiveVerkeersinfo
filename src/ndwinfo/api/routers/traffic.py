@@ -23,6 +23,7 @@ from ndwinfo.models import (
     TravelTime,
     VildTmc,
 )
+from ndwinfo.osm_tags import osm_maxspeed_kmh as _osm_maxspeed_kmh
 
 router = APIRouter(prefix="/traffic", tags=["traffic"])
 
@@ -30,36 +31,6 @@ OSM_MATCH_MAX_DISTANCE_M = 25
 OSM_MATCH_MAX_ANGLE_DEG = 45
 OSM_CLOSE_MATCH_MAX_DISTANCE_M = 5
 OSM_CLOSE_MATCH_MAX_ANGLE_DEG = 15
-OSM_MAXSPEED_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(mph|km/?h|kph)?\s*$", re.I)
-
-
-def _osm_maxspeed_kmh(tags: dict | None, direction: str | None) -> float | None:
-    """Return the applicable numeric OSM maxspeed in km/h.
-
-    Directional tags override the general value. For ``oneway=-1`` our lane
-    geometry is reversed into travel order but still carries ``direction=fwd``,
-    so the OSM backward tag is the applicable one.
-    """
-    tags = tags or {}
-    osm_direction = direction
-    if tags.get("oneway") == "-1" and direction == "fwd":
-        osm_direction = "bwd"
-
-    directional_key = {
-        "fwd": "maxspeed:forward",
-        "bwd": "maxspeed:backward",
-    }.get(osm_direction)
-    value = tags.get(directional_key) if directional_key in tags else tags.get("maxspeed")
-    if value is None:
-        return None
-
-    match = OSM_MAXSPEED_RE.fullmatch(str(value))
-    if not match:
-        return None
-    speed = float(match.group(1).replace(",", "."))
-    if match.group(2) and match.group(2).lower() == "mph":
-        speed *= 1.609344
-    return round(speed, 1)
 
 
 def _speed_location_key(
@@ -606,6 +577,7 @@ def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDe
             OsmRoadLane.lane_count,
             OsmRoadLane.direction,
             OsmRoadLane.highway,
+            OsmRoadLane.name,
             OsmRoadLane.ref,
             OsmRoadLane.width_m,
             OsmRoad.raw.label("osm_tags"),
@@ -675,6 +647,7 @@ def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDe
                 "lane": effective_lane,
                 "lane_count": row.lane_count,
                 "highway": row.highway,
+                "name": row.name,
                 "ref": row.ref,
                 "width_m": float(row.width_m) if row.width_m is not None else None,
                 "maxspeed_kmh": _osm_maxspeed_kmh(row.osm_tags, row.direction),

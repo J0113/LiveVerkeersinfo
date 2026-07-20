@@ -176,6 +176,7 @@ def test_osm_lane_output_omits_missing_speed_and_includes_maxspeed():
             lane_count=2,
             direction="fwd",
             highway="primary",
+            name="Provincialeweg",
             ref="N203",
             width_m=3.5,
             osm_tags={"maxspeed": "80"},
@@ -209,6 +210,7 @@ def test_osm_lane_output_omits_missing_speed_and_includes_maxspeed():
     )
 
     assert [feature["properties"]["lane"] for feature in result["features"]] == [2]
+    assert result["features"][0]["properties"]["name"] == "Provincialeweg"
     assert result["features"][0]["properties"]["maxspeed_kmh"] == 80
 
 

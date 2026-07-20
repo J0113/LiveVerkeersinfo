@@ -382,11 +382,18 @@ let laneSpeedMarkers = [] // upright numeric labels snapped to matched OSM lanes
 const ROAD_SIGN_HUD_MAX_DISTANCE_M = 2000
 const ROAD_SIGN_HUD_REFETCH_DISTANCE_M = 100
 const ROAD_SIGN_HUD_REFETCH_MS = 15000
-const roadSignHudCache = { matrix: EMPTY_FC, drips: EMPTY_FC, speedPoints: EMPTY_FC }
+const roadSignHudCache = {
+  matrix: EMPTY_FC,
+  drips: EMPTY_FC,
+  speedPoints: EMPTY_FC,
+  speedLanes: EMPTY_FC,
+  osmLanes: EMPTY_FC,
+}
 let roadSignHudLastFetchCoords = null
 let roadSignHudLastFetchAt = 0
 let roadSignHudLastFetchHeading = null
 const roadSignHudRenderState = { matrixKey: null, dripKey: null, speedKey: null }
+let roadSignHudCurrentRoad = null
 
 // ─── GPS & Geolocation state ──────────────────────────────────────────────────
 const GPS_STATES = {

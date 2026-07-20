@@ -71,7 +71,10 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
   next relevant signs appear within 2 km with remaining distance; no sign
   markers are plotted on the map and the HUD hides when it has no values
 - The minimalist driving HUD starts GPS follow mode automatically and keeps the
-  current lane's measured traffic speed beside the device's own GPS speed
+  current lane's measured traffic speed beside the device's own GPS speed.
+  Lane colors are relative to the directional OSM maximum speed; the current
+  OSM road remains labelled below and, when known, its limit overlaps the GPS
+  dial as a compact road sign
 - A sustained speed advantage on an adjacent lane appears as a non-directive
   lane-flow suggestion. Stale, opposite-direction, non-adjacent, and
   matrix-restricted lanes are excluded; hysteresis and a post-change cooldown

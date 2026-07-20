@@ -108,13 +108,23 @@ function fetchRoadSignHud (force = false) {
     behind: 500,
     side: 400
   })
+  const currentRoadBbox = forwardBiasedBbox(userCoords, userHeading, {
+    ahead: 150,
+    behind: 100,
+    side: 100
+  })
   const requests = []
   if (userHeading !== null && hudEnabled.has('hud_matrix')) requests.push(fetchRoadSignHudSource('matrix', bbox, ctrl.signal))
   else roadSignHudCache.matrix = EMPTY_FC
   if (userHeading !== null && hudEnabled.has('hud_drips')) requests.push(fetchRoadSignHudSource('drips', bbox, ctrl.signal))
   else roadSignHudCache.drips = EMPTY_FC
-  if (hudEnabled.has('hud_speed')) requests.push(fetchRoadSignHudSpeedSource(speedBbox, ctrl.signal))
-  else roadSignHudCache.speedPoints = EMPTY_FC
+  if (hudEnabled.has('hud_speed')) {
+    requests.push(fetchRoadSignHudSpeedSource(speedBbox, currentRoadBbox, ctrl.signal))
+  } else {
+    roadSignHudCache.speedPoints = EMPTY_FC
+    roadSignHudCache.speedLanes = EMPTY_FC
+    requests.push(fetchRoadSignHudCurrentRoadSource(currentRoadBbox, ctrl.signal))
+  }
 
   Promise.allSettled(requests).then(results => {
     for (const result of results) {
@@ -126,13 +136,46 @@ function fetchRoadSignHud (force = false) {
   })
 }
 
-function fetchRoadSignHudSpeedSource (bbox, signal) {
-  return fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=false&limit=500`, { signal })
+async function fetchRoadSignHudSpeedSource (bbox, currentRoadBbox, signal) {
+  let speedError = null
+  try {
+    const response = await fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=true&limit=500`, { signal })
+    if (!response.ok) throw new Error(`speed: HTTP ${response.status}`)
+    const data = await response.json()
+    roadSignHudCache.speedPoints = data.points || EMPTY_FC
+    roadSignHudCache.speedLanes = data.lanes || EMPTY_FC
+  } catch (error) {
+    if (error.name === 'AbortError') throw error
+    speedError = error
+    roadSignHudCache.speedPoints = EMPTY_FC
+    roadSignHudCache.speedLanes = EMPTY_FC
+  }
+
+  const current = selectCurrentOsmLane(
+    roadSignHudCache.speedLanes,
+    { coords: userCoords, heading: userHeading },
+    roadSignHudCurrentRoad
+  )
+  if (current) {
+    roadSignHudCache.osmLanes = EMPTY_FC
+  } else {
+    try {
+      await fetchRoadSignHudCurrentRoadSource(currentRoadBbox, signal)
+    } catch (error) {
+      if (error.name === 'AbortError') throw error
+      if (!speedError) throw error
+    }
+  }
+  if (speedError) throw speedError
+}
+
+function fetchRoadSignHudCurrentRoadSource (bbox, signal) {
+  return fetch(`/api/osm/lanes?bbox=${bbox}`, { signal })
     .then(response => {
-      if (!response.ok) throw new Error(`speed: HTTP ${response.status}`)
+      if (!response.ok) throw new Error(`current road: HTTP ${response.status}`)
       return response.json()
     })
-    .then(data => { roadSignHudCache.speedPoints = data.points || EMPTY_FC })
+    .then(fc => { roadSignHudCache.osmLanes = fc || EMPTY_FC })
 }
 
 function fetchRoadSignHudSource (source, bbox, signal) {
@@ -165,6 +208,19 @@ function renderRoadSignHud () {
   selected.upcoming = (userHeading === null || !hudEnabled.has('hud_speed'))
     ? null
     : selectUpcomingLaneSpeeds(roadSignHudCache.speedPoints, { coords: userCoords, heading: userHeading }, 2500)
+  selected.upcoming = enrichLaneSpeedSelection(selected.upcoming, roadSignHudCache.speedLanes)
+
+  const currentRoadDevice = { coords: userCoords, heading: userHeading }
+  selected.currentRoad = selectCurrentOsmLane(
+    roadSignHudCache.speedLanes,
+    currentRoadDevice,
+    roadSignHudCurrentRoad
+  ) || selectCurrentOsmLane(
+    roadSignHudCache.osmLanes,
+    currentRoadDevice,
+    roadSignHudCurrentRoad
+  )
+  roadSignHudCurrentRoad = selected.currentRoad
 
   // Keep a just-passed selection on screen briefly instead of flickering off in
   // the gap before the next one. Disabled channels hold null (cleared instantly).
@@ -187,7 +243,7 @@ function renderRoadSignHudSelection (selected) {
   renderSpeedHudTile(selected.upcoming)
   renderMatrixHudTile(selected.matrix)
   renderDripHudTile(selected.drip)
-  updateGpsSpeedBadge(selected.gpsKmh, selected.upcoming)
+  updateGpsSpeedBadge(selected.gpsKmh, selected.currentRoad)
   const speedVisible = gpsState !== GPS_STATES.OFF && hudEnabled.has('hud_speed')
   const visibleCount = [speedVisible, selected.matrix, selected.drip].filter(Boolean).length
   const visible = visibleCount > 0
@@ -233,19 +289,33 @@ function renderSpeedHudTile (upcoming) {
 
 // Circular GPS-speed badge (km/h) bottom-left, with the road we are on in the
 // centre-bottom label — shown only while tracking.
-function updateGpsSpeedBadge (gpsKmh, upcoming) {
+function updateGpsSpeedBadge (gpsKmh, currentRoad) {
   const badge = document.getElementById('gps-speed-badge')
   const value = document.getElementById('gps-speed-value')
+  const limitSign = document.getElementById('gps-maxspeed-sign')
+  const limitValue = document.getElementById('gps-maxspeed-value')
   const roadLabel = document.getElementById('current-road-label')
-  if (!badge || !value || !roadLabel) return
+  if (!badge || !value || !limitSign || !limitValue || !roadLabel) return
 
   const tracking = gpsState !== GPS_STATES.OFF && Boolean(userCoords)
   badge.classList.toggle('hidden', !tracking)
   if (tracking) setTextIfChanged(value, Number.isFinite(gpsKmh) ? String(Math.round(gpsKmh)) : '–')
 
-  const road = upcoming ? (upcoming.data.road || upcoming.data.road_number) : null
+  const data = currentRoad?.data || {}
+  const road = data.ref || data.name || null
   roadLabel.classList.toggle('hidden', !tracking || !road)
   if (tracking && road) setTextIfChanged(roadLabel, road)
+
+  const maxspeed = Number(data.maxspeed_kmh)
+  const showLimit = tracking && Number.isFinite(maxspeed) && maxspeed > 0
+  limitSign.classList.toggle('hidden', !showLimit)
+  if (showLimit) {
+    const rounded = String(Math.round(maxspeed))
+    setTextIfChanged(limitValue, rounded)
+    limitSign.setAttribute('aria-label', `Maximum speed ${rounded} km/h`)
+  } else {
+    limitSign.removeAttribute('aria-label')
+  }
 }
 
 function renderMatrixHudTile (selection) {
@@ -369,9 +439,11 @@ function clearRoadSignHud () {
   roadSignHudCache.matrix = EMPTY_FC
   roadSignHudCache.drips = EMPTY_FC
   roadSignHudCache.speedPoints = EMPTY_FC
+  roadSignHudCache.speedLanes = EMPTY_FC
+  roadSignHudCache.osmLanes = EMPTY_FC
+  roadSignHudCurrentRoad = null
   roadSignHudLastFetchCoords = null
   roadSignHudLastFetchAt = 0
   roadSignHudLastFetchHeading = null
   renderRoadSignHud()
 }
-
