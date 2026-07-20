@@ -320,6 +320,9 @@ function buildGradientLanes (laneFc) {
     const sensors = (Array.isArray(p.sensors) ? p.sensors : []).filter(
       s => s && s.speed_kmh !== null && s.speed_kmh !== undefined && Array.isArray(s.measurement_coords)
     )
+    // Defensive client-side guard for older/cached API responses. Missing
+    // readings belong only in the independently toggleable point layer.
+    if ((p.speed_kmh === null || p.speed_kmh === undefined) && !sensors.length) continue
     if (!geom || geom.type !== 'LineString' || geom.coordinates.length < 2 || sensors.length < 2) {
       out.push(f)
       continue

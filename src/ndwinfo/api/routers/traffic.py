@@ -17,6 +17,7 @@ from ndwinfo.config import settings
 from ndwinfo.models import (
     MeasurementCharacteristic,
     MeasurementSite,
+    OsmRoad,
     OsmRoadLane,
     TrafficMeasurement,
     TravelTime,
@@ -27,6 +28,36 @@ router = APIRouter(prefix="/traffic", tags=["traffic"])
 
 OSM_MATCH_MAX_DISTANCE_M = 25
 OSM_MATCH_MAX_ANGLE_DEG = 45
+OSM_MAXSPEED_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(mph|km/?h|kph)?\s*$", re.I)
+
+
+def _osm_maxspeed_kmh(tags: dict | None, direction: str | None) -> float | None:
+    """Return the applicable numeric OSM maxspeed in km/h.
+
+    Directional tags override the general value. For ``oneway=-1`` our lane
+    geometry is reversed into travel order but still carries ``direction=fwd``,
+    so the OSM backward tag is the applicable one.
+    """
+    tags = tags or {}
+    osm_direction = direction
+    if tags.get("oneway") == "-1" and direction == "fwd":
+        osm_direction = "bwd"
+
+    directional_key = {
+        "fwd": "maxspeed:forward",
+        "bwd": "maxspeed:backward",
+    }.get(osm_direction)
+    value = tags.get(directional_key) if directional_key in tags else tags.get("maxspeed")
+    if value is None:
+        return None
+
+    match = OSM_MAXSPEED_RE.fullmatch(str(value))
+    if not match:
+        return None
+    speed = float(match.group(1).replace(",", "."))
+    if match.group(2) and match.group(2).lower() == "mph":
+        speed *= 1.609344
+    return round(speed, 1)
 
 
 def _speed_location_key(
@@ -540,8 +571,10 @@ def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDe
             OsmRoadLane.highway,
             OsmRoadLane.ref,
             OsmRoadLane.width_m,
+            OsmRoad.raw.label("osm_tags"),
             func.ST_AsGeoJSON(OsmRoadLane.geom, 6).label("geom_json"),
         )
+        .join(OsmRoad, OsmRoad.osm_id == OsmRoadLane.source_id)
         .where(
             tuple_(OsmRoadLane.source_id, OsmRoadLane.direction).in_(list(matched)),
             OsmRoadLane.role != "connector",
@@ -577,6 +610,10 @@ def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDe
             reverse=True,
         )
         point, lane_data = candidates[0] if candidates else (points[0], {})
+        # Missing readings remain available through Traffic Speed Points, but
+        # must not paint an apparently measured lane section.
+        if lane_data.get("speed_kmh") is None:
+            continue
         point_props = point["properties"]
         sensors = [
             {
@@ -603,6 +640,7 @@ def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDe
                 "highway": row.highway,
                 "ref": row.ref,
                 "width_m": float(row.width_m) if row.width_m is not None else None,
+                "maxspeed_kmh": _osm_maxspeed_kmh(row.osm_tags, row.direction),
                 "road": point_props.get("road"),
                 "carriageway": point_props.get("carriageway"),
                 "derived_carriageway": point_props.get("derived_carriageway"),

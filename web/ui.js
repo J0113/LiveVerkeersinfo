@@ -251,7 +251,6 @@ function setLayerVisibility (layer, visible) {
   }
   if (layer.geomType === 'speed') {
     const vis = visible ? 'visible' : 'none'
-    if (map.getLayer('speed-lanes-casing')) map.setLayoutProperty('speed-lanes-casing', 'visibility', vis)
     if (map.getLayer('speed-lanes')) map.setLayoutProperty('speed-lanes', 'visibility', vis)
     if (!visible) {
       for (const m of laneSpeedMarkers) m.marker.remove()

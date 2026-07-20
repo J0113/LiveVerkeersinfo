@@ -1,9 +1,12 @@
 from types import SimpleNamespace
 
+from ndwinfo.api.deps import BBox
 from ndwinfo.api.routers.traffic import (
     _attach_osm_matches,
     _effective_osm_lane,
     _normalized_road_ref,
+    _osm_lane_speed_feature_collection,
+    _osm_maxspeed_kmh,
     _pick_osm_candidate,
     _speed_location_key,
 )
@@ -104,6 +107,68 @@ def test_backward_osm_lane_numbers_are_reversed_for_ndw():
     assert _effective_osm_lane(1, 3, "bwd") == 3
     assert _effective_osm_lane(3, 3, "bwd") == 1
     assert _effective_osm_lane(1, 3, "fwd") == 1
+
+
+def test_osm_maxspeed_uses_directional_value_and_converts_mph():
+    tags = {
+        "maxspeed": "80",
+        "maxspeed:forward": "100",
+        "maxspeed:backward": "50 mph",
+    }
+
+    assert _osm_maxspeed_kmh(tags, "fwd") == 100
+    assert _osm_maxspeed_kmh(tags, "bwd") == 80.5
+    assert _osm_maxspeed_kmh({"maxspeed": "signals"}, "fwd") is None
+
+
+def test_osm_maxspeed_oneway_minus_one_uses_backward_value():
+    tags = {"oneway": "-1", "maxspeed": "80", "maxspeed:backward": "60"}
+    assert _osm_maxspeed_kmh(tags, "fwd") == 60
+
+
+def test_osm_lane_output_omits_missing_speed_and_includes_maxspeed():
+    def lane_row(lane):
+        return SimpleNamespace(
+            id=f"42:fwd:{lane}",
+            source_id=42,
+            lane=lane,
+            lane_count=2,
+            direction="fwd",
+            highway="primary",
+            ref="N203",
+            width_m=3.5,
+            osm_tags={"maxspeed": "80"},
+            geom_json='{"type":"LineString","coordinates":[[4.70,52.51],[4.71,52.52]]}',
+        )
+
+    class Result:
+        def all(self):
+            return [lane_row(1), lane_row(2)]
+
+    class Db:
+        def execute(self, *_args, **_kwargs):
+            return Result()
+
+    points = [{
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [4.705, 52.515]},
+        "properties": {
+            "site_id": "sensor-1",
+            "osm_source_id": 42,
+            "osm_direction": "fwd",
+            "lanes": [
+                {"lane": 1, "speed_kmh": None},
+                {"lane": 2, "speed_kmh": 72.0},
+            ],
+        },
+    }]
+
+    result = _osm_lane_speed_feature_collection(
+        Db(), points, BBox(4.70, 52.51, 4.72, 52.53)
+    )
+
+    assert [feature["properties"]["lane"] for feature in result["features"]] == [2]
+    assert result["features"][0]["properties"]["maxspeed_kmh"] == 80
 
 
 def test_osm_attachment_exposes_replacement_api_contract():

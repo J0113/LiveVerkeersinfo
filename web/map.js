@@ -114,33 +114,23 @@ map.on('load', () => {
 
     if (layer.geomType === 'speed') {
       map.addLayer({
-        id: 'speed-lanes-casing',
-        type: 'line',
-        source: layer.key,
-        paint: {
-          'line-color': '#1d3240',
-          'line-width': metresWide(
-            ['+', ['coalesce', ['get', 'width_m'], 3.5], 0.45],
-            14
-          ),
-          'line-opacity': 0.94
-        },
-        layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' }
-      })
-      map.addLayer({
         id: 'speed-lanes',
         type: 'line',
         source: layer.key,
         paint: {
           'line-color': ['case',
-            ['==', ['get', 'speed_kmh'], null], '#777777',
-            ['interpolate', ['linear'], ['get', 'speed_kmh'],
-              0, '#8a8a8a', 30, '#ff3333', 50, '#ff8800',
-              70, '#ffdd00', 90, '#00cc44'
-            ]
+            ['>', ['coalesce', ['get', 'maxspeed_kmh'], 0], 0],
+            ['interpolate', ['linear'],
+              ['/', ['get', 'speed_kmh'], ['get', 'maxspeed_kmh']],
+              0, '#cc2200', 0.3, '#ff3333', 0.5, '#ff8800',
+              0.7, '#ffdd00', 0.9, '#00cc44'
+            ],
+            '#777777'
           ],
           'line-width': metresWide(['coalesce', ['get', 'width_m'], 3.5], 14),
-          'line-opacity': 0.98
+          // The OSM lane markings and direction arrows remain readable below
+          // the live-speed tint. HTML number labels are separate and stay opaque.
+          'line-opacity': 0.55
         },
         layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' }
       })
@@ -229,7 +219,6 @@ map.on('load', () => {
   }
 
   // Traffic is the primary visualization; keep it above optional references.
-  if (map.getLayer('speed-lanes-casing')) map.moveLayer('speed-lanes-casing')
   if (map.getLayer('speed-lanes')) map.moveLayer('speed-lanes')
 
   buildLayerPanel()
