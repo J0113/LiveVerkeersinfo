@@ -61,6 +61,39 @@ def get_speed(
     reading wins. One marker per (location, side) instead of stacked duplicates.
     """
     bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
+
+    # Bound candidate sites *before* the join/aggregation below so `limit`
+    # constrains DB/CPU/JSON work, not just the Python-side feature count.
+    # Must apply the same usability filters as the main query (lane present,
+    # no vehicle-length constraint) rather than just bbox membership: most
+    # sites in this dataset have no usable lane reading (filtered out below),
+    # and bounding on bbox-membership alone risks the whole candidate window
+    # filling with unusable sites, silently emptying the result for large
+    # viewports with a comparatively small limit. 6x margin keeps co-located
+    # opposite-direction site pairs (2 distinct MeasurementSite rows sharing a
+    # physical location) together.
+    candidate_site_ids = (
+        select(TrafficMeasurement.site_id)
+        .distinct()
+        .join(MeasurementSite, TrafficMeasurement.site_id == MeasurementSite.id)
+        .join(
+            MeasurementCharacteristic,
+            and_(
+                TrafficMeasurement.site_id == MeasurementCharacteristic.site_id,
+                TrafficMeasurement.index == MeasurementCharacteristic.index,
+            ),
+        )
+        .where(
+            func.ST_Intersects(MeasurementSite.geom, bbox_geom),
+            MeasurementCharacteristic.lane.isnot(None),
+            MeasurementCharacteristic.veh_length_min.is_(None),
+            MeasurementCharacteristic.veh_length_max.is_(None),
+        )
+        .order_by(TrafficMeasurement.site_id)
+        .limit(limit * 6)
+        .scalar_subquery()
+    )
+
     rows = db.execute(
         select(
             TrafficMeasurement.site_id,
@@ -114,6 +147,7 @@ def get_speed(
         )
         .outerjoin(VildTmc, MeasurementSite.tmc_primary == VildTmc.loc_nr)
         .where(
+            TrafficMeasurement.site_id.in_(candidate_site_ids),
             func.ST_Intersects(MeasurementSite.geom, bbox_geom),
             MeasurementCharacteristic.lane.isnot(None),
             MeasurementCharacteristic.veh_length_min.is_(None),
