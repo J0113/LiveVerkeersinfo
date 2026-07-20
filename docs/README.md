@@ -85,14 +85,7 @@ schema, geographic scope, and how the feeds relate to each other.
 |---|---|---|---|
 | `ndw_avg_meetlocaties_shapefile.zip` | Shapefile (count points + measurement segments) | 71M | ~weekly |
 | `VILD6.13.A.zip` | Shapefiles + code list + docs (location reference) | 40M | on release |
-| WEGGEG `weggeg_kenmerkniveau/<date>.zip` | Monthly lane-transition road reference (`Rijstroken`) | ~40M | monthly |
 | `VILD6.12.A.zip` | Previous VILD release | 40M | archived |
-
-### Renderable road network → [08-nwb-road-network.md](08-nwb-road-network.md)
-
-| Service | Format | Spatial access | Refresh |
-|---|---|---|---|
-| PDOK NWB Wegen `wegvakken` | OGC API Features / GeoJSON | viewport bbox | monthly |
 
 ### Runtime performance → [09-performance.md](09-performance.md)
 
@@ -101,9 +94,9 @@ browser scheduling, and operational resource tuning.
 
 ### Carriageway/direction data quality → [10-carriageway-direction-quality.md](10-carriageway-direction-quality.md)
 
-Why `carriageway` resolves for only 23% of traffic-speed sites today, how
-`alertCDirectionCoded` + the VILD TMC chain give the real travel direction,
-and a bearing-computation plan using data already ingested.
+How `alertCDirectionCoded` + the VILD TMC chain establish travel direction,
+how explicit and derived R/L remain separate, and how the implemented local
+tangent enrichment handles unresolved cases.
 
 ### OpenStreetMap driving roads (non-NDW source) → [11-osm-pbf.md](11-osm-pbf.md)
 
@@ -112,9 +105,8 @@ and a bearing-computation plan using data already ingested.
 | Geofabrik `netherlands-latest.osm.pbf` | OSM PBF, ODbL-licensed | ~1.3G | ~weekly |
 
 `highway=motorway,trunk,primary,secondary` (+ `_link` variants) only, all
-OSM tags stored. Not part of the NDW catalog above — see
-[docs/08](08-nwb-road-network.md) for the same non-NDW-source ingest
-pattern (`nwb_wegvakken`, `weggeg_rijstroken`).
+OSM tags stored. This is the production road and lane source used for speed
+matching; it is not part of the NDW catalog above.
 
 > Sizes are compressed download sizes from the portal listing on 2026-05-29.
 > Decompressed sizes are much larger — e.g. `traveltime.xml.gz` 2.5M → ~73M XML,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from lxml import etree
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import LineString, Polygon
 
 SIT = "http://datex2.eu/schema/3/situation"
 MC  = "http://datex2.eu/schema/3/messageContainer"

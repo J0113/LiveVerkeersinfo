@@ -17,12 +17,6 @@ class Settings(BaseSettings):
     db_pool_recycle_s: int = 1800
     # comma-separated names to skip, e.g. "verkeersborden_csv,msi_shapefiles"
     disabled_feeds: str = ""
-    nwb_wegvakken_url: str = (
-        "https://downloads.rijkswaterstaatdata.nl/nwb-wegen/geogegevens/"
-        "geopackage/NWB-dagelijks/Wegvakken/Wegvakken.gpkg"
-    )
-    nwb_max_features: int = 5000  # per-viewport row cap for /api/nwb/roads
-    nwb_diagnostic_mode: bool = False
     osm_netherlands_url: str = (
         "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf"
     )

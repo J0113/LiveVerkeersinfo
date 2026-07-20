@@ -7,9 +7,34 @@ from pathlib import Path
 import pytest
 
 from ndwinfo.download import open_feed
+from ndwinfo.parsers.shapefile_ref import parse_vild_tmc
 
 SAMPLES = Path("data/samples")
 DATA = Path("data")
+
+
+@pytest.mark.skipif(
+    not (DATA / "VILD6.13.A.zip").exists(),
+    reason="full VILD sample not present",
+)
+def test_parse_vild_tmc_preserves_complete_master_row():
+    row = next(r for r in parse_vild_tmc(DATA / "VILD6.13.A.zip") if r["loc_nr"] == 10798)
+    assert row["hecto_dir"] == 1
+    assert row["raw"]["LOC_NR"] == 10798
+    assert row["raw"]["LIN_REF"] == row["lin_ref"]
+    assert row["raw"]["POS_OFF"] == row["pos_off"]
+    assert row["raw"]["NEG_OFF"] == row["neg_off"]
+    assert row["raw"]["HECTO_DIR"] == row["hecto_dir"]
+    assert set(row["raw"]) == {
+        "LOC_NR", "LOC_TYPE", "LOC_DES", "ROADNUMBER", "ROADNAME",
+        "FIRST_NAME", "SECND_NAME", "JUNCT_REF", "EXIT_NR", "HSTART_POS",
+        "HEND_POS", "HSTART_NEG", "HEND_NEG", "HECTO_CHAR", "HECTO_DIR",
+        "POS_IN", "POS_OUT", "NEG_IN", "NEG_OUT", "DIR", "AREA_REF",
+        "LIN_REF", "INTER_REF", "POS_OFF", "NEG_OFF", "URBAN_CODE",
+        "PRES_POS", "PRES_NEG", "FAR_AWAY", "CITY_DISTR", "TOP_SIGN",
+        "TYPE_CODE", "MW_REF", "RW_NR", "AW_REF",
+    }
+    assert row["raw"]["EXIT_NR"] is None
 
 
 def requires_sample(filename: str):

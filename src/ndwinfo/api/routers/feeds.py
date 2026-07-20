@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from sqlalchemy import func, select
 
 from ndwinfo.api.deps import DbDep
+from ndwinfo.feeds import FEEDS_BY_NAME
 from ndwinfo.models import FeedRun
 
 router = APIRouter(prefix="/feeds", tags=["feeds"])
@@ -16,6 +17,7 @@ def get_feed_status(db: DbDep):
     # Latest run per feed (by MAX id — runs are sequential)
     subq = (
         select(func.max(FeedRun.id).label("max_id"))
+        .where(FeedRun.feed.in_(tuple(FEEDS_BY_NAME)))
         .group_by(FeedRun.feed)
         .subquery()
     )

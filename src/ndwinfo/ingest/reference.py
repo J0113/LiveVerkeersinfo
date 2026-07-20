@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from sqlalchemy import delete, update
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from ndwinfo.download import DownloadResult
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, json_safe, wkt_geom
 from ndwinfo.ingest.traveltime_geometry import rebuild_traveltime_geometry
+from ndwinfo.ingest.vild_direction import rebuild_speed_site_directions
 from ndwinfo.models import (
     MeetlocatiePunt,
     MeetlocatieVak,
@@ -16,7 +17,6 @@ from ndwinfo.models import (
     VildLine,
     VildPoint,
     VildTmc,
-    WeggegLane,
 )
 from ndwinfo.parsers.shapefile_ref import (
     parse_meetlocaties,
@@ -24,7 +24,6 @@ from ndwinfo.parsers.shapefile_ref import (
     parse_vild,
     parse_vild_tmc,
 )
-from ndwinfo.parsers.weggeg import parse_weggeg_lanes
 
 
 class MeetlocatiesIngester(Ingester):
@@ -128,7 +127,9 @@ class VildIngester(Ingester):
         # TMC location table (chain topology for road-following travel-time lines)
         tmc_batch: list[dict] = []
         for row in parse_vild_tmc(result.path):
-            tmc_batch.append(row)
+            prepared = dict(row)
+            prepared["raw"] = json_safe(prepared.get("raw"))
+            tmc_batch.append(prepared)
             if len(tmc_batch) >= BATCH_SIZE:
                 total += bulk_upsert(session, VildTmc, tmc_batch, ["loc_nr"])
                 session.flush()
@@ -139,32 +140,6 @@ class VildIngester(Ingester):
 
         # VILD just refreshed → rebuild road-following travel-time geometry.
         rebuild_traveltime_geometry(session)
+        rebuild_speed_site_directions(session)
 
-        return total
-
-
-class WeggegLaneIngester(Ingester):
-    """Replace the static WEGGEG lane snapshot with the newest monthly release."""
-
-    feed_name = "weggeg_rijstroken"
-
-    def _ingest(self, result: DownloadResult, session: Session) -> int:
-        # Each release is a complete national snapshot. This delete is part of
-        # the transaction, so a failed parse rolls back to the prior snapshot.
-        session.execute(delete(WeggegLane))
-        total = 0
-        batch: list[dict] = []
-        for row in parse_weggeg_lanes(result.path):
-            batch.append({
-                **row,
-                "geom": wkt_geom(row["geom"]),
-                "raw": json_safe(row["raw"]),
-            })
-            if len(batch) >= BATCH_SIZE:
-                total += bulk_upsert(session, WeggegLane, batch, ["id"])
-                session.flush()
-                batch.clear()
-        if batch:
-            total += bulk_upsert(session, WeggegLane, batch, ["id"])
-            session.flush()
         return total

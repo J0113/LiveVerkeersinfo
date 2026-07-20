@@ -50,11 +50,11 @@ Use a representative motorway viewport and measure both cold and warm calls:
 
 ```bash
 curl --compressed -o /dev/null -w '%{size_download} %{time_total}\n' \
-  'http://localhost:3500/api/nwb/lane-speeds?bbox=4.74,52.30,4.82,52.35&zoom=14'
+  'http://localhost:3500/api/traffic/speed/map?bbox=4.74,52.30,4.82,52.35'
 docker stats --no-stream
 docker images 'liveverkeersinfo-*'
 ```
 
-Cold calls include PDOK reference retrieval when its cache is empty. Warm calls
-should report `X-Lane-Response-Cache: HIT`. Optimize using these measurements,
-not nationwide unbounded requests or synthetic frontend-only timings.
+The matching query uses the `osm_road_lane` geography GiST index for its 25m
+candidate search. Optimize using representative bounded viewports and query
+plans, not nationwide unbounded requests or synthetic frontend-only timings.

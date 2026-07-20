@@ -29,7 +29,6 @@ services:
       DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
       NDW_BASE_URL: https://opendata.ndw.nu
       DATA_DIR: /app/data
-      NWB_WEGVAKKEN_URL: ${NWB_WEGVAKKEN_URL:-https://downloads.rijkswaterstaatdata.nl/nwb-wegen/geogegevens/geopackage/NWB-dagelijks/Wegvakken/Wegvakken.gpkg}
       OSM_NOORD_HOLLAND_URL: ${OSM_NOORD_HOLLAND_URL:-https://download.geofabrik.de/europe/netherlands/noord-holland-latest.osm.pbf}
     depends_on:
       migrate:
@@ -44,8 +43,6 @@ services:
       DATABASE_URL: postgresql+psycopg://ndwinfo:ndwinfo@db:5432/ndwinfo
       NDW_BASE_URL: https://opendata.ndw.nu
       DATA_DIR: /app/data
-      NWB_MAX_FEATURES: ${NWB_MAX_FEATURES:-5000}
-      NWB_DIAGNOSTIC_MODE: ${NWB_DIAGNOSTIC_MODE:-false}
       OSM_MAX_FEATURES: ${OSM_MAX_FEATURES:-5000}
     ports:
       - "3500:3500"

@@ -17,7 +17,6 @@ from sqlalchemy import (
     String,
     Text,
     func,
-    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -45,12 +44,21 @@ class MeasurementSite(Base):
     record_version_time: Mapped[Optional[datetime]] = mapped_column(_tz)
     road: Mapped[Optional[str]] = mapped_column(String)
     carriageway: Mapped[Optional[str]] = mapped_column(String)
+    carriageway_source: Mapped[Optional[str]] = mapped_column(String)
+    vild_carriageway: Mapped[Optional[str]] = mapped_column(String)
+    vild_carriageway_source: Mapped[Optional[str]] = mapped_column(String)
+    carriageway_direction_conflict: Mapped[Optional[bool]] = mapped_column(Boolean)
     km: Mapped[Optional[Any]] = mapped_column(Numeric)
     openlr_bearing: Mapped[Optional[int]] = mapped_column(Integer)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
+    vild_bearing: Mapped[Optional[Any]] = mapped_column(Numeric)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
     # Segment line for travel-time sites: road-following (built from VILD TMC
     # chain) when resolvable, else straight start→end chord.
-    line_geom: Mapped[Optional[Any]] = mapped_column(Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True)
+    line_geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True
+    )
     # AlertC/TMC location codes for travel-time segments (primary→secondary) +
     # travel direction; used to trace the road via the VILD TMC table.
     tmc_primary: Mapped[Optional[int]] = mapped_column(Integer)
@@ -59,9 +67,7 @@ class MeasurementSite(Base):
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
-    characteristics: Mapped[list["MeasurementCharacteristic"]] = relationship(
-        back_populates="site"
-    )
+    characteristics: Mapped[list["MeasurementCharacteristic"]] = relationship(back_populates="site")
     measurements: Mapped[list["TrafficMeasurement"]] = relationship(back_populates="site")
 
 
@@ -86,7 +92,9 @@ class MeetlocatiePunt(Base):
     __table_args__ = (Index("ix_meetlocatie_punt_geom", "geom", postgresql_using="gist"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -108,7 +116,9 @@ class VildPoint(Base):
     __table_args__ = (Index("ix_vild_point_geom", "geom", postgresql_using="gist"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -118,7 +128,9 @@ class VildLine(Base):
     __table_args__ = (Index("ix_vild_line_geom", "geom", postgresql_using="gist"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True
+    )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -130,6 +142,7 @@ class VildTmc(Base):
     point to its road line (vild_line.id). Used to trace travel-time segments
     along the actual road between their primary and secondary location codes.
     """
+
     __tablename__ = "vild_tmc"
 
     loc_nr: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -137,6 +150,7 @@ class VildTmc(Base):
     pos_off: Mapped[Optional[int]] = mapped_column(Integer)
     neg_off: Mapped[Optional[int]] = mapped_column(Integer)
     road_number: Mapped[Optional[str]] = mapped_column(String)
+    hecto_dir: Mapped[Optional[int]] = mapped_column(Integer)
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -146,44 +160,8 @@ class VildArea(Base):
     __table_args__ = (Index("ix_vild_area_geom", "geom", postgresql_using="gist"),)
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True)
-    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
-    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
-
-
-class NwbRoadSegment(Base):
-    """Nationaal Wegenbestand road-section centrelines (RWS Wegvakken.gpkg).
-
-    wvk_id is RWS's own stable identifier — used directly as primary key since
-    the bulk GeoPackage export has no separate synthetic feature UUID.
-    """
-
-    __tablename__ = "nwb_road_segment"
-    __table_args__ = (Index("ix_nwb_road_segment_geom", "geom", postgresql_using="gist"),)
-
-    wvk_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    begin_junction_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    end_junction_id: Mapped[Optional[int]] = mapped_column(BigInteger)
-    road_number: Mapped[Optional[str]] = mapped_column(String)
-    street_name: Mapped[Optional[str]] = mapped_column(String)
-    road_manager_type: Mapped[Optional[str]] = mapped_column(String)
-    road_manager_name: Mapped[Optional[str]] = mapped_column(String)
-    direction: Mapped[Optional[str]] = mapped_column(String)
-    administrative_direction: Mapped[Optional[str]] = mapped_column(String)
-    carriageway_position: Mapped[Optional[str]] = mapped_column(String)
-    position_to_orientation_line: Mapped[Optional[str]] = mapped_column(String)
-    carriageway_type: Mapped[Optional[str]] = mapped_column(String)
-    frc: Mapped[Optional[int]] = mapped_column(Integer)
-    form_of_way: Mapped[Optional[int]] = mapped_column(Integer)
-    openlr: Mapped[Optional[str]] = mapped_column(String)
-    begin_km: Mapped[Optional[Any]] = mapped_column(Numeric)
-    end_km: Mapped[Optional[Any]] = mapped_column(Numeric)
-    length_m: Mapped[Optional[Any]] = mapped_column(Numeric)
-    valid_from: Mapped[Optional[date]] = mapped_column(Date)
-    status: Mapped[Optional[str]] = mapped_column(String)
-    road_class: Mapped[Optional[str]] = mapped_column(String)  # motorway|primary|local
     geom: Mapped[Optional[Any]] = mapped_column(
-        Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True
+        Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True
     )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
@@ -203,7 +181,9 @@ class OsmRoad(Base):
     __table_args__ = (Index("ix_osm_road_geom", "geom", postgresql_using="gist"),)
 
     osm_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    highway: Mapped[Optional[str]] = mapped_column(String)  # motorway|trunk|primary|secondary(+_link)
+    highway: Mapped[Optional[str]] = mapped_column(
+        String
+    )  # motorway|trunk|primary|secondary(+_link)
     name: Mapped[Optional[str]] = mapped_column(String)
     ref: Mapped[Optional[str]] = mapped_column(String)  # route number, e.g. A7, N99
     geom: Mapped[Optional[Any]] = mapped_column(
@@ -246,49 +226,25 @@ class OsmRoadLane(Base):
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    source_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("osm_road.osm_id", ondelete="CASCADE"))
+    source_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("osm_road.osm_id", ondelete="CASCADE")
+    )
     lane: Mapped[int] = mapped_column(Integer)  # 1-indexed physical position, left to right
-    lane_count: Mapped[int] = mapped_column(Integer)  # total lanes this row's direction contributes to
+    lane_count: Mapped[int] = mapped_column(
+        Integer
+    )  # total lanes this row's direction contributes to
     direction: Mapped[Optional[str]] = mapped_column(String)  # fwd|bwd|unknown
-    role: Mapped[Optional[str]] = mapped_column(String)  # normal|merge_left|merge_right|both_ways|unknown
+    role: Mapped[Optional[str]] = mapped_column(
+        String
+    )  # normal|merge_left|merge_right|both_ways|unknown
     highway: Mapped[Optional[str]] = mapped_column(String)
-    name: Mapped[Optional[str]] = mapped_column(String)  # denormalized from parent way, like highway
+    name: Mapped[Optional[str]] = mapped_column(
+        String
+    )  # denormalized from parent way, like highway
     ref: Mapped[Optional[str]] = mapped_column(String)
     width_m: Mapped[Optional[Any]] = mapped_column(Numeric)  # 3.5 or 2.75
-    # offset_curve() can return MultiLineString -- GEOMETRY, not LINESTRING,
-    # matches WeggegLane's handling of the same situation.
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True)
-    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
-    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
-
-
-class WeggegLane(Base):
-    """One displayable lane derived from a WEGGEG Rijstroken road section."""
-
-    __tablename__ = "weggeg_lane"
-    __table_args__ = (
-        Index("ix_weggeg_lane_geom", "geom", postgresql_using="gist"),
-        Index("ix_weggeg_lane_source_id", "source_id"),
-        Index("ix_weggeg_lane_road_side_lane", "road_number", "carriageway_side", "lane"),
-        # Geography-cast GiST index: the speed-map WEGGEG fallback filters with
-        # ST_DWithin(geom::geography, …); without this the geometry index is
-        # unusable and the scan touches every lane=1 row (see migration
-        # b7c8d9e0f1a2). Expression must match the query's cast exactly.
-        Index(
-            "ix_weggeg_lane_geog",
-            text("(geom::geography)"),
-            postgresql_using="gist",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    # FK_VELD4 is WEGGEG's stable identifier for the source road section.
-    source_id: Mapped[str] = mapped_column(String, nullable=False)
-    lane: Mapped[int] = mapped_column(Integer, nullable=False)
-    lane_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    road_number: Mapped[Optional[str]] = mapped_column(String)
-    direction: Mapped[Optional[str]] = mapped_column(String)
-    carriageway_side: Mapped[Optional[str]] = mapped_column(String)
+    # offset_curve() can return MultiLineString, so this is GEOMETRY rather
+    # than LINESTRING.
     geom: Mapped[Optional[Any]] = mapped_column(
         Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True
     )
@@ -361,7 +317,9 @@ class Situation(Base):
     valid_to: Mapped[Optional[datetime]] = mapped_column(_tz)
     version_time: Mapped[Optional[datetime]] = mapped_column(_tz)
     speed_limit_kmh: Mapped[Optional[int]] = mapped_column(Integer)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True
+    )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -383,7 +341,9 @@ class MsiSign(Base):
     # Road heading at the sign (degrees, clockwise from north); from MSI shapefile.
     # Used by the UI to offset the sign perpendicular to the road (draw it roadside).
     bearing: Mapped[Optional[float]] = mapped_column(Numeric)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -393,9 +353,7 @@ class MsiSign(Base):
 class MsiState(Base):
     __tablename__ = "msi_state"
 
-    uuid: Mapped[str] = mapped_column(
-        String, ForeignKey("msi_sign.uuid"), primary_key=True
-    )
+    uuid: Mapped[str] = mapped_column(String, ForeignKey("msi_sign.uuid"), primary_key=True)
     ts_state: Mapped[Optional[datetime]] = mapped_column(_tz)
     aspect_type: Mapped[Optional[str]] = mapped_column(String)
     value: Mapped[Optional[str]] = mapped_column(String)
@@ -423,7 +381,9 @@ class Drip(Base):
     num_display_areas: Mapped[Optional[int]] = mapped_column(Integer)
     display_text: Mapped[Optional[str]] = mapped_column(Text)
     message: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -445,7 +405,9 @@ class ChargePoint(Base):
     owner_name: Mapped[Optional[str]] = mapped_column(String)
     open: Mapped[Optional[bool]] = mapped_column(Boolean)
     last_updated: Mapped[Optional[datetime]] = mapped_column(_tz)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -496,7 +458,9 @@ class TruckParking(Base):
     name: Mapped[Optional[str]] = mapped_column(String)
     operator: Mapped[Optional[str]] = mapped_column(String)
     capacity: Mapped[Optional[int]] = mapped_column(Integer)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -548,7 +512,9 @@ class TrafficSign(Base):
     last_seen: Mapped[Optional[date]] = mapped_column(Date)
     placed_on: Mapped[Optional[date]] = mapped_column(Date)
     removed_on: Mapped[Optional[date]] = mapped_column(Date)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("POINT", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
@@ -568,7 +534,9 @@ class EmissionZone(Base):
     status: Mapped[Optional[str]] = mapped_column(String)
     authority: Mapped[Optional[str]] = mapped_column(String)
     info_url: Mapped[Optional[str]] = mapped_column(Text)
-    geom: Mapped[Optional[Any]] = mapped_column(Geometry("POLYGON", srid=4326, spatial_index=False), nullable=True)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POLYGON", srid=4326, spatial_index=False), nullable=True
+    )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 

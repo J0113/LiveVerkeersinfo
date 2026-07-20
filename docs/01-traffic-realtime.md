@@ -73,29 +73,23 @@ payloadPublication (MeasuredDataPublication)
 ### Notes
 - `speed = -1` or `numberOfInputValuesUsed="0"` ⇒ no valid measurement, treat as null.
 - Each site emits several indexed values (per lane × length class × flow/speed).
-- The map normalizes the numeric part of the measurement road name (`A1`,
-  `N001`, `001` → `001`) and matches it to WEGGEG using carriageway, kilometre
-  range, and a maximum 100m spatial distance. Matched measurements color the
-  separate WEGGEG lanes; unmatched sites retain the original point-marker
-  rendering and bearing fallback.
-- At interchanges, NDW measurements can retain the previous road identity while
-  WEGGEG assigns the physical exit lane to the connecting road. If the semantic
-  match fails, the map accepts a geometry-only match when the lane counts are
-  equal, the lane is within 12m, and no second candidate is within another 5m.
+- Fixed speed sites receive a VILD-derived travel bearing from the local road
+  tangent oriented by `tmc_direction`. OSM lane candidates must be directional,
+  non-connector major-road lanes within 25m and 45°, with no conflicting road
+  reference. Exact road reference and lane-count agreement rank ahead of angle
+  and distance; ambiguous candidates remain point-only.
+- Opposite directions at exactly the same coordinate remain separate in the
+  aggregation key. Point fallbacks are offset to the driver's right of the
+  signed bearing, so both remain clickable.
 - **Ingest tip**: stream-parse (SAX/iterparse); the decompressed doc is large.
 
 ### Map driving HUD
 
-The `Traffic Speed` layer is rendered as a pinned, glanceable HUD instead of
-map markers. It reads directly from the same matched WEGGEG segment as the
-road-following per-lane layer, selected at the GPS position (or map centre), and
-keeps the official NDW lane numbers attached to their speed and flow values.
-The selected WEGGEG id, NWB road-section id and carriageway type therefore match
-the map geometry by construction. This
-separates `HR` main carriageways from `PST` parallel carriageways, `OPR` ramps,
-`AFR` exits and `VBR`/`VBW` connector roads, even when all carry the same A-road
-number and L/R direction. There is deliberately no fallback to an adjacent or
-opposite road. Ambiguous or missing context is shown as unavailable data.
+The `Traffic Speed` layer is rendered as a pinned, glanceable HUD and as OSM
+lane ribbons. It uses the same signed VILD bearings for direction filtering and
+`osm_lane_count` for grouping, while keeping official NDW lane numbers attached
+to their speed and flow values. There is deliberately no lane fallback for an
+ambiguous, adjacent, or opposite road; missing context stays point-only.
 The adjacent DRIP/VMS panel uses the same selection rule and displays the
 nearest message without changing the road-following lane visualization.
 

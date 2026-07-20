@@ -19,7 +19,9 @@ router = APIRouter(prefix="/charging", tags=["charging"])
 def get_charging(
     b: BBoxDep,
     db: DbDep,
-    available: Annotated[bool, Query(description="Only return points with available connectors")] = False,
+    available: Annotated[
+        bool, Query(description="Only return points with available connectors")
+    ] = False,
     limit: Annotated[int, Query(ge=1, le=settings.api_max_limit)] = settings.api_default_limit,
 ):
     bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
@@ -66,15 +68,17 @@ def get_charging(
             ).where(ChargeAvailability.cp_id.in_(cp_ids))
         ).all()
         for a in avail_rows:
-            avail_by_cp.setdefault(a.cp_id, []).append({
-                "idx": a.idx,
-                "total": a.total,
-                "available": a.available,
-                "power_max": float(a.power_max) if a.power_max is not None else None,
-                "power_type": a.power_type,
-                "connector_type": a.connector_type,
-                "connector_format": a.connector_format,
-            })
+            avail_by_cp.setdefault(a.cp_id, []).append(
+                {
+                    "idx": a.idx,
+                    "total": a.total,
+                    "available": a.available,
+                    "power_max": float(a.power_max) if a.power_max is not None else None,
+                    "power_type": a.power_type,
+                    "connector_type": a.connector_type,
+                    "connector_format": a.connector_format,
+                }
+            )
 
     def props(r):
         return {

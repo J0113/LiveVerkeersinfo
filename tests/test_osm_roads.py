@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import timezone
 from types import SimpleNamespace
 
 import pytest
@@ -21,8 +21,14 @@ WKT = "LINESTRING(4.9 52.3,4.91 52.31)"
 @pytest.mark.parametrize(
     "highway",
     [
-        "motorway", "trunk", "primary", "secondary",
-        "motorway_link", "trunk_link", "primary_link", "secondary_link",
+        "motorway",
+        "trunk",
+        "primary",
+        "secondary",
+        "motorway_link",
+        "trunk_link",
+        "primary_link",
+        "secondary_link",
     ],
 )
 def test_way_row_accepts_driving_road_classes(highway):
@@ -45,9 +51,15 @@ def test_way_row_rejects_missing_geometry():
 
 def test_way_row_retains_full_tag_dict_verbatim():
     tags = {
-        "highway": "primary", "name": "Rijksstraatweg", "ref": "N99",
-        "maxspeed": "80", "surface": "asphalt", "lanes": "1", "oneway": "yes",
-        "operator": "Rijkswaterstaat", "zone:traffic": "NL:rural",
+        "highway": "primary",
+        "name": "Rijksstraatweg",
+        "ref": "N99",
+        "maxspeed": "80",
+        "surface": "asphalt",
+        "lanes": "1",
+        "oneway": "yes",
+        "operator": "Rijkswaterstaat",
+        "zone:traffic": "NL:rural",
     }
     row = _way_row(6569948, tags, WKT)
     assert row["name"] == "Rijksstraatweg"
@@ -78,8 +90,12 @@ class FakeSession:
 def _rows(n, start=1):
     return [
         {
-            "osm_id": start + i, "highway": "motorway", "name": None, "ref": None,
-            "geom": WKT, "raw": {"highway": "motorway"},
+            "osm_id": start + i,
+            "highway": "motorway",
+            "name": None,
+            "ref": None,
+            "geom": WKT,
+            "raw": {"highway": "motorway"},
         }
         for i in range(n)
     ]
@@ -160,7 +176,14 @@ def test_highway_types_national_overview_motorway_only():
 
 def test_highway_types_regional_adds_trunk_and_primary():
     types = _highway_types_for_zoom(9)
-    assert set(types) == {"motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link"}
+    assert set(types) == {
+        "motorway",
+        "motorway_link",
+        "trunk",
+        "trunk_link",
+        "primary",
+        "primary_link",
+    }
     assert _highway_types_for_zoom(10.9) == types
 
 

@@ -116,8 +116,8 @@ def parse_vild(zip_path: Path) -> Iterator[tuple[str, dict]]:
 def parse_vild_tmc(zip_path: Path) -> Iterator[dict]:
     """Parse the VILD TMC location table (VILD6.x.A.dbf at the zip root).
 
-    Yields one dict per location code with the chain topology needed to trace a
-    road: lin_ref (→ vild_line.id), pos_off/neg_off (next/previous code), road.
+    Yields one dict per location code with typed topology fields plus the full
+    source DBF record in ``raw``. No VILD master attribute is discarded.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         with zipfile.ZipFile(zip_path) as zf:
@@ -142,7 +142,26 @@ def parse_vild_tmc(zip_path: Path) -> Iterator[dict]:
         loc_c = col("LOC_NR")
         if loc_c is None:
             return
-        lin_c, pos_c, neg_c, road_c = col("LIN_REF"), col("POS_OFF"), col("NEG_OFF"), col("ROADNUMBER")
+        lin_c = col("LIN_REF")
+        pos_c = col("POS_OFF")
+        neg_c = col("NEG_OFF")
+        road_c = col("ROADNUMBER")
+        hecto_c = col("HECTO_DIR")
+
+        def _source_value(v):
+            if v is None:
+                return None
+            if isinstance(v, str):
+                return v if v.strip() else None
+            try:
+                if v != v:  # pandas/numpy NaN
+                    return None
+            except (TypeError, ValueError):
+                pass
+            try:
+                return v.item()
+            except AttributeError:
+                return v
 
         def _int(v):
             try:
@@ -153,7 +172,7 @@ def parse_vild_tmc(zip_path: Path) -> Iterator[dict]:
                 return None
 
         for r in gdf.itertuples(index=False):
-            d = r._asdict()
+            d = {key: _source_value(value) for key, value in r._asdict().items()}
             loc_nr = _int(d.get(loc_c))
             if loc_nr is None or loc_nr <= 0:
                 continue
@@ -166,6 +185,8 @@ def parse_vild_tmc(zip_path: Path) -> Iterator[dict]:
                 "pos_off": _int(d.get(pos_c)) if pos_c else None,
                 "neg_off": _int(d.get(neg_c)) if neg_c else None,
                 "road_number": str(road) if road is not None else None,
+                "hecto_dir": _int(d.get(hecto_c)) if hecto_c else None,
+                "raw": d,
             }
 
 

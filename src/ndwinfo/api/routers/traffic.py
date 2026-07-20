@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 from collections import defaultdict
 from typing import Annotated
 
 from fastapi import APIRouter, Query
 from fastapi.responses import Response
-from sqlalchemy import and_, case, func, select, text
+from sqlalchemy import and_, case, func, select, text, tuple_
 
 from ndwinfo.api.deps import BBox, BBoxDep, DbDep
 from ndwinfo.api.geo import geo_response, make_fc
@@ -18,15 +17,27 @@ from ndwinfo.config import settings
 from ndwinfo.models import (
     MeasurementCharacteristic,
     MeasurementSite,
+    OsmRoadLane,
     TrafficMeasurement,
     TravelTime,
-    WeggegLane,
+    VildTmc,
 )
 
 router = APIRouter(prefix="/traffic", tags=["traffic"])
 
-WEGGEG_NEAR_MATCH_MAX_DISTANCE_M = 2.5
-WEGGEG_WIDE_MATCH_MAX_DISTANCE_M = 25
+OSM_MATCH_MAX_DISTANCE_M = 25
+OSM_MATCH_MAX_ANGLE_DEG = 45
+
+
+def _speed_location_key(
+    coords: tuple,
+    road: str | None,
+    carriageway: str | None,
+    tmc_direction: str | None,
+    side: str | None,
+) -> tuple:
+    """Keep co-located opposite directions separate when explicit R/L is absent."""
+    return (coords, road, carriageway or tmc_direction, side)
 
 
 @router.get("/speed")
@@ -53,8 +64,16 @@ def get_speed(
             MeasurementSite.side,
             MeasurementSite.road,
             MeasurementSite.carriageway,
+            MeasurementSite.carriageway_source,
+            MeasurementSite.vild_carriageway,
+            MeasurementSite.vild_carriageway_source,
+            MeasurementSite.carriageway_direction_conflict,
             MeasurementSite.km,
             MeasurementSite.openlr_bearing,
+            MeasurementSite.vild_bearing,
+            MeasurementSite.tmc_direction,
+            VildTmc.road_number.label("vild_road_number"),
+            VildTmc.hecto_dir.label("vild_hecto_dir"),
             MeasurementCharacteristic.lane,
             func.max(
                 case(
@@ -89,6 +108,7 @@ def get_speed(
                 TrafficMeasurement.index == MeasurementCharacteristic.index,
             ),
         )
+        .outerjoin(VildTmc, MeasurementSite.tmc_primary == VildTmc.loc_nr)
         .where(
             func.ST_Intersects(MeasurementSite.geom, bbox_geom),
             MeasurementCharacteristic.lane.isnot(None),
@@ -101,8 +121,16 @@ def get_speed(
             MeasurementSite.side,
             MeasurementSite.road,
             MeasurementSite.carriageway,
+            MeasurementSite.carriageway_source,
+            MeasurementSite.vild_carriageway,
+            MeasurementSite.vild_carriageway_source,
+            MeasurementSite.carriageway_direction_conflict,
             MeasurementSite.km,
             MeasurementSite.openlr_bearing,
+            MeasurementSite.vild_bearing,
+            MeasurementSite.tmc_direction,
+            VildTmc.road_number,
+            VildTmc.hecto_dir,
             MeasurementCharacteristic.lane,
             MeasurementSite.geom,
         )
@@ -112,12 +140,16 @@ def get_speed(
     # Identify road/carriageway metadata available at each physical point first.
     # Some MONICA records omit road/km but are exactly co-located with a MONIBAS
     # record that has them. Inherit only when there is one unambiguous candidate.
-    known_at_position: dict[tuple, set[tuple[str, str | None]]] = defaultdict(set)
+    known_at_position: dict[
+        tuple, set[tuple[str, str | None, str | None]]
+    ] = defaultdict(set)
     for row in rows:
         if not row.geom_json or not row.road:
             continue
         row_coords = tuple(round(c, 5) for c in json.loads(row.geom_json)["coordinates"])
-        known_at_position[(row_coords, row.side)].add((row.road, row.carriageway))
+        known_at_position[(row_coords, row.side, row.tmc_direction)].add(
+            (row.road, row.carriageway, row.carriageway_source)
+        )
 
     # Bucket lane readings by physical location + road direction. Location is
     # rounded to ~1m so co-located systems merge, while carriageways stay apart.
@@ -126,14 +158,23 @@ def get_speed(
         if not r.geom_json:
             continue
         coords = tuple(round(c, 5) for c in json.loads(r.geom_json)["coordinates"])
-        effective_road = r.road
+        effective_road = r.road or r.vild_road_number
         effective_carriageway = r.carriageway
-        inherited = known_at_position.get((coords, r.side), set())
+        effective_carriageway_source = r.carriageway_source
+        inherited = known_at_position.get((coords, r.side, r.tmc_direction), set())
         if effective_road is None and len(inherited) == 1:
-            effective_road, effective_carriageway = next(iter(inherited))
+            effective_road, effective_carriageway, effective_carriageway_source = next(
+                iter(inherited)
+            )
         # Keep opposite carriageways separate even when two systems publish the
         # same gantry coordinate and measurementSide is absent.
-        key = (coords, effective_road, effective_carriageway, r.side)
+        key = _speed_location_key(
+            coords,
+            effective_road,
+            effective_carriageway,
+            r.tmc_direction,
+            r.side,
+        )
         loc = locs.get(key)
         if loc is None:
             loc = locs[key] = {
@@ -141,8 +182,16 @@ def get_speed(
                 "side": r.side,
                 "road": effective_road,
                 "carriageway": effective_carriageway,
+                "carriageway_source": effective_carriageway_source,
+                "derived_carriageway": r.vild_carriageway,
+                "derived_carriageway_source": r.vild_carriageway_source,
+                "carriageway_direction_conflict": r.carriageway_direction_conflict,
                 "km": float(r.km) if r.km is not None else None,
                 "openlr_bearing": int(r.openlr_bearing) if r.openlr_bearing is not None else None,
+                "bearing": float(r.vild_bearing) if r.vild_bearing is not None else None,
+                "bearing_source": "vild" if r.vild_bearing is not None else None,
+                "tmc_direction": r.tmc_direction,
+                "vild_hecto_dir": r.vild_hecto_dir,
                 "num_lanes": r.num_lanes or 0,
                 "sources": set(),
                 "lanes": defaultdict(list),  # lane -> list of readings
@@ -151,6 +200,7 @@ def get_speed(
         if r.road is not None and (loc["road"] is None or loc["km"] is None):
             loc["road"] = r.road
             loc["carriageway"] = r.carriageway
+            loc["carriageway_source"] = r.carriageway_source
             loc["km"] = float(r.km) if r.km is not None else loc["km"]
         if loc["openlr_bearing"] is None and r.openlr_bearing is not None:
             loc["openlr_bearing"] = int(r.openlr_bearing)
@@ -193,8 +243,16 @@ def get_speed(
                 "site_id": rep,
                 "road": loc["road"],
                 "carriageway": loc["carriageway"],
+                "carriageway_source": loc["carriageway_source"],
+                "derived_carriageway": loc["derived_carriageway"],
+                "derived_carriageway_source": loc["derived_carriageway_source"],
+                "carriageway_direction_conflict": loc["carriageway_direction_conflict"],
                 "km": loc["km"],
                 "openlr_bearing": loc["openlr_bearing"],
+                "bearing": loc["bearing"],
+                "bearing_source": loc["bearing_source"],
+                "tmc_direction": loc["tmc_direction"],
+                "vild_hecto_dir": loc["vild_hecto_dir"],
                 "num_lanes": loc["num_lanes"] or None,
                 "side": loc["side"],
                 "measured_at": feat_ts.isoformat() if feat_ts else None,
@@ -204,46 +262,123 @@ def get_speed(
             },
         })
 
-    _attach_weggeg_matches(db, features)
+    _attach_osm_matches(db, features)
     _attach_fallback_bearings(db, features)
     return geo_response({"type": "FeatureCollection", "features": features})
 
 
-def _normalized_road_number(value: str | None) -> str | None:
-    """Normalize A1/N001/001 to WEGGEG's zero-padded numeric road key."""
+def _normalized_road_ref(value: str | None) -> str | None:
+    """Normalize OSM/VILD/measurement road references for comparison."""
     if not value:
         return None
-    match = re.search(r"\d+", value)
-    return f"{int(match.group()):03d}" if match else None
+    match = re.search(r"\b([AN])?\s*0*(\d+)([A-Z]?)\b", value.upper())
+    if not match:
+        return None
+    prefix, number, suffix = match.groups()
+    return f"{prefix or ''}{int(number)}{suffix or ''}"
 
 
-def _attach_weggeg_matches(db, features: list[dict]) -> None:
-    """Match speed locations to WEGGEG and attach a local travel bearing.
+def _angular_difference(a: float, b: float) -> float:
+    return abs((a - b + 180) % 360 - 180)
 
-    First prefer physical lane geometry within 2.5m, using road and carriageway
-    only to rank multiple nearby candidates. For unmatched sites, widen to 25m,
-    require road/hectometre agreement, and rank carriageway then lane-count
-    agreement before distance. Bearing is derived after selection, never used
-    as a matching input.
-    """
+
+def _pick_osm_candidate(site: dict, candidates: list):
+    """Choose a confidently directed OSM cross-section, or return ``None``."""
+    road_ref = _normalized_road_ref(site.get("road_ref"))
+    bearing = site.get("bearing")
+    if bearing is None:
+        return None
+
+    eligible = []
+    for candidate in candidates:
+        candidate_ref = _normalized_road_ref(candidate.ref)
+        if road_ref and candidate_ref and road_ref != candidate_ref:
+            continue
+        angle = _angular_difference(float(candidate.bearing), float(bearing))
+        if angle > OSM_MATCH_MAX_ANGLE_DEG:
+            continue
+        eligible.append(
+            (
+                candidate,
+                bool(road_ref and candidate_ref == road_ref),
+                bool(site.get("num_lanes") and candidate.lane_count == site["num_lanes"]),
+                angle,
+            )
+        )
+    if not eligible:
+        return None
+
+    eligible.sort(
+        key=lambda item: (
+            not item[1],
+            not item[2],
+            item[3],
+            float(item[0].distance_m),
+        )
+    )
+    best = eligible[0]
+    if len(eligible) > 1:
+        second = eligible[1]
+        indistinguishable = (
+            best[0].source_id != second[0].source_id
+            and second[0].source_id
+            not in (getattr(best[0], "connected_source_ids", None) or [])
+            and best[0].source_id
+            not in (getattr(second[0], "connected_source_ids", None) or [])
+            and best[1:3] == second[1:3]
+            and abs(best[3] - second[3]) <= 2
+            and abs(float(best[0].distance_m) - float(second[0].distance_m)) <= 1
+        )
+        if indistinguishable:
+            return None
+    return best[0]
+
+
+def _osm_failure_reason(site: dict, candidates: list) -> str:
+    """Explain why a site with nearby OSM geometry was not matched."""
+    road_ref = _normalized_road_ref(site.get("road_ref"))
+    road_compatible = [
+        candidate
+        for candidate in candidates
+        if not (
+            road_ref
+            and _normalized_road_ref(candidate.ref)
+            and road_ref != _normalized_road_ref(candidate.ref)
+        )
+    ]
+    if not road_compatible:
+        return "road_ref_conflict"
+    bearing = site.get("bearing")
+    directed = [
+        candidate
+        for candidate in road_compatible
+        if bearing is not None
+        and _angular_difference(float(candidate.bearing), float(bearing))
+        <= OSM_MATCH_MAX_ANGLE_DEG
+    ]
+    return "ambiguous_candidates" if directed else "bearing_mismatch"
+
+
+def _attach_osm_matches(db, features: list[dict]) -> None:
+    """Match directed speed sites to nearby OSM directional lane geometry."""
     payload = []
     for index, feature in enumerate(features):
         props = feature["properties"]
+        if props.get("bearing") is None:
+            continue
         lon, lat = feature["geometry"]["coordinates"]
         payload.append({
             "i": index,
             "lon": lon,
             "lat": lat,
-            "road_number": _normalized_road_number(props.get("road")),
-            "carriageway": props.get("carriageway"),
-            "km": props.get("km"),
+            "road_ref": props.get("road"),
+            "bearing": props.get("bearing"),
             "num_lanes": props.get("num_lanes"),
         })
-
     if not payload:
         return
 
-    near_rows = db.execute(
+    rows = db.execute(
         text(
             """
             WITH sites AS (
@@ -253,21 +388,29 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
                     i integer,
                     lon double precision,
                     lat double precision,
-                    road_number text,
-                    carriageway text,
-                    km double precision,
+                    road_ref text,
+                    bearing double precision,
                     num_lanes integer
                 )
             )
             SELECT s.i,
-                   w.source_id,
-                   w.lane_count,
-                   w.road_number,
-                   w.carriageway_side,
-                   (w.road_number = s.road_number) AS road_match,
-                   (w.carriageway_side = s.carriageway) AS carriageway_match,
-                   (w.lane_count = s.num_lanes) AS lane_count_match,
-                   ST_Distance(s.point::geography, w.geom::geography) AS distance_m,
+                   o.source_id,
+                   o.lane_count,
+                   o.ref,
+                   o.direction,
+                   o.highway,
+                   ARRAY(
+                       SELECT o2.source_id
+                       FROM osm_road_lane o2
+                       WHERE o2.lane = 1
+                         AND o2.source_id <> o.source_id
+                         AND ST_DWithin(
+                             o2.geom::geography,
+                             o.geom::geography,
+                             1
+                         )
+                   ) AS connected_source_ids,
+                   ST_Distance(s.point::geography, o.geom::geography) AS distance_m,
                    mod((
                        degrees(ST_Azimuth(
                            ST_LineInterpolatePoint(
@@ -278,193 +421,52 @@ def _attach_weggeg_matches(db, features: list[dict]) -> None:
                                merged.line,
                                least(ST_LineLocatePoint(merged.line, s.point) + 0.0001, 1)
                            )
-                       )) + CASE WHEN w.direction = 'T' THEN 180 ELSE 0 END
-                   )::numeric, 360)::double precision AS bearing,
-                   opp.roadside_bearing
+                       )) + CASE WHEN o.direction = 'bwd' THEN 180 ELSE 0 END
+                   )::numeric, 360)::double precision AS bearing
             FROM sites s
-            JOIN weggeg_lane w
-              ON w.lane = 1
+            JOIN osm_road_lane o
+              ON o.lane = 1
+             AND o.direction IN ('fwd', 'bwd')
+             AND coalesce(o.role, '') <> 'connector'
              AND ST_DWithin(
-                 w.geom::geography,
+                 o.geom::geography,
                  s.point::geography,
-                 :near_match_max_m
+                 :max_distance_m
              )
-            CROSS JOIN LATERAL (SELECT ST_LineMerge(w.geom) AS line) merged
-            LEFT JOIN LATERAL (
-                SELECT mod(degrees(ST_Azimuth(
-                           ST_ClosestPoint(ST_LineMerge(w2.geom), s.point),
-                           s.point
-                       ))::numeric, 360)::double precision AS roadside_bearing
-                FROM weggeg_lane w2
-                WHERE w2.lane = 1
-                  AND w2.road_number = w.road_number
-                  AND w2.carriageway_side IN ('R', 'L')
-                  AND w2.carriageway_side <> w.carriageway_side
-                  AND ST_DWithin(w2.geom::geography, s.point::geography, 120)
-                  AND NOT ST_Equals(
-                      ST_ClosestPoint(ST_LineMerge(w2.geom), s.point), s.point)
-                ORDER BY w2.geom <-> s.point
-                LIMIT 1
-            ) opp ON true
+            CROSS JOIN LATERAL (SELECT ST_LineMerge(o.geom) AS line) merged
             WHERE GeometryType(merged.line) = 'LINESTRING'
             ORDER BY s.i, distance_m
             """
         ),
-        {
-            "sites": json.dumps(payload),
-            "near_match_max_m": WEGGEG_NEAR_MATCH_MAX_DISTANCE_M,
-        },
+        {"sites": json.dumps(payload), "max_distance_m": OSM_MATCH_MAX_DISTANCE_M},
     ).all()
 
-    near_by_index: dict[int, list] = defaultdict(list)
-    for row in near_rows:
-        near_by_index[row.i].append(row)
-
-    matched_indices: set[int] = set()
-    for index, candidates in near_by_index.items():
-        selected = _pick_near_candidate(candidates)
-        _apply_weggeg_match(features[index], selected, "near_geometry")
-        matched_indices.add(index)
-
-    wide_payload = [site for site in payload if site["i"] not in matched_indices]
-    wide_payload = [
-        site
-        for site in wide_payload
-        if site["road_number"] is not None and site["km"] is not None
-    ]
-    if not wide_payload:
-        return
-
-    wide_rows = db.execute(
-        text(
-            """
-            WITH sites AS (
-                SELECT s.*,
-                       ST_SetSRID(ST_MakePoint(s.lon, s.lat), 4326) AS point
-                FROM jsonb_to_recordset(CAST(:sites AS jsonb)) AS s(
-                    i integer,
-                    lon double precision,
-                    lat double precision,
-                    road_number text,
-                    carriageway text,
-                    km double precision,
-                    num_lanes integer
-                )
-            )
-            SELECT s.i,
-                   w.source_id,
-                   w.lane_count,
-                   w.road_number,
-                   w.carriageway_side,
-                   true AS road_match,
-                   (w.carriageway_side = s.carriageway) AS carriageway_match,
-                   (w.lane_count = s.num_lanes) AS lane_count_match,
-                   ST_Distance(s.point::geography, w.geom::geography) AS distance_m,
-                   mod((
-                       degrees(ST_Azimuth(
-                           ST_LineInterpolatePoint(
-                               merged.line,
-                               greatest(ST_LineLocatePoint(merged.line, s.point) - 0.0001, 0)
-                           ),
-                           ST_LineInterpolatePoint(
-                               merged.line,
-                               least(ST_LineLocatePoint(merged.line, s.point) + 0.0001, 1)
-                           )
-                       )) + CASE WHEN w.direction = 'T' THEN 180 ELSE 0 END
-                   )::numeric, 360)::double precision AS bearing,
-                   opp.roadside_bearing
-            FROM sites s
-            JOIN weggeg_lane w
-              ON w.lane = 1
-             AND w.road_number = s.road_number
-             AND s.km BETWEEN
-                 least((w.raw->>'BEGINKM')::double precision,
-                       (w.raw->>'EINDKM')::double precision) - 0.25
-                 AND
-                 greatest((w.raw->>'BEGINKM')::double precision,
-                          (w.raw->>'EINDKM')::double precision) + 0.25
-             AND ST_DWithin(
-                 w.geom::geography,
-                 s.point::geography,
-                 :wide_match_max_m
-             )
-            CROSS JOIN LATERAL (SELECT ST_LineMerge(w.geom) AS line) merged
-            LEFT JOIN LATERAL (
-                SELECT mod(degrees(ST_Azimuth(
-                           ST_ClosestPoint(ST_LineMerge(w2.geom), s.point),
-                           s.point
-                       ))::numeric, 360)::double precision AS roadside_bearing
-                FROM weggeg_lane w2
-                WHERE w2.lane = 1
-                  AND w2.road_number = w.road_number
-                  AND w2.carriageway_side IN ('R', 'L')
-                  AND w2.carriageway_side <> w.carriageway_side
-                  AND ST_DWithin(w2.geom::geography, s.point::geography, 120)
-                  AND NOT ST_Equals(
-                      ST_ClosestPoint(ST_LineMerge(w2.geom), s.point), s.point)
-                ORDER BY w2.geom <-> s.point
-                LIMIT 1
-            ) opp ON true
-            WHERE GeometryType(merged.line) = 'LINESTRING'
-            ORDER BY s.i, distance_m
-            """
-        ),
-        {
-            "sites": json.dumps(wide_payload),
-            "wide_match_max_m": WEGGEG_WIDE_MATCH_MAX_DISTANCE_M,
-        },
-    ).all()
-
-    wide_by_index: dict[int, list] = defaultdict(list)
-    for row in wide_rows:
-        wide_by_index[row.i].append(row)
-
-    for index, candidates in wide_by_index.items():
-        selected = _pick_wide_candidate(candidates)
-        _apply_weggeg_match(features[index], selected, "road_carriageway_lanes")
-
-
-def _pick_near_candidate(candidates: list):
-    """Rank sub-2.5m candidates by road, carriageway, then distance."""
-    return min(
-        candidates,
-        key=lambda candidate: (
-            not bool(candidate.road_match),
-            not bool(candidate.carriageway_match),
-            float(candidate.distance_m),
-        ),
-    )
-
-
-def _pick_wide_candidate(candidates: list):
-    """Rank wider same-road candidates by carriageway, lanes, then distance."""
-    return min(
-        candidates,
-        key=lambda candidate: (
-            not bool(candidate.carriageway_match),
-            not bool(candidate.lane_count_match),
-            float(candidate.distance_m),
-        ),
-    )
-
-
-def _apply_weggeg_match(feature: dict, selected, method: str) -> None:
-    props = feature["properties"]
-    props["weggeg_source_id"] = selected.source_id
-    props["weggeg_lane_count"] = selected.lane_count
-    props["weggeg_distance_m"] = round(float(selected.distance_m), 1)
-    props["weggeg_match_method"] = method
-    props["weggeg_matched_road_number"] = selected.road_number
-    props["weggeg_matched_carriageway"] = selected.carriageway_side
-    if selected.bearing is not None:
-        props["bearing"] = round(float(selected.bearing) % 360, 1)
-        props["bearing_source"] = "weggeg"
-    if selected.roadside_bearing is not None:
-        props["roadside_bearing"] = round(float(selected.roadside_bearing) % 360, 1)
+    by_index: dict[int, list] = defaultdict(list)
+    for row in rows:
+        by_index[row.i].append(row)
+    sites = {site["i"]: site for site in payload}
+    for site in payload:
+        features[site["i"]]["properties"]["osm_match_failure"] = "no_nearby_major_lane"
+    for index, candidates in by_index.items():
+        selected = _pick_osm_candidate(sites[index], candidates)
+        if selected is None:
+            props = features[index]["properties"]
+            props["osm_match_failure"] = _osm_failure_reason(sites[index], candidates)
+            props["osm_nearest_highway"] = candidates[0].highway
+            continue
+        props = features[index]["properties"]
+        props.pop("osm_match_failure", None)
+        props["osm_source_id"] = selected.source_id
+        props["osm_direction"] = selected.direction
+        props["osm_lane_count"] = selected.lane_count
+        props["osm_distance_m"] = round(float(selected.distance_m), 1)
+        props["osm_match_method"] = "vild_bearing"
+        props["osm_highway"] = selected.highway
+        props["osm_bearing"] = round(float(selected.bearing) % 360, 1)
 
 
 def _attach_fallback_bearings(db, features: list[dict]) -> None:
-    """Keep the prior OpenLR/nearest-line bearing when WEGGEG has no match.
+    """Use OpenLR/nearest-line only when VILD bearing enrichment is unavailable.
 
     Uses openlr_bearing from the site record when available (parsed at ingest
     from the DATEX v2 OpenLR extension). Falls back to a nearest-neighbour
@@ -515,99 +517,47 @@ def _attach_fallback_bearings(db, features: list[dict]) -> None:
         f["properties"]["bearing_source"] = "meetlocatie_vak"
 
 
-def _lane_start_point(geom_json: str | None) -> list[float] | None:
-    """Return the start [lon, lat] of a lane geometry (Line/MultiLine).
-
-    Lanes are parallel offset curves of the same base line, so their *start*
-    vertices are perpendicular offsets of the base start — reliably aligned
-    across lanes. A mid-vertex is not (offset curves get different vertex counts
-    on bends), which corrupts the cross-road projection on long/curved sections.
-    """
-    if not geom_json:
-        return None
-    geom = json.loads(geom_json)
-    coords = geom.get("coordinates")
-    if geom.get("type") == "MultiLineString":
-        coords = coords[0] if coords else None
-    if not coords:
-        return None
-    return coords[0]
-
-
-def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -> dict:
-    """Project matched point measurements onto their separate WEGGEG lanes."""
-    matched: dict[str, list[dict]] = defaultdict(list)
+def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -> dict:
+    """Project matched point measurements onto their directed OSM lanes."""
+    matched: dict[tuple[int, str], list[dict]] = defaultdict(list)
     for feature in point_features:
-        source_id = feature["properties"].get("weggeg_source_id")
-        if source_id:
-            matched[source_id].append(feature)
-
+        props = feature["properties"]
+        source_id = props.get("osm_source_id")
+        direction = props.get("osm_direction")
+        if source_id is not None and direction in {"fwd", "bwd"}:
+            matched[(source_id, direction)].append(feature)
     if not matched:
         return {"type": "FeatureCollection", "features": []}
 
     bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
     rows = db.execute(
         select(
-            WeggegLane.id,
-            WeggegLane.source_id,
-            WeggegLane.lane,
-            WeggegLane.lane_count,
-            WeggegLane.road_number,
-            WeggegLane.direction,
-            WeggegLane.carriageway_side,
-            func.ST_AsGeoJSON(WeggegLane.geom, 6).label("geom_json"),
+            OsmRoadLane.id,
+            OsmRoadLane.source_id,
+            OsmRoadLane.lane,
+            OsmRoadLane.lane_count,
+            OsmRoadLane.direction,
+            OsmRoadLane.highway,
+            OsmRoadLane.ref,
+            OsmRoadLane.width_m,
+            func.ST_AsGeoJSON(OsmRoadLane.geom, 6).label("geom_json"),
         )
         .where(
-            WeggegLane.source_id.in_(list(matched)),
-            func.ST_Intersects(WeggegLane.geom, bbox_geom),
+            tuple_(OsmRoadLane.source_id, OsmRoadLane.direction).in_(list(matched)),
+            OsmRoadLane.role != "connector",
+            func.ST_Intersects(OsmRoadLane.geom, bbox_geom),
         )
-        .order_by(WeggegLane.source_id, WeggegLane.lane)
+        .order_by(OsmRoadLane.source_id, OsmRoadLane.direction, OsmRoadLane.lane)
         .limit(settings.api_max_limit)
     ).all()
 
-    # WEGGEG lane geometry is offset assuming the source line is digitised with
-    # increasing hectometres, but digitisation direction is inconsistent. When a
-    # section is digitised the "wrong" way, lane 1 (fast) ends up offset to the
-    # shoulder instead of the median, so speeds appear mirrored across the road.
-    # The *set* of parallel lane lines is still correct — only the lane→line
-    # labelling flips — so detect the mirror (using the point's roadside_bearing,
-    # which points outward toward the shoulder) and reverse the speed→lane lookup.
-    rows_by_source: dict[str, list] = defaultdict(list)
-    for row in rows:
-        rows_by_source[row.source_id].append(row)
-
-    mirrored_sources: set[str] = set()
-    for source_id, srows in rows_by_source.items():
-        outward = next(
-            (p["properties"].get("roadside_bearing")
-             for p in matched.get(source_id, [])
-             if p["properties"].get("roadside_bearing") is not None),
-            None,
-        )
-        if outward is None or len(srows) < 2:
-            continue
-        ordered = sorted(srows, key=lambda r: r.lane)
-        m1 = _lane_start_point(ordered[0].geom_json)
-        m_last = _lane_start_point(ordered[-1].geom_json)
-        if not m1 or not m_last:
-            continue
-        rad = math.radians(outward)
-        # Project (lowest-lane → highest-lane) onto the outward direction. If the
-        # highest lane is *less* outward, lane 1 sits on the shoulder → mirrored.
-        proj = (m_last[0] - m1[0]) * math.sin(rad) + (m_last[1] - m1[1]) * math.cos(rad)
-        if proj < 0:
-            mirrored_sources.add(source_id)
-
     lane_features = []
     for row in rows:
-        mirrored = row.source_id in mirrored_sources
-        effective_lane = (
-            row.lane_count + 1 - row.lane
-            if mirrored and row.lane_count
-            else row.lane
-        )
+        pair = (row.source_id, row.direction)
+        points = matched[pair]
+        effective_lane = _effective_osm_lane(row.lane, row.lane_count, row.direction)
         candidates: list[tuple[dict, dict]] = []
-        for point in matched[row.source_id]:
+        for point in points:
             lane = next(
                 (
                     item
@@ -618,48 +568,45 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
             )
             if lane is not None:
                 candidates.append((point, lane))
-
-        # Prefer a non-null speed, then the newest sample, then the closest
-        # semantic/spatial WEGGEG match when several sensors cover one section.
         candidates.sort(
             key=lambda item: (
                 item[1].get("speed_kmh") is not None,
                 item[0]["properties"].get("measured_at") or "",
-                -float(item[0]["properties"].get("weggeg_distance_m") or 9999),
+                -float(item[0]["properties"].get("osm_distance_m") or 9999),
             ),
             reverse=True,
         )
-        point, lane_data = candidates[0] if candidates else (matched[row.source_id][0], {})
+        point, lane_data = candidates[0] if candidates else (points[0], {})
         point_props = point["properties"]
-        # Every sensor covering this lane, so the client can order them along the
-        # section and fade the colour between their speeds. The winner above
-        # still fills speed_kmh for labels and the single-sensor case.
         sensors = [
             {
-                "site_id": pt["properties"].get("site_id"),
-                "measurement_coords": pt["geometry"]["coordinates"],
-                "measured_at": pt["properties"].get("measured_at"),
-                "speed_kmh": ld.get("speed_kmh"),
-                "flow_veh_h": ld.get("flow_veh_h"),
-                "n_inputs": ld.get("n_inputs"),
-                "std_dev": ld.get("std_dev"),
+                "site_id": candidate["properties"].get("site_id"),
+                "measurement_coords": candidate["geometry"]["coordinates"],
+                "measured_at": candidate["properties"].get("measured_at"),
+                "speed_kmh": lane.get("speed_kmh"),
+                "flow_veh_h": lane.get("flow_veh_h"),
+                "n_inputs": lane.get("n_inputs"),
+                "std_dev": lane.get("std_dev"),
             }
-            for pt, ld in candidates
+            for candidate, lane in candidates
         ]
         lane_features.append({
             "type": "Feature",
             "geometry": json.loads(row.geom_json) if row.geom_json else None,
             "properties": {
                 "id": row.id,
-                "source_id": row.source_id,
-                # effective_lane so the shown lane number matches the speed after
-                # mirror correction; the geometry stays at its physical position.
+                "osm_source_id": row.source_id,
+                "osm_direction": row.direction,
+                "osm_lane_count": row.lane_count,
                 "lane": effective_lane,
                 "lane_count": row.lane_count,
+                "highway": row.highway,
+                "ref": row.ref,
+                "width_m": float(row.width_m) if row.width_m is not None else None,
                 "road": point_props.get("road"),
-                "road_number": row.road_number,
                 "carriageway": point_props.get("carriageway"),
-                "direction": row.direction,
+                "derived_carriageway": point_props.get("derived_carriageway"),
+                "tmc_direction": point_props.get("tmc_direction"),
                 "km": point_props.get("km"),
                 "site_id": point_props.get("site_id"),
                 "measured_at": point_props.get("measured_at"),
@@ -675,6 +622,11 @@ def _lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDep) -
     return {"type": "FeatureCollection", "features": lane_features}
 
 
+def _effective_osm_lane(lane: int, lane_count: int, direction: str) -> int:
+    """Translate physical OSM ordering to driver-left NDW lane numbering."""
+    return lane_count + 1 - lane if direction == "bwd" else lane
+
+
 @router.get("/speed/map")
 def get_speed_map(
     b: BBoxDep,
@@ -682,7 +634,7 @@ def get_speed_map(
     include_lanes: bool = True,
     limit: Annotated[int, Query(ge=1, le=settings.api_max_limit)] = settings.api_default_limit,
 ):
-    """Return matched WEGGEG speed lanes plus point fallbacks for the map."""
+    """Return confidently matched OSM speed lanes plus point fallbacks."""
     # Fetch sensors from a slightly wider area than the viewport so a sensor
     # just outside the frame can still colour a section that reaches inside it.
     # Without this, panning ~20m flips which of two co-located sensors is in the
@@ -694,7 +646,7 @@ def get_speed_map(
     point_response = get_speed(b=fetch_bbox, db=db, limit=limit)
     points = json.loads(point_response.body)
     lanes = (
-        _lane_speed_feature_collection(db, points["features"], b)
+        _osm_lane_speed_feature_collection(db, points["features"], b)
         if include_lanes
         else {"type": "FeatureCollection", "features": []}
     )

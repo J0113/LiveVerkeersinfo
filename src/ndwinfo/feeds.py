@@ -172,27 +172,6 @@ FEEDS: list[FeedDef] = [
         "parser_fn": None,
         "ingester_cls": None,
     },
-    # --- cadence 86400s, non-NDW source ---
-    {
-        "name": "nwb_wegvakken",
-        "filename": "Wegvakken.gpkg",
-        "cadence_s": 86400,
-        "parser_fn": None,
-        "ingester_cls": None,
-        "url": settings.nwb_wegvakken_url,
-    },
-    {
-        # WEGGEG publishes one versioned package per month rather than a stable
-        # "latest" filename. `index_url` is resolved to the newest DD-MM-YYYY
-        # package by download.fetch, while this local filename stays stable.
-        "name": "weggeg_rijstroken",
-        "filename": "weggeg_rijstroken.zip",
-        "index_url": "https://downloads.rijkswaterstaatdata.nl/weggeg/geogegevens/"
-        "shapefile/weggeg_kenmerkniveau/",
-        "cadence_s": 86400,
-        "parser_fn": None,
-        "ingester_cls": None,
-    },
     {
         # Geofabrik country extract, not an NDW file. Driving-road ways only
         # (motorway/trunk/primary/secondary + _link) -- see docs/11-osm-pbf.md.

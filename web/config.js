@@ -19,31 +19,6 @@ const LANE_MARKING = '#C7D8F0'
 const LANE_SEAM_OVERLAP_M = 0.06
 
 const LAYERS = [
-  // ── Road network foundation ───────────────────────────────────────────────
-  // Added first so all existing traffic layers and interactive markers remain
-  // above the reference geometry.
-  {
-    key: 'nwb_roads', label: 'NWB Road Network', group: 'reference',
-    endpoint: '/nwb/roads', geomType: 'road-network', minZoom: 9,
-    legendColor: '#3f78a8', promoteId: 'segment_id',
-    paint: {
-      casing: {
-        'line-color': 'rgba(8, 20, 31, 0.82)',
-        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 2.2, 12, 3.8, 16, 8.5],
-        'line-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0.5, 12, 0.72, 16, 0.9]
-      },
-      line: {
-        'line-color': ['match', ['get', 'road_class'],
-          'motorway', '#5ba4d6',
-          'primary', '#4b87b4',
-          '#507084'
-        ],
-        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 1.1, 12, 2.1, 16, 5.2],
-        'line-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0.68, 12, 0.82, 16, 0.92]
-      }
-    }
-  },
-
   // ── Traffic ────────────────────────────────────────────────────────────────
   {
     key: 'speed', label: 'Traffic Speed Lanes', group: 'traffic',
@@ -195,29 +170,6 @@ const LAYERS = [
       line: { 'line-color': '#3366cc', 'line-width': 1.5, 'line-opacity': 0.8 }
     }
   },
-  {
-    // Separate, 3.5m-offset lane centrelines derived from WEGGEG Rijstroken.
-    // A future speed matcher can set `speed_kmh` and use this existing palette.
-    key: 'weggeg_lanes', label: 'WEGGEG Lanes', group: 'reference',
-    endpoint: '/weggeg/lanes', geomType: 'line', minZoom: 14, legendColor: '#dbe8ef',
-    casing: {
-      'line-color': '#24465b',
-      'line-width': ['interpolate', ['linear'], ['zoom'], 14, 2.5, 17, 5.5, 20, 10],
-      'line-opacity': 0.94
-    },
-    paint: {
-      'line-color': ['case',
-        ['has', 'speed_kmh'],
-        ['interpolate', ['linear'], ['coalesce', ['get', 'speed_kmh'], 0],
-          0, '#8a8a8a', 30, '#ff3333', 50, '#ff8800', 70, '#ffdd00', 90, '#00cc44'
-        ],
-        '#dbe8ef'
-      ],
-      'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1, 17, 3, 20, 7],
-      'line-opacity': 0.98
-    }
-  },
-
   // ── OpenStreetMap ──────────────────────────────────────────────────────────
   {
     // Driving-road network from a Geofabrik province extract (currently
@@ -383,7 +335,6 @@ const GROUPS = [
 const DEFAULT_ENABLED = new Set(['matrix', 'drips'])
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
-let nwbTruncated = false
 
 // GPS-relative top HUD tiles. Toggled independently of the map layers via the
 // "HUD" section at the top of the layer panel. Only shown while GPS tracks.
@@ -426,10 +377,7 @@ let selectedFeature = null  // { source, id } currently highlighted (feature-sta
 let speedMarkers = []  // maplibregl.Marker instances for traffic speed sites
 let msiMarkers = []    // { marker, el, bearing } for MSI gantries (map render)
 const MATRIX_MIN_ZOOM = 11
-const nwbCache = new Map() // viewport/profile key → { expires, data }
-const NWB_BROWSER_CACHE_TTL_MS = 5 * 60_000
-let publicConfig = { nwbDiagnosticMode: false }
-let laneSpeedMarkers = [] // upright numeric labels snapped to WEGGEG lanes
+let laneSpeedMarkers = [] // upright numeric labels snapped to matched OSM lanes
 
 const ROAD_SIGN_HUD_MAX_DISTANCE_M = 2000
 const ROAD_SIGN_HUD_REFETCH_DISTANCE_M = 100
@@ -439,36 +387,6 @@ let roadSignHudLastFetchCoords = null
 let roadSignHudLastFetchAt = 0
 let roadSignHudLastFetchHeading = null
 const roadSignHudRenderState = { matrixKey: null, dripKey: null, speedKey: null }
-
-// WEGGEG lane centrelines are 3.5 m apart. MapLibre line widths are expressed
-// in screen pixels, so a nearly linear zoom interpolation makes lanes look the
-// same width on screen while the road beneath them doubles every zoom level.
-// These stops approximate 3.5 physical metres at Dutch latitudes (~52° N).
-// Exponential interpolation preserves that scale between integer zoom levels.
-const TRAFFIC_LANE_FILL_WIDTH_PX = [
-  'interpolate', ['exponential', 2], ['zoom'],
-  13, 0.75,
-  14, 0.75,
-  15, 1.02,
-  16, 2.05,
-  17, 4.10,
-  18, 8.20,
-  19, 16.39,
-  20, 32.79,
-  21, 65.58
-]
-const TRAFFIC_LANE_CASING_WIDTH_PX = [
-  'interpolate', ['exponential', 2], ['zoom'],
-  13, 1.50,
-  14, 1.50,
-  15, 2.09,
-  16, 3.38,
-  17, 5.87,
-  18, 10.73,
-  19, 20.53,
-  20, 39.87,
-  21, 78.25
-]
 
 // ─── GPS & Geolocation state ──────────────────────────────────────────────────
 const GPS_STATES = {

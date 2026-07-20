@@ -19,7 +19,9 @@ router = APIRouter(prefix="/verkeersborden", tags=["verkeersborden"])
 def get_verkeersborden(
     b: BBoxDep,
     db: DbDep,
-    rvv_code: Annotated[str | None, Query(alias="rvvCode", description="Filter by RVV code")] = None,
+    rvv_code: Annotated[
+        str | None, Query(alias="rvvCode", description="Filter by RVV code")
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=settings.api_max_limit)] = settings.api_default_limit,
 ):
     bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)

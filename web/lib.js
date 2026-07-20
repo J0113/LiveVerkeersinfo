@@ -295,39 +295,28 @@ function selectUpcomingRoadSigns (matrixFc, dripFc, device, maxDistanceM) {
 
 // Direction / corridor tuning for the drive-HUD "next sensor" pick.
 const LANE_SPEED_SELECT = {
-  sideTol: 70,        // deg; roadside_bearing must be within this of heading+90
   axisTol: 55,        // deg; fallback road-axis (mod 180) tolerance when no roadside
   baseCross: 45,      // m; corridor half-width right at the device
   crossSlope: 0.12,   // corridor widening per metre ahead (~7deg cone)
   maxCross: 130,      // m; corridor half-width cap
 }
 
-// True when the sensor is on OUR carriageway (same travel direction), judged
-// from the reliable roadside_bearing rather than the flip-prone travel bearing.
-// NL is right-hand traffic, so a carriageway's roadside (outward from the median)
-// sits ~90deg clockwise of its travel direction: our carriageway has
-// roadside_bearing ~= heading+90; the oncoming carriageway is ~180deg away and
-// therefore rejected. Falls back to a road-axis (mod 180) match — which only
-// rejects crossing roads, not oncoming — when roadside_bearing is absent
-// (single-carriageway roads, where there is no median to measure across).
+// True when the sensor measures our travel direction. VILD enrichment gives a
+// signed travel bearing, so unlike the old road-axis fallback this rejects the
+// opposite carriageway directly.
 function sameCarriagewayDirection (p, heading) {
-  const roadside = Number(p.roadside_bearing)
-  if (Number.isFinite(roadside)) {
-    return Math.abs(angleDiff(roadside, heading + 90)) <= LANE_SPEED_SELECT.sideTol
-  }
   const bearing = Number(p.bearing)
   if (!Number.isFinite(bearing)) return true // no direction info — don't over-filter
-  const axis = Math.abs(angleDiff(bearing, heading))
-  return Math.min(axis, 180 - axis) <= LANE_SPEED_SELECT.axisTol
+  return Math.abs(angleDiff(bearing, heading)) <= LANE_SPEED_SELECT.axisTol
 }
 
 // Pick the nearest speed-measurement site AHEAD in the travel direction (the
 // "next upcoming sensor") whose lanes carry at least one speed reading. Point
 // features come from /traffic/speed/map (data.points), each carrying a `lanes`
-// array plus num_lanes / weggeg_lane_count for entry/exit detection.
+// array plus num_lanes / osm_lane_count for entry/exit detection.
 //
-// Direction is filtered on roadside_bearing (reliable) so the oncoming
-// carriageway is rejected without depending on the flip-prone travel bearing;
+// Direction is filtered on the VILD-oriented travel bearing so the oncoming
+// carriageway is rejected;
 // the lateral corridor then widens with distance so a sensor ahead around a
 // curve is picked up early instead of only once you are almost on top of it.
 function selectUpcomingLaneSpeeds (pointFc, device, maxDistanceM) {
@@ -366,7 +355,7 @@ function splitSpeedLaneGroups (props) {
     .filter(l => l && l.lane !== null && l.lane !== undefined)
     .slice()
     .sort((a, b) => Number(a.lane) - Number(b.lane))
-  const mainCount = Number(props.weggeg_lane_count)
+  const mainCount = Number(props.osm_lane_count)
   if (!Number.isFinite(mainCount) || mainCount <= 0 || mainCount >= lanes.length) {
     return { main: lanes, extra: [] }
   }
@@ -472,7 +461,7 @@ function laneSpeedRoadKey (selection) {
   if (!selection) return null
   const p = selection.data
   const lanes = (p.lanes || []).map(l => `${l.lane}:${l.speed_kmh}`).join(',')
-  return [p.site_id, p.weggeg_lane_count, lanes, Math.round(selection.cls.along / 25)].join('|')
+  return [p.site_id, p.osm_lane_count, lanes, Math.round(selection.cls.along / 25)].join('|')
 }
 
 

@@ -112,28 +112,17 @@ map.on('load', () => {
     map.addSource(layer.key, srcOpts)
     const vis = enabled.has(layer.key) ? 'visible' : 'none'
 
-    if (layer.geomType === 'road-network') {
-      map.addLayer({
-        id: `${layer.key}-casing`, type: 'line', source: layer.key,
-        paint: layer.paint.casing,
-        layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' },
-        minzoom: layer.minZoom
-      })
-      map.addLayer({
-        id: layer.key, type: 'line', source: layer.key,
-        paint: layer.paint.line,
-        layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' },
-        minzoom: layer.minZoom
-      })
-      setupNwbDiagnostic(layer.key)
-    } else if (layer.geomType === 'speed') {
+    if (layer.geomType === 'speed') {
       map.addLayer({
         id: 'speed-lanes-casing',
         type: 'line',
         source: layer.key,
         paint: {
           'line-color': '#1d3240',
-          'line-width': TRAFFIC_LANE_CASING_WIDTH_PX,
+          'line-width': metresWide(
+            ['+', ['coalesce', ['get', 'width_m'], 3.5], 0.45],
+            14
+          ),
           'line-opacity': 0.94
         },
         layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' }
@@ -150,7 +139,7 @@ map.on('load', () => {
               70, '#ffdd00', 90, '#00cc44'
             ]
           ],
-          'line-width': TRAFFIC_LANE_FILL_WIDTH_PX,
+          'line-width': metresWide(['coalesce', ['get', 'width_m'], 3.5], 14),
           'line-opacity': 0.98
         },
         layout: { visibility: vis, 'line-cap': 'round', 'line-join': 'round' }
@@ -245,7 +234,6 @@ map.on('load', () => {
 
   buildLayerPanel()
   setupPanelToggles()
-  fetchPublicConfig()
   fetchAll()
 
   // ─── Geolocation Source & Layers ───────────────────────────────────────────

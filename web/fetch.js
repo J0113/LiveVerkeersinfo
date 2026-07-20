@@ -17,7 +17,6 @@ function fetchLayer (layer) {
   if (layer.geomType === 'msi') { fetchMatrixSigns(); return }
   if (layer.geomType === 'speed') { fetchSpeedLanes(); return }
   if (layer.geomType === 'speed-points') { fetchSpeedPoints(); return }
-  if (layer.geomType === 'road-network') { fetchNwbRoads(layer); return }
 
   if (layer.minZoom && map.getZoom() < layer.minZoom) {
     map.getSource(layer.key)?.setData(EMPTY_FC)
@@ -53,84 +52,7 @@ function fetchLayer (layer) {
     })
 }
 
-function fetchNwbRoads (layer) {
-  if (map.getZoom() < layer.minZoom) {
-    controllers[layer.key]?.abort()
-    map.getSource(layer.key)?.setData(EMPTY_FC)
-    nwbTruncated = false
-    updateZoomHint()
-    return
-  }
-
-  controllers[layer.key]?.abort()
-  const ctrl = new AbortController()
-  controllers[layer.key] = ctrl
-  const b = map.getBounds()
-  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
-    .map(v => v.toFixed(5)).join(',')
-  const zoom = map.getZoom()
-  const profile = zoom < 11 ? 'national' : zoom < 12 ? 'major' : 'detailed'
-  const cacheKey = `${profile}:${bbox}`
-  const cached = nwbCache.get(cacheKey)
-  if (cached && cached.expires > Date.now()) {
-    renderNwbData(layer, cached.data)
-    return
-  }
-
-  fetch(`/api${layer.endpoint}?bbox=${bbox}&zoom=${zoom.toFixed(2)}`, { signal: ctrl.signal })
-    .then(r => {
-      if (!r.ok) return Promise.reject(new Error(`HTTP ${r.status}`))
-      return r.json()
-    })
-    .then(data => {
-      nwbCache.set(cacheKey, { expires: Date.now() + NWB_BROWSER_CACHE_TTL_MS, data })
-      // Bound browser memory during long pan/zoom sessions.
-      if (nwbCache.size > 40) nwbCache.delete(nwbCache.keys().next().value)
-      renderNwbData(layer, data)
-    })
-    .catch(e => {
-      if (e.name === 'AbortError') return
-      console.warn('[nwb_roads]', e.message)
-      // Preserve the last successful geometry so a transient PDOK failure does
-      // not blank the road network while the user is navigating.
-    })
-}
-
-function renderNwbData (layer, data) {
-  map.getSource(layer.key)?.setData(data)
-  nwbTruncated = Boolean(data?.metadata?.truncated)
-  updateZoomHint()
-}
-
-function fetchPublicConfig () {
-  fetch('/api/config')
-    .then(r => r.ok ? r.json() : null)
-    .then(data => {
-      if (data) publicConfig = data
-      document.body.classList.toggle('nwb-diagnostic', Boolean(publicConfig.nwbDiagnosticMode))
-    })
-    .catch(e => console.warn('[config]', e.message))
-}
-
-function setupNwbDiagnostic (layerId) {
-  map.on('click', layerId, e => {
-    if (!publicConfig.nwbDiagnosticMode || !e.features?.length) return
-    const feature = e.features[0]
-    if (activePopup) activePopup.remove()
-    activePopup = new maplibregl.Popup({ maxWidth: '360px' })
-      .setLngLat(e.lngLat)
-      .setHTML(`<div class="diagnostic-title">NWB road segment</div>${buildPopupHtml(feature.properties)}`)
-      .addTo(map)
-  })
-  map.on('mouseenter', layerId, () => {
-    if (publicConfig.nwbDiagnosticMode) map.getCanvas().style.cursor = 'crosshair'
-  })
-  map.on('mouseleave', layerId, () => {
-    if (publicConfig.nwbDiagnosticMode) map.getCanvas().style.cursor = ''
-  })
-}
-
-// Measurement sources are points, while the WEGGEG road section they drive can
+// Measurement sources are points, while the matched OSM way they drive can
 // cross a high-zoom viewport without that source point being inside it. Keep a
 // small nearby-data buffer so those speed-lane segments remain stable.
 function viewportBbox (includeNearbyPoints = false) {
@@ -149,4 +71,3 @@ function viewportBbox (includeNearbyPoints = false) {
   }
   return [west, south, east, north].map(v => v.toFixed(6)).join(',')
 }
-

@@ -1,8 +1,7 @@
 # OpenStreetMap driving roads (Geofabrik) — `osm_road`
 
-Live feed, distinct from the NDW catalog (`docs/README.md`) — a non-NDW
-source ingested the same way `nwb_wegvakken` and `weggeg_rijstroken` are
-(absolute `url` override in `feeds.py`, see [docs/08](08-nwb-road-network.md)).
+Live feed, distinct from the NDW catalog (`docs/README.md`), configured through
+an absolute `url` override in `feeds.py`.
 Serves `highway=motorway,trunk,primary,secondary` (+ their `_link` ramp/
 interchange variants — without them, motorways would show gaps at every
 on/off-ramp) as a "OpenStreetMap" map layer, with **every OSM tag stored and
@@ -45,12 +44,10 @@ Which extract(s) currently confirm seeing a way is tracked separately in
 (`ndwinfo.ingest.osm_roads.OsmRoadIngester`, configured with a `feed_name`
 and `extract_key`) upserts both tables, then prunes only **its own**
 extract's stale memberships, and only deletes an `osm_road` row once it has
-**no** remaining membership in any extract. This is deliberately not the
-single-timestamp prune `NwbWegvakkenIngester` uses ([docs/08](08-nwb-road-network.md))
-— that's safe there only because NWB is one national file; reusing it here
-would let ingesting one province delete roads "owned" by another province's
-last run. A zero-row parse raises instead of pruning, so a bad/truncated
-download can't silently erase the layer.
+**no** remaining membership in any extract. This extract-membership model is
+required because ingesting one province must not delete roads last confirmed
+by another province. A zero-row parse raises instead of pruning, so a
+bad/truncated download cannot silently erase the layer.
 
 Adding another province is just another `feeds.py` entry + `INGESTERS`
 registration with a different `extract_key` — no schema change.
@@ -68,9 +65,8 @@ Every driving way gets lanes; the only ways without any are the 33
 
 **CRS**: `osm_road.geom` is WGS84 degrees, not metres — offsetting a lane
 there would offset by degrees. The parser transforms WGS84 → RD (EPSG:28992),
-offsets/tapers in RD (metres, via `shapely.offset_curve`/`shapely.ops.substring`,
-the same technique `parsers/weggeg.py` uses for WEGGEG lanes), then transforms
-back to WGS84.
+offsets/tapers in RD (metres, via `shapely.offset_curve` and
+`shapely.ops.substring`), then transforms back to WGS84.
 
 **Direction model** — deliberately conservative, built from what's actually
 tagged rather than guessed. Of the 4,952 two-way (`oneway` ≠ `yes`)
@@ -607,14 +603,11 @@ see [docs/06](06-verkeersborden.md) for the actual sign dataset).
 `no_straight_on` 50, `no_exit` 4. These reference `from`/`via`/`to` ways —
 routing-relevant, not present in NWB Wegvakken.
 
-**Comparison to NWB Wegvakken** ([docs/08](08-nwb-road-network.md)):
-OSM adds footways/cycleways/tracks/paths NWB doesn't carry, per-way
-maxspeed/surface/lit/access detail, turn restrictions, and updates ~daily
-vs NWB's ~30-day cadence. NWB stays authoritative for the official RWS
-road-vak model (rijksweg administration, carriageway direction) — OSM's
-tagging is crowd-sourced so completeness varies by contributor activity in
-an area (visible above: motorway-class near-100% tagged, residential/
-footway/track much patchier).
+**Historical comparison to the retired NWB source:** OSM adds per-way
+maxspeed/surface/lit/access detail and turn restrictions and updates more
+frequently. OSM tagging is crowd-sourced, so completeness still varies by
+contributor activity; the fixed speed matcher therefore combines OSM geometry
+with VILD direction and declines ambiguous matches.
 
 ### Buildings
 

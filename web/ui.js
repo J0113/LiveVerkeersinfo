@@ -268,11 +268,6 @@ function setLayerVisibility (layer, visible) {
     return
   }
   const vis = visible ? 'visible' : 'none'
-  if (layer.geomType === 'road-network') {
-    if (map.getLayer(`${layer.key}-casing`)) map.setLayoutProperty(`${layer.key}-casing`, 'visibility', vis)
-    if (map.getLayer(layer.key)) map.setLayoutProperty(layer.key, 'visibility', vis)
-    return
-  }
   if (layer.geomType === 'line') {
     for (const fill of layer.fills || []) {
       if (map.getLayer(`${layer.key}-${fill.suffix}`)) {
@@ -409,9 +404,6 @@ function updateZoomHint () {
   const hint = document.getElementById('zoom-hint')
   if (bboxTooLarge) {
     hint.textContent = 'Zoom in — area too large to load data'
-    hint.classList.remove('hidden')
-  } else if (nwbTruncated && enabled.has('nwb_roads')) {
-    hint.textContent = 'NWB viewport reached the feature cap — zoom in for complete road detail'
     hint.classList.remove('hidden')
   } else if (enabled.has('verkeersborden') && map.getZoom() < 13) {
     hint.textContent = 'Zoom in further to see traffic signs (zoom 13+)'

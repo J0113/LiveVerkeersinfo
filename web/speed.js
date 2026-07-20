@@ -107,6 +107,23 @@ function renderSpeedPoints (fc) {
         ...(p.km != null ? { km: p.km } : {}),
         ...(p.measured_at ? { measured: p.measured_at } : {}),
         ...(p.bearing != null ? { bearing: p.bearing + '°' } : {}),
+        ...(p.bearing_source ? { bearing_source: p.bearing_source } : {}),
+        ...(p.tmc_direction ? { vild_direction: p.tmc_direction } : {}),
+        ...(p.carriageway_source ? { carriageway_source: p.carriageway_source } : {}),
+        ...(p.derived_carriageway ? { derived_carriageway: p.derived_carriageway } : {}),
+        ...(p.derived_carriageway_source ? { derived_carriageway_source: p.derived_carriageway_source } : {}),
+        ...(p.vild_hecto_dir != null ? { vild_hecto_dir: p.vild_hecto_dir } : {}),
+        ...(p.carriageway_direction_conflict != null
+          ? { carriageway_direction_conflict: p.carriageway_direction_conflict }
+          : {}),
+        ...(p.osm_source_id != null ? { osm_source_id: p.osm_source_id } : {}),
+        ...(p.osm_direction ? { osm_direction: p.osm_direction } : {}),
+        ...(p.osm_lane_count != null ? { osm_lane_count: p.osm_lane_count } : {}),
+        ...(p.osm_distance_m != null ? { osm_distance_m: p.osm_distance_m } : {}),
+        ...(p.osm_match_method ? { osm_match_method: p.osm_match_method } : {}),
+        ...(p.osm_match_failure ? { osm_match_failure: p.osm_match_failure } : {}),
+        ...(p.osm_highway ? { osm_highway: p.osm_highway } : {}),
+        ...(p.osm_bearing != null ? { osm_bearing: `${p.osm_bearing}°` } : {}),
         ...(p.side ? { side: p.side } : {}),
       })
       const lanesHtml = lanes.map(l =>
@@ -122,12 +139,9 @@ function renderSpeedPoints (fc) {
         .addTo(map)
     })
 
-    // Compass direction to offset the marker toward. Prefer roadside_bearing
-    // (points away from the opposite carriageway — reliable), else fall back to
-    // right-of-travel (bearing + 90). Null → sit centred on the sensor point.
-    const offsetCompass = p.roadside_bearing != null
-      ? p.roadside_bearing
-      : (p.bearing != null ? (p.bearing + 90) % 360 : null)
+    // NL traffic keeps right: place the marker on the roadside to the right of
+    // its VILD-oriented travel bearing. Opposite directions move apart.
+    const offsetCompass = p.bearing != null ? (p.bearing + 90) % 360 : null
 
     const marker = new maplibregl.Marker({ element: wrapper, anchor: 'center' })
       .setLngLat(f.geometry.coordinates)
@@ -293,7 +307,7 @@ function sliceLineCoords (best, d0, d1) {
   return dedup
 }
 
-// Turn each WEGGEG lane into a set of short pieces whose speed is interpolated
+// Turn each matched OSM lane into short pieces whose speed is interpolated
 // between the sensors covering the section, so line-color fades from one
 // sensor's speed to the next along the road. Sections with <2 usable sensors
 // (or non-LineString geometry) pass through unchanged.

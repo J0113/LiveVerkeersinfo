@@ -1,7 +1,7 @@
 """Derive per-lane offset geometry from an osm_road way + its lanes tag.
 
 osm_road.geom is WGS84 (EPSG:4326) -- offsetting there would mean offsetting
-by degrees, not metres. Mirrors parsers/weggeg.py's approach: transform to
+by degrees, not metres: transform to
 RD/EPSG:28992 (metres), offset + converge there, transform back to WGS84.
 
 Direction model is deliberately conservative -- see docs/11-osm-pbf.md. Only

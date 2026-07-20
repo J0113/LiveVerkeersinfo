@@ -41,6 +41,7 @@ All list endpoints require `?bbox=minLon,minLat,maxLon,maxLat`. Max area: 25 deg
 | Endpoint | Feed | Cadence |
 |----------|------|---------|
 | `GET /api/traffic/speed` | Traffic flow + speed per measurement site | 60 s |
+| `GET /api/traffic/speed/map` | Direction-aware speed points and matched OSM lanes | 60 s |
 | `GET /api/situations?category=` | Incidents, SRTI, roadworks, bridge openings, closures, speed limits | 60 s |
 | `GET /api/signs/matrix` | Matrix signs (MSI) with current state | 60 s |
 | `GET /api/signs/drips` | Dynamic road info panels (DRIPs / VMS) | 60 s |
@@ -48,8 +49,8 @@ All list endpoints require `?bbox=minLon,minLat,maxLon,maxLat`. Max area: 25 deg
 | `GET /api/truckparking` | Truck parking sites + live occupancy | 60 s |
 | `GET /api/emission-zones` | Low-emission zones | daily |
 | `GET /api/verkeersborden?rvvCode=` | Traffic signs (bbox required; best above zoom 13) | daily |
-| `GET /api/nwb/roads?bbox=&zoom=` | Normalized NWB road sections for the viewport (served from PostGIS) | daily |
-| `GET /api/weggeg/lanes` | WEGGEG-derived separate lane centrelines (bbox required; zoom 14+) | monthly |
+| `GET /api/osm/roads` | Major-road OSM geometry | weekly |
+| `GET /api/osm/lanes` | Major-road OSM lane-detail geometry | weekly |
 | `GET /api/feeds/status` | Last run per feed — status, time, rows upserted | — |
 
 All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (default 500, max 2000).
@@ -57,15 +58,15 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 ## Web UI
 
 - Dark MapLibre map centred on the Netherlands (zoom 7)
-- Layer toggles (top-left panel): NWB road network, traffic speed, 6 situation categories, matrix signs, DRIPs, EV charging, truck parking, emission zones, traffic signs, WEGGEG lanes
+- Layer toggles for traffic, situations, signs, charging, reference data, and OSM roads/lanes
 - Panning or zooming refetches all enabled layers for the new bbox (300 ms debounce)
 - Auto-refreshes every 60 seconds
 - Feed status panel (bottom-right): last update time and status per feed
-- Traffic signs only fetched at zoom ≥ 13; WEGGEG lanes only at zoom ≥ 14
-- At navigation zoom, live speeds are drawn directly on matched WEGGEG lanes;
+- Traffic signs are only fetched at zoom ≥ 13
+- At navigation zoom, live speeds are drawn directly on confidently matched OSM lanes;
   unmatched measurements retain the existing roadside marker
-- Traffic-speed ribbons follow the 3.5 m WEGGEG lane spacing and scale
-  exponentially with zoom, keeping them road-aligned while zooming and panning
+- Traffic-speed ribbons use each OSM lane's physical width, keeping the speed
+  and lane-detail layers aligned while zooming and panning
 - Matrix signs and DRIPs/VMS are HUD-only: with GPS and a travel heading, the
   next relevant signs appear within 2 km with remaining distance; no sign
   markers are plotted on the map and the HUD hides when it has no values
@@ -75,7 +76,7 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
   lane-flow suggestion. Stale, opposite-direction, non-adjacent, and
   matrix-restricted lanes are excluded; hysteresis and a post-change cooldown
   prevent noisy or rapidly reversing suggestions
-- Detailed traffic-speed and WEGGEG lane overlays remain available in Layers,
+- Detailed traffic-speed and OSM lane overlays remain available in Layers,
   but start disabled so the driving map stays uncluttered
 - Background tabs pause GPS and data refreshes; feed status is fetched only
   while its panel is open, and unchanged HUD content is not rebuilt per GPS fix
@@ -84,14 +85,10 @@ All list endpoints return GeoJSON `FeatureCollection`. Optional `?limit=` (defau
 
 ## Data sources
 
-Full catalogue: [docs/README.md](docs/README.md). Live traffic data comes from
-[opendata.ndw.nu](https://opendata.ndw.nu); NWB road geometry is ingested daily
-from RWS's [Wegvakken GeoPackage](https://downloads.rijkswaterstaatdata.nl/nwb-wegen/)
-and WEGGEG lane centrelines from the public
-[Rijkswaterstaat WEGGEG catalogue](https://downloads.rijkswaterstaatdata.nl/weggeg/) —
-both ingested into PostGIS and served from there, not proxied per request.
-Neither source requires authentication. See
-[NWB road-network foundation](docs/08-nwb-road-network.md).
+Full catalogue: [docs/README.md](docs/README.md). Live traffic and VILD
+reference data come from [opendata.ndw.nu](https://opendata.ndw.nu). Major-road
+geometry and lane detail come from the ODbL-licensed Geofabrik OpenStreetMap
+extract documented in [docs/11-osm-pbf.md](docs/11-osm-pbf.md).
 
 ## Local development (without Docker)
 
@@ -117,6 +114,5 @@ python -m ndwinfo.poller
 | `MAX_BBOX_AREA` | `25.0` | Maximum bbox area in deg² for API requests |
 | `API_DEFAULT_LIMIT` | `500` | Default feature limit per endpoint |
 | `API_MAX_LIMIT` | `2000` | Hard cap on feature limit |
-| `NWB_WEGVAKKEN_URL` | official RWS `Wegvakken.gpkg` URL | Daily bulk-download source (used by the poller) |
-| `NWB_MAX_FEATURES` | `5000` | Per-viewport NWB row cap |
-| `NWB_DIAGNOSTIC_MODE` | `false` | Enable clickable NWB metadata diagnostics |
+| `OSM_NETHERLANDS_URL` | Geofabrik Netherlands PBF | Weekly major-road source |
+| `OSM_MAX_FEATURES` | `5000` | Per-viewport OSM road cap |

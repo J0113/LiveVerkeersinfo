@@ -14,6 +14,14 @@ The scope is deliberately limited to fixed **traffic-speed/flow sensors** whose
 `measurementSiteLocation` is a DATEX `Point`. Travel-time itineraries and
 floating-car data are out of scope.
 
+> **Implemented 2026-07-20.** The investigation and baseline counts below are
+> retained as the decision record. Production now stores `HECTO_DIR`, derives a
+> signed local VILD bearing, keeps explicit and derived R/L separate with
+> provenance/conflict fields, preserves opposite-direction aggregation, and
+> matches only confident OSM lanes. The naive direction-to-R/L fallbacks and
+> the WEGGEG/NWB production sources have been removed. See
+> [the rollout comparison](12-osm-speed-validation.md).
+
 The counts below were reproduced from the complete official
 [`measurement_current.xml.gz`](https://opendata.ndw.nu/measurement_current.xml.gz)
 snapshot containing 101,487
@@ -349,7 +357,7 @@ tiles occupying the same screen position.
 
 ---
 
-## Recommended action items
+## Implemented action items
 
 1. **Do not add a general `positive→R`/`negative→L` parser fallback.** Keep
    `tmc_direction` as its own direction field.
@@ -374,8 +382,11 @@ tiles occupying the same screen position.
    both external URLs referenced below actually say what this document claims
    before using them outside this investigation.
 
-These changes solve direction handling for fixed traffic-speed sensors without
-introducing travel-time or floating-car-data processing into the current scope.
+All eight items above are implemented. Explicit `hrl`/`hrr`, `HRL`/`HRR`, and
+`Re`/`Li` remain authoritative. A derived R/L never overrides them or changes
+the VILD travel bearing; disagreements are exposed diagnostically. Unresolved
+VILD geometry and uncertain OSM matches remain visible as direction-aware
+Traffic Speed Points rather than coloring a guessed lane.
 
 ---
 

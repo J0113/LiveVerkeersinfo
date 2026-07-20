@@ -87,7 +87,7 @@ def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) ->
       - RWS08: road+HRL/HRR+km encoded in the site_id
       - Provincial (PZH/PFR/etc.): "N457 hmp 4.75 Re" in name
     """
-    road = km = carriageway = None
+    road = km = carriageway = carriageway_source = None
     n = name or ""
     prefix = site_id.split("_")[0]
 
@@ -96,9 +96,13 @@ def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) ->
         road_num = int(n[0:3])
         road = f"A{road_num}" if road_num <= 99 else f"N{road_num}"
         km = round(int(n[6:12]) / 1000.0, 3)
-        carriageway = "R" if alc_dir == "positive" else "L" if alc_dir == "negative" else None
+        cw_code = n[3:6]
+        if cw_code in {"hrr", "hrl"}:
+            carriageway = "R" if cw_code == "hrr" else "L"
+            carriageway_source = "measurement_site_name"
 
-    # --- RWS01 MONIBAS: "0091hrl0572ra" (3-digit road + 1-digit subcode, 3-char cw, 4-digit hm, 2-char suffix) ---
+    # --- RWS01 MONIBAS: "0091hrl0572ra" ---
+    # 3-digit road + 1-digit subcode + 3-char cw + 4-digit hm + 2-char suffix.
     elif prefix == "RWS01" and re.fullmatch(r"\d{4}[a-z]{3}\d{4}[a-z]{2}", n):
         road_num = int(n[0:3])  # subcode at n[3] ignored
         road = f"A{road_num}" if road_num <= 99 else f"N{road_num}"
@@ -107,10 +111,7 @@ def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) ->
         if cw_code.startswith("hr"):
             # hrr = hoofdrijbaan rechts (R), hrl = hoofdrijbaan links (L)
             carriageway = "R" if cw_code[2] == "r" else "L"
-        elif alc_dir == "positive":
-            carriageway = "R"
-        elif alc_dir == "negative":
-            carriageway = "L"
+            carriageway_source = "measurement_site_name"
 
     # --- RWS08: id = "RWS08_6_HRL_096.6_1" or "RWS08_A30_HRL_021.8_1" ---
     elif prefix == "RWS08":
@@ -122,6 +123,8 @@ def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) ->
                 n2 = int(digits)
                 road = rp if rp[0].isalpha() else (f"A{n2}" if n2 <= 99 else f"N{n2}")
             carriageway = "R" if "HRR" in cp.upper() else "L" if "HRL" in cp.upper() else None
+            if carriageway:
+                carriageway_source = "measurement_site_id"
             try:
                 km = float(kp)
             except (ValueError, TypeError):
@@ -134,8 +137,14 @@ def _parse_site_location(site_id: str, name: str | None, alc_dir: str | None) ->
             road = m.group(1).replace(" ", "")
             km = round(float(m.group(2).replace(",", ".")), 3)
             carriageway = "R" if m.group(3) == "Re" else "L"
+            carriageway_source = "measurement_site_name"
 
-    return {"road": road, "carriageway": carriageway, "km": km}
+    return {
+        "road": road,
+        "carriageway": carriageway,
+        "carriageway_source": carriageway_source,
+        "km": km,
+    }
 
 
 def _clear(elem) -> None:
@@ -166,7 +175,10 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
         name = _multilang(elem, "measurementSiteName")
 
         # openlrBearing: first openlrLocationReferencePoint bearing
-        bear_e = elem.find(f".//{T}openlrLocationReferencePoint/{T}openlrLineAttributes/{T}openlrBearing")
+        bear_e = elem.find(
+            f".//{T}openlrLocationReferencePoint/"
+            f"{T}openlrLineAttributes/{T}openlrBearing"
+        )
         openlr_bearing = int(bear_e.text) if bear_e is not None and bear_e.text else None
 
         # alertCDirectionCoded: positive/negative travel direction
@@ -200,6 +212,7 @@ def parse_measurement_site_table(fileobj) -> Iterator[tuple[dict, list[dict]]]:
             "record_version_time": _text(elem, "measurementSiteRecordVersionTime"),
             "road": location_info["road"],
             "carriageway": location_info["carriageway"],
+            "carriageway_source": location_info["carriageway_source"],
             "km": location_info["km"],
             "openlr_bearing": openlr_bearing,
             "geom": geom,

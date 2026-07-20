@@ -21,7 +21,9 @@ VALID_CATEGORIES = {"incident", "srti", "roadworks", "bridge_opening", "closure"
 def get_situations(
     b: BBoxDep,
     db: DbDep,
-    category: Annotated[str | None, Query(description="incident|srti|roadworks|bridge_opening|closure|speed_limit")] = None,
+    category: Annotated[
+        str | None, Query(description="incident|srti|roadworks|bridge_opening|closure|speed_limit")
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=settings.api_max_limit)] = settings.api_default_limit,
 ):
     if category and category not in VALID_CATEGORIES:
