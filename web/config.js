@@ -59,8 +59,33 @@ const LAYERS = [
       ]
     }
   },
+  {
+    key: 'anwb_jams', label: 'ANWB Jams', group: 'traffic',
+    endpoint: '/anwb?category=jams', geomType: 'line', legendColor: '#ff3333',
+    paint: { 'line-width': 4, 'line-color': '#ff3333' }
+  },
 
   // ── Situations ─────────────────────────────────────────────────────────────
+  {
+    key: 'anwb_radars', label: "ANWB Speedcamera's", group: 'situations',
+    endpoint: '/anwb?category=radars', geomType: 'point', legendColor: '#00aaff',
+    renderAs: 'camera-icon'
+  },
+  {
+    // Fixed/permanent cameras from flitspalen.nl — distinct legendColor from
+    // anwb_radars (dynamic/mobile reports) so both stay distinguishable when on.
+    // limit raised above the shared api_default_limit (500): the verified NL
+    // subset has 994 active cameras nationwide, which would otherwise silently
+    // truncate at a national/zoomed-out viewport.
+    key: 'flitspalen_cameras', label: "Speedcamera's", group: 'situations',
+    endpoint: '/flitspalen', geomType: 'point', legendColor: '#aa33ff', limit: 1200,
+    renderAs: 'camera-icon'
+  },
+  {
+    key: 'anwb_roadworks', label: 'ANWB Roadworks', group: 'situations',
+    endpoint: '/anwb?category=roadworks', geomType: 'line', legendColor: '#ffaa00',
+    paint: { 'line-width': 4, 'line-color': '#ffaa00' }
+  },
   {
     key: 'sit_incident', label: 'Incidents', group: 'situations',
     endpoint: '/situations?category=incident', geomType: 'point', legendColor: '#ff3333',
@@ -315,6 +340,17 @@ const LAYERS = [
       }
     }
   }
+]
+
+// Per data-provider attribution, decoupled from LAYERS/GROUPS (attribution is
+// owed regardless of which layers are currently toggled on).
+const ATTRIBUTIONS = [
+  { label: 'OpenStreetMap contributors', url: 'https://www.openstreetmap.org/copyright', note: 'basemap tiles, driving-road geometry (ODbL)' },
+  { label: 'CARTO', url: 'https://carto.com/attribution', note: 'basemap tiles' },
+  { label: 'Esri, Maxar, Earthstar Geographics', url: 'https://www.esri.com/', note: 'satellite basemap' },
+  { label: 'Nationaal Dataportaal Wegverkeer (NDW)', url: 'https://opendata.ndw.nu/', note: 'traffic, roadworks, signs, charging, truck parking, verkeersborden' },
+  { label: 'ANWB', url: 'https://www.anwb.nl/', note: 'jams, roadworks, dynamic speed cameras' },
+  { label: 'Flitspalen.nl', url: 'https://www.flitspalen.nl/', note: 'static speed camera locations' },
 ]
 
 // UI grouping order + labels

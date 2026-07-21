@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 MAX_RESUME_ATTEMPTS = 5
 
 
+MAX_POST_ATTEMPTS = 3
+# Defensive cap on a POST response body — this path has no Range/resume and
+# loads the whole thing before writing, so an endpoint unexpectedly returning
+# far more than expected (e.g. a misconfigured bbox) can't run away.
+MAX_POST_RESPONSE_BYTES = 50 * 1024 * 1024
+
+
 class _RangeNotHonored(Exception):
     """Raised when a Range-resume request gets a non-206 response.
 
@@ -75,6 +82,9 @@ def fetch(
     the partial write is resumed with a Range request instead of restarting
     from byte zero, up to MAX_RESUME_ATTEMPTS.
     """
+    if feed.get("method") == "POST":
+        return _fetch_post(feed)
+
     path = Path(settings.data_dir) / feed["filename"]
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".part")
@@ -169,6 +179,69 @@ def fetch(
             http_status=None,
             error=str(exc),
         )
+
+
+def _fetch_post(feed: dict) -> DownloadResult:
+    """One-shot POST download (no ETag/Last-Modified, no Range-resume).
+
+    Used by sources gated behind a form-encoded POST body plus specific
+    headers (e.g. Flitspalen.nl) rather than NDW's usual conditional-GET
+    files. Writes to the same .part-then-atomic-rename pattern as the GET
+    path, with a bounded timeout/retry and a response-size cap, and requires
+    the body to actually parse as JSON before treating the download as ok —
+    an HTML error page would otherwise look like a "successful" fetch and
+    only fail later, confusingly, inside the parser.
+    """
+    import json
+
+    path = Path(settings.data_dir) / feed["filename"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".part")
+    url = feed["url"]
+
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_POST_ATTEMPTS + 1):
+        try:
+            with httpx.stream(
+                "POST",
+                url,
+                data=feed.get("form_data"),
+                headers=feed.get("extra_headers"),
+                timeout=60.0,
+            ) as resp:
+                resp.raise_for_status()
+                size = 0
+                with open(tmp_path, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=65536):
+                        size += len(chunk)
+                        if size > MAX_POST_RESPONSE_BYTES:
+                            raise ValueError(
+                                f"response exceeded {MAX_POST_RESPONSE_BYTES} bytes, aborting"
+                            )
+                        f.write(chunk)
+
+            with open(tmp_path, "rb") as f:
+                json.load(f)  # raises if the body isn't actually JSON
+
+            tmp_path.replace(path)
+            return DownloadResult(
+                status="ok", path=path, etag=None, last_modified=None,
+                http_status=200, error=None,
+            )
+        except Exception as exc:  # noqa: BLE001 — retried uniformly, surfaced on final attempt
+            last_exc = exc
+            tmp_path.unlink(missing_ok=True)
+            if attempt >= MAX_POST_ATTEMPTS:
+                break
+            logger.warning(
+                "%s: POST download attempt %d/%d failed, retrying: %s",
+                feed["name"], attempt, MAX_POST_ATTEMPTS, exc,
+            )
+
+    return DownloadResult(
+        status="error", path=None, etag=None, last_modified=None,
+        http_status=None, error=str(last_exc),
+    )
 
 
 @contextmanager

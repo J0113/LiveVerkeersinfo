@@ -98,6 +98,14 @@ How `alertCDirectionCoded` + the VILD TMC chain establish travel direction,
 how explicit and derived R/L remain separate, and how the implemented local
 tangent enrichment handles unresolved cases.
 
+### ANWB incidents (non-NDW source) → [12-anwb-incidents.md](12-anwb-incidents.md)
+
+Jams, roadworks, and dynamic speed camera reports from ANWB's own JSON API.
+
+### Flitspalen static speed cameras (non-NDW source) → [13-flitspalen-speedcameras.md](13-flitspalen-speedcameras.md)
+
+Crowdsourced fixed/permanent speed camera locations from flitspalen.nl.
+
 ### OpenStreetMap driving roads (non-NDW source) → [11-osm-pbf.md](11-osm-pbf.md)
 
 | File | Format | ~Size | Refresh |

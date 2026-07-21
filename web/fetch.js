@@ -33,6 +33,7 @@ function fetchLayer (layer) {
   const sep = layer.endpoint.includes('?') ? '&' : '?'
   let url = `/api${layer.endpoint}${sep}bbox=${bbox}`
   if (layer.sendZoom) url += `&zoom=${map.getZoom().toFixed(2)}`
+  if (layer.limit) url += `&limit=${layer.limit}`
 
   fetch(url, { signal: ctrl.signal })
     .then(r => {
