@@ -81,6 +81,11 @@ def get_charging(
             )
 
     def props(r):
+        avail_list = avail_by_cp.get(r.id, [])
+        # None (not 0) when we have no availability rows at all — "unknown",
+        # distinct from a station confirmed to have zero free connectors.
+        available_count = sum(a["available"] or 0 for a in avail_list) if avail_list else None
+        connector_total = sum(a["total"] or 0 for a in avail_list) if avail_list else None
         return {
             "id": r.id,
             "cpo_id": r.cpo_id,
@@ -90,7 +95,9 @@ def get_charging(
             "owner_name": r.owner_name,
             "open": r.open,
             "last_updated": r.last_updated.isoformat() if r.last_updated else None,
-            "availability": avail_by_cp.get(r.id, []),
+            "available_count": available_count,
+            "connector_total": connector_total,
+            "availability": avail_list,
         }
 
     return geo_response(make_fc(cp_rows, "geom_json", props))

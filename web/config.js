@@ -145,13 +145,7 @@ const LAYERS = [
   {
     key: 'charging', label: 'EV Charging', group: 'charging',
     endpoint: '/charging', geomType: 'point', legendColor: '#00dd44',
-    // 'open' property proxies for availability — green when open, grey otherwise
-    paint: {
-      'circle-radius': 6,
-      'circle-color': ['case', ['==', ['get', 'open'], true], '#00dd44', '#666666'],
-      'circle-stroke-width': 1,
-      'circle-stroke-color': 'rgba(0,0,0,0.35)'
-    }
+    renderAs: 'charger-icon'
   },
 
   // ── Truck Parking ──────────────────────────────────────────────────────────

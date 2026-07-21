@@ -35,6 +35,19 @@ locations dump, and OCPI tariffs. Linked by `tariff_ids`.
   operator, last_updated) + `charge_availability` (cp_id FK, total, available,
   power_max, power_type, connector_type, connector_format, tariff_ids text[]).
 
+### `GET /api/charging` response fields (derived, not in the raw feed)
+Alongside the raw per-connector `availability[]` array, each feature also
+carries two summed scalars for cheap client-side use (e.g. driving marker
+color without reducing a nested array in a MapLibre style expression):
+- `available_count`: sum of `availability[].available` across all connector
+  groups; `null` if the station has no availability rows at all (unknown),
+  a real int (possibly `0`) otherwise.
+- `connector_total`: same sum over `total`.
+
+Note `open` is **not** a reliable availability proxy — the sample above has
+`open: false` while reporting 3 available connectors — so the web UI colors
+markers off `available_count`/`connector_total`, not `open`.
+
 ---
 
 ## charging_point_locations_ocpi.json.gz — OCPI locations (full)

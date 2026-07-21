@@ -133,6 +133,51 @@ function ensureCameraIcon (color) {
   map.addImage(id, x.getImageData(0, 0, s, s), { pixelRatio: 2 })
 }
 
+// Charger marker: same colour-coded-dot approach as the speedcamera icon
+// above, but a lightning-bolt glyph (the universal EV-charger symbol — a
+// plug shape gets muddy at marker size) and pre-baked in 3 fixed colors
+// since charging color varies per-feature (availability), not per-layer.
+const CHARGER_GREEN = '#00cc44'
+const CHARGER_RED = '#ff3333'
+const CHARGER_GREY = '#888888'
+function chargerIconId (color) { return `charger-icon-${color.replace('#', '')}` }
+function ensureChargerIcon (color) {
+  const id = chargerIconId(color)
+  if (map.hasImage(id)) return
+  const s = 44
+  const c = document.createElement('canvas')
+  c.width = c.height = s
+  const x = c.getContext('2d')
+
+  x.beginPath()
+  x.arc(s / 2, s / 2, s * 0.46, 0, Math.PI * 2)
+  x.fillStyle = color
+  x.fill()
+  x.lineWidth = 2.5
+  x.strokeStyle = '#ffffff'
+  x.stroke()
+
+  // Bolt, drawn on a 24x24 grid centered in the circle then scaled to fit.
+  const scale = s / 24
+  x.save()
+  x.translate(s / 2 - 12 * scale, s / 2 - 12 * scale)
+  x.scale(scale, scale)
+  x.beginPath()
+  x.moveTo(13, 2)
+  x.lineTo(4.5, 13.5)
+  x.lineTo(11, 13.5)
+  x.lineTo(9.5, 22)
+  x.lineTo(19.5, 9.5)
+  x.lineTo(13, 9.5)
+  x.lineTo(13, 2)
+  x.closePath()
+  x.fillStyle = '#ffffff'
+  x.fill()
+  x.restore()
+
+  map.addImage(id, x.getImageData(0, 0, s, s), { pixelRatio: 2 })
+}
+
 // ─── Map load: wire up sources, layers, and UI ────────────────────────────────
 
 map.on('load', () => {
@@ -259,6 +304,29 @@ map.on('load', () => {
         }
       })
       setupClickPopup(layer.key)
+    } else if (layer.renderAs === 'charger-icon') {
+      ensureChargerIcon(CHARGER_GREEN)
+      ensureChargerIcon(CHARGER_RED)
+      ensureChargerIcon(CHARGER_GREY)
+      map.addLayer({
+        id: layer.key, type: 'symbol', source: layer.key,
+        layout: {
+          // Availability-driven, not 'open' — the feed's 'open' flag doesn't
+          // reliably track live availability (docs/04-charging.md sample has
+          // open:false with 3 connectors free), so it would mislabel stations.
+          'icon-image': ['case',
+            ['==', ['get', 'available_count'], null], chargerIconId(CHARGER_GREY),
+            ['>', ['get', 'available_count'], 0], chargerIconId(CHARGER_GREEN),
+            ['>', ['get', 'connector_total'], 0], chargerIconId(CHARGER_RED),
+            chargerIconId(CHARGER_GREY)
+          ],
+          'icon-size': 1,
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          visibility: vis
+        }
+      })
+      setupClickPopup(layer.key)
     } else {
       map.addLayer({ id: layer.key, type: 'circle', source: layer.key, paint: layer.paint, layout: { visibility: vis } })
       setupClickPopup(layer.key)
@@ -267,6 +335,9 @@ map.on('load', () => {
 
   // Traffic is the primary visualization; keep it above optional references.
   if (map.getLayer('speed-lanes')) map.moveLayer('speed-lanes')
+
+  // Charger icons would otherwise sit under speed-lanes/road fills.
+  if (map.getLayer('charging')) map.moveLayer('charging')
 
   // Speedcameras/trajectcontrole stay on top of everything else — otherwise
   // Traffic Speed Lanes / Driving Roads / Lane Detail (all opaque, ground-scale
