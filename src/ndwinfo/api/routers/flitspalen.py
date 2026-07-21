@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from ndwinfo.api.deps import BBoxDep, DbDep
 from ndwinfo.api.geo import geo_response, make_fc
 from ndwinfo.config import settings
-from ndwinfo.models import FlitspalenCamera
+from ndwinfo.models import FlitspalenCamera, FlitspalenCameraRoute
 
 router = APIRouter(prefix="/flitspalen", tags=["flitspalen"])
 
@@ -49,5 +49,30 @@ def get_flitspalen_cameras(
             "rotatable": r.rotatable,
             "bearing_deg": r.bearing_deg,
         }
+
+    return geo_response(make_fc(rows, "geom_json", props))
+
+
+@router.get("/pairs")
+def get_flitspalen_pairs(
+    b: BBoxDep,
+    db: DbDep,
+    limit: Annotated[int, Query(ge=1, le=settings.api_max_limit)] = settings.api_default_limit,
+):
+    """Trajectcontrole SC/SCE routes, precomputed at ingest (see ingest/flitspalen_route.py)."""
+    bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
+    rows = db.execute(
+        select(
+            FlitspalenCameraRoute.sc_id,
+            FlitspalenCameraRoute.sce_id,
+            FlitspalenCameraRoute.street,
+            func.ST_AsGeoJSON(FlitspalenCameraRoute.geom, 6).label("geom_json"),
+        )
+        .where(func.ST_Intersects(FlitspalenCameraRoute.geom, bbox_geom))
+        .limit(limit)
+    ).all()
+
+    def props(r):
+        return {"sc_id": r.sc_id, "sce_id": r.sce_id, "street": r.street}
 
     return geo_response(make_fc(rows, "geom_json", props))

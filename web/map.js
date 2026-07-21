@@ -152,7 +152,7 @@ map.on('load', () => {
     const srcOpts = { type: 'geojson', data: EMPTY_FC }
     if (layer.promoteId) srcOpts.promoteId = layer.promoteId
     map.addSource(layer.key, srcOpts)
-    const vis = enabled.has(layer.key) ? 'visible' : 'none'
+    const vis = layerEnabled(layer) ? 'visible' : 'none'
 
     if (layer.geomType === 'speed') {
       map.addLayer({
@@ -267,6 +267,14 @@ map.on('load', () => {
 
   // Traffic is the primary visualization; keep it above optional references.
   if (map.getLayer('speed-lanes')) map.moveLayer('speed-lanes')
+
+  // Speedcameras/trajectcontrole stay on top of everything else — otherwise
+  // Traffic Speed Lanes / Driving Roads / Lane Detail (all opaque, ground-scale
+  // wide) bury the camera icons and dashed lines under them. moveLayer with no
+  // beforeId puts the layer at the very top; order here is back-to-front so
+  // flitspalen_cameras ends up highest.
+  if (map.getLayer('flitspalen_pairs')) map.moveLayer('flitspalen_pairs')
+  if (map.getLayer('flitspalen_cameras')) map.moveLayer('flitspalen_cameras')
 
   buildLayerPanel()
   setupPanelToggles()

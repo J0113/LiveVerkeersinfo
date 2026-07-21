@@ -82,6 +82,19 @@ const LAYERS = [
     renderAs: 'camera-icon'
   },
   {
+    // Trajectcontrole (SC start / SCE end) sections, precomputed at ingest time
+    // by snapping each pair's straight-line gap onto the matching osm_road way
+    // (see ingest/flitspalen_route.py) so the line traces the actual carriageway
+    // instead of cutting cross-country between the two camera points.
+    // linkedTo: no row of its own in the layer panel — rides flitspalen_cameras'
+    // checkbox instead, since a trajectcontrole line without its cameras (or
+    // vice versa) isn't a state a user would ever want.
+    key: 'flitspalen_pairs', label: 'Trajectcontrole', group: 'situations',
+    endpoint: '/flitspalen/pairs', geomType: 'line', legendColor: '#aa33ff',
+    linkedTo: 'flitspalen_cameras',
+    paint: { 'line-width': 2, 'line-color': '#aa33ff', 'line-opacity': 0.7, 'line-dasharray': [2, 2] }
+  },
+  {
     key: 'anwb_roadworks', label: 'ANWB Roadworks', group: 'situations',
     endpoint: '/anwb?category=roadworks', geomType: 'line', legendColor: '#ffaa00',
     paint: { 'line-width': 4, 'line-color': '#ffaa00' }
@@ -397,6 +410,12 @@ function loadSavedSet (storageKey, validKeys, fallback) {
 
 function persistLayers () {
   try { localStorage.setItem('layers', JSON.stringify([...enabled])) } catch {}
+}
+
+// A linkedTo layer (e.g. flitspalen_pairs) has no checkbox of its own — it
+// rides its parent's enabled state instead.
+function layerEnabled (layer) {
+  return enabled.has(layer.key) || (layer.linkedTo && enabled.has(layer.linkedTo))
 }
 function persistHud () {
   try { localStorage.setItem('hudLayers', JSON.stringify([...hudEnabled])) } catch {}

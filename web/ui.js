@@ -70,7 +70,8 @@ function buildLayerPanel () {
   panelBody.appendChild(buildHudSection())
 
   for (const group of GROUPS) {
-    const groupLayers = LAYERS.filter(l => l.group === group.key)
+    // linkedTo layers (e.g. flitspalen_pairs) ride a parent's checkbox — no row of their own.
+    const groupLayers = LAYERS.filter(l => l.group === group.key && !l.linkedTo)
     if (!groupLayers.length) continue
 
     const section = document.createElement('div')
@@ -207,6 +208,12 @@ function makeLayerRow (layer, groupLayers, indented) {
       setLayerVisibility(layer, false)
       map.getSource(layer.key)?.setData(EMPTY_FC)
       controllers[layer.key]?.abort()
+    }
+    // Layers with no checkbox of their own (linkedTo this one) follow suit.
+    for (const child of LAYERS.filter(l => l.linkedTo === layer.key)) {
+      setLayerVisibility(child, cb.checked)
+      if (cb.checked) fetchLayer(child)
+      else { map.getSource(child.key)?.setData(EMPTY_FC); controllers[child.key]?.abort() }
     }
     // Sync parent group checkbox if this row is nested
     if (indented) {

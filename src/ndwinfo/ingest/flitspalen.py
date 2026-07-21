@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 
 from ndwinfo.download import DownloadResult, open_feed
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, wkt_geom
-from ndwinfo.models import FlitspalenCamera
+from ndwinfo.ingest.flitspalen_route import build_pair_routes
+from ndwinfo.models import FlitspalenCamera, FlitspalenCameraRoute
 from ndwinfo.parsers.flitspalen import parse_flitspalen
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,9 @@ class FlitspalenCameraIngester(Ingester):
 
         total = 0
         batch: dict[int, dict] = {}  # id -> row; last-one-wins dedup within a batch
+        # Kept alongside `batch` (pre-WKTElement) so build_pair_routes can shapely.wkt.loads
+        # the geometry after the DB-bound rows have their geom swapped to a WKTElement.
+        cameras_by_id: dict[int, dict] = {}
 
         def flush() -> None:
             nonlocal total
@@ -46,6 +50,12 @@ class FlitspalenCameraIngester(Ingester):
             batch.clear()
 
         for row in parse_flitspalen(payload):
+            cameras_by_id[row["id"]] = {
+                "id": row["id"],
+                "camera_type": row.get("camera_type"),
+                "street": row.get("street"),
+                "geom": row.get("geom"),
+            }
             row["geom"] = wkt_geom(row.get("geom"))
             batch[row["id"]] = row
             if len(batch) >= BATCH_SIZE:
@@ -60,4 +70,16 @@ class FlitspalenCameraIngester(Ingester):
 
         session.execute(delete(FlitspalenCamera).where(FlitspalenCamera.ingested_at < run_start))
         session.flush()
+
+        routes = build_pair_routes(session, list(cameras_by_id.values()))
+        for route in routes:
+            route["geom"] = wkt_geom(route["geom"])
+        route_run_start = datetime.now(UTC)
+        if routes:
+            bulk_upsert(session, FlitspalenCameraRoute, routes, ["sc_id"])
+        session.execute(
+            delete(FlitspalenCameraRoute).where(FlitspalenCameraRoute.ingested_at < route_run_start)
+        )
+        session.flush()
+
         return total

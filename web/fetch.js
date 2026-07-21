@@ -5,7 +5,7 @@
 function fetchAll () {
   bboxTooLarge = false
   for (const layer of LAYERS) {
-    if (!enabled.has(layer.key)) continue
+    if (!layerEnabled(layer)) continue
     fetchLayer(layer)
   }
   // Matrix/DRIPs also feed the GPS-relative HUD; refresh it while tracking.

@@ -386,6 +386,25 @@ class FlitspalenCamera(Base):
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
 
+class FlitspalenCameraRoute(Base):
+    """Road-snapped path between one SC (entry) and its paired SCE (exit)
+    trajectcontrole camera, precomputed at ingest time against osm_road so the
+    line traces the carriageway instead of cutting cross-country between the
+    two camera points. See ingest/flitspalen_route.py for the pairing/matching.
+    """
+
+    __tablename__ = "flitspalen_camera_route"
+    __table_args__ = (Index("ix_flitspalen_camera_route_geom", "geom", postgresql_using="gist"),)
+
+    sc_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    sce_id: Mapped[int] = mapped_column(BigInteger)
+    street: Mapped[Optional[str]] = mapped_column(String)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True
+    )
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
 # ---------------------------------------------------------------------------
 # Signs & VMS
 # ---------------------------------------------------------------------------
