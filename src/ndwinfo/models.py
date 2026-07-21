@@ -325,6 +325,68 @@ class Situation(Base):
 
 
 # ---------------------------------------------------------------------------
+# ANWB incidents (jams / roadworks / dynamic radars) + Flitspalen static cameras
+# ---------------------------------------------------------------------------
+
+
+class AnwbIncident(Base):
+    __tablename__ = "anwb_incident"
+    __table_args__ = (
+        Index("ix_anwb_incident_geom", "geom", postgresql_using="gist"),
+        Index("ix_anwb_incident_category", "category"),
+        Index("ix_anwb_incident_road", "road"),
+        Index("ix_anwb_incident_id", "id"),
+    )
+
+    record_id: Mapped[str] = mapped_column(String, primary_key=True)  # f"{category}:{id}"
+    id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    category: Mapped[Optional[str]] = mapped_column(String)  # jams|roadworks|radars
+    incident_type: Mapped[Optional[str]] = mapped_column(String)
+    road: Mapped[Optional[str]] = mapped_column(String)
+    from_label: Mapped[Optional[str]] = mapped_column(String)
+    to_label: Mapped[Optional[str]] = mapped_column(String)
+    reason: Mapped[Optional[str]] = mapped_column(Text)
+    distance_m: Mapped[Optional[int]] = mapped_column(Integer)
+    delay_s: Mapped[Optional[int]] = mapped_column(Integer)
+    hm: Mapped[Optional[Any]] = mapped_column(Numeric)
+    code_direction: Mapped[Optional[int]] = mapped_column(Integer)
+    segment_id: Mapped[Optional[int]] = mapped_column(Integer)
+    label: Mapped[Optional[str]] = mapped_column(String)
+    valid_from: Mapped[Optional[datetime]] = mapped_column(_tz)
+    poll_time: Mapped[Optional[datetime]] = mapped_column(_tz)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True
+    )
+    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
+class FlitspalenCamera(Base):
+    __tablename__ = "flitspalen_camera"
+    __table_args__ = (
+        Index("ix_flitspalen_camera_geom", "geom", postgresql_using="gist"),
+        Index("ix_flitspalen_camera_city", "city"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    status: Mapped[Optional[str]] = mapped_column(String)  # only "A"/actief is ingested
+    city: Mapped[Optional[str]] = mapped_column(String)
+    street: Mapped[Optional[str]] = mapped_column(String)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    speed_limit_kmh: Mapped[Optional[int]] = mapped_column(Integer)
+    camera_type: Mapped[Optional[str]] = mapped_column(String)
+    rotatable: Mapped[Optional[bool]] = mapped_column(Boolean)
+    bearing_deg: Mapped[Optional[int]] = mapped_column(Integer)
+    created_at: Mapped[Optional[datetime]] = mapped_column(_tz)
+    edited_at: Mapped[Optional[datetime]] = mapped_column(_tz)
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
+    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
 # Signs & VMS
 # ---------------------------------------------------------------------------
 

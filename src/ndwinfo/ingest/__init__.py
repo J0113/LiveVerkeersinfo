@@ -1,7 +1,9 @@
 """Ingester registry: feed_name → ingester instance."""
 
+from ndwinfo.ingest.anwb import AnwbIncidentIngester
 from ndwinfo.ingest.charging import ChargingGeojsonIngester, TariffIngester
 from ndwinfo.ingest.emission import EmissionZoneIngester
+from ndwinfo.ingest.flitspalen import FlitspalenCameraIngester
 from ndwinfo.ingest.measurement import (
     MeasurementSiteIngester,
     TrafficspeedIngester,
@@ -47,4 +49,6 @@ INGESTERS: dict[str, object] = {
     "truckparking_table": TruckParkingTableIngester(),
     "truckparking_status": TruckParkingStatusIngester(),
     "verkeersborden_csv": TrafficSignIngester(),
+    "anwb_incidents": AnwbIncidentIngester(),
+    "flitspalen_cameras": FlitspalenCameraIngester(),
 }

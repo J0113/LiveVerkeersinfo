@@ -91,6 +91,48 @@ function setupLaneArrowImages () {
   })
 }
 
+// Speed-camera marker: a colour-coded dot large enough to hold a camera glyph,
+// drawn to a canvas per legendColor (same on-demand-sprite approach as the lane
+// arrows/tt-arrow above — no sprite sheet needed for a raster-tile style).
+function cameraIconId (color) { return `camera-icon-${color.replace('#', '')}` }
+function ensureCameraIcon (color) {
+  const id = cameraIconId(color)
+  if (map.hasImage(id)) return
+  const s = 44
+  const c = document.createElement('canvas')
+  c.width = c.height = s
+  const x = c.getContext('2d')
+
+  x.beginPath()
+  x.arc(s / 2, s / 2, s * 0.46, 0, Math.PI * 2)
+  x.fillStyle = color
+  x.fill()
+  x.lineWidth = 2.5
+  x.strokeStyle = '#ffffff'
+  x.stroke()
+
+  x.fillStyle = '#ffffff'
+  const bodyW = s * 0.52
+  const bodyH = s * 0.30
+  const bodyX = s / 2 - bodyW / 2
+  const bodyY = s / 2 - bodyH / 2 + s * 0.05
+  x.fillRect(bodyX, bodyY, bodyW, bodyH)
+  const bumpW = s * 0.16
+  const bumpH = s * 0.08
+  x.fillRect(s / 2 - bumpW * 0.9, bodyY - bumpH + 1, bumpW, bumpH)
+
+  x.beginPath()
+  x.arc(s / 2, bodyY + bodyH / 2, s * 0.135, 0, Math.PI * 2)
+  x.fillStyle = color
+  x.fill()
+  x.beginPath()
+  x.arc(s / 2, bodyY + bodyH / 2, s * 0.065, 0, Math.PI * 2)
+  x.fillStyle = '#ffffff'
+  x.fill()
+
+  map.addImage(id, x.getImageData(0, 0, s, s), { pixelRatio: 2 })
+}
+
 // ─── Map load: wire up sources, layers, and UI ────────────────────────────────
 
 map.on('load', () => {
@@ -204,6 +246,19 @@ map.on('load', () => {
       }
       setupClickPopup(layer.key)
       if (layer.promoteId) setupLineSelection(layer.key)
+    } else if (layer.renderAs === 'camera-icon') {
+      ensureCameraIcon(layer.legendColor)
+      map.addLayer({
+        id: layer.key, type: 'symbol', source: layer.key,
+        layout: {
+          'icon-image': cameraIconId(layer.legendColor),
+          'icon-size': 1,
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          visibility: vis
+        }
+      })
+      setupClickPopup(layer.key)
     } else {
       map.addLayer({ id: layer.key, type: 'circle', source: layer.key, paint: layer.paint, layout: { visibility: vis } })
       setupClickPopup(layer.key)

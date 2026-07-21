@@ -14,9 +14,11 @@ from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
 from ndwinfo.api.routers import (
+    anwb,
     charging,
     emission,
     feeds,
+    flitspalen,
     osm,
     signs,
     situations,
@@ -75,6 +77,8 @@ app.include_router(emission.router, prefix="/api")
 app.include_router(feeds.router, prefix="/api")
 app.include_router(vild.router, prefix="/api")
 app.include_router(osm.router, prefix="/api")
+app.include_router(anwb.router, prefix="/api")
+app.include_router(flitspalen.router, prefix="/api")
 
 
 _WEB_DIR = Path("web")

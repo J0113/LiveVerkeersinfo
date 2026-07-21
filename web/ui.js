@@ -335,6 +335,26 @@ function setupPanelToggles () {
     document.getElementById('basemap-toggle').setAttribute('aria-expanded', String(!nowHidden))
   })
   renderBasemapOptions()
+
+  document.getElementById('attribution-toggle').addEventListener('click', () => {
+    const body = document.getElementById('attribution-body')
+    const nowHidden = body.classList.toggle('hidden')
+    document.getElementById('attribution-toggle').setAttribute('aria-expanded', String(!nowHidden))
+  })
+  renderAttributions()
+}
+
+// Lists every data provider's attribution statically, regardless of which
+// layers are currently toggled on — attribution is owed per source, not per
+// rendered layer.
+function renderAttributions () {
+  const body = document.getElementById('attribution-body')
+  if (!body) return
+  body.innerHTML = ATTRIBUTIONS.map(a => `
+    <div class="layer-row" style="display:block">
+      <a href="${a.url}" target="_blank" rel="noopener noreferrer">${esc(a.label)}</a>
+      <div style="color:#7f93a8;font-size:11px">${esc(a.note)}</div>
+    </div>`).join('')
 }
 
 // Swap the base raster tiles without disturbing feed layers on top. The basemap

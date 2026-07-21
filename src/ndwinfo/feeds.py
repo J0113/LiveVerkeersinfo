@@ -20,6 +20,12 @@ class FeedDef(TypedDict, total=False):
     # shares a capped concurrency budget so it can't starve realtime feeds.
     # See poller.py's scheduling. Defaults to "background" when omitted.
     schedule_class: NotRequired[str]
+    # Only set for sources fetched via a form-encoded POST instead of NDW's
+    # usual conditional-GET (see download.py's _fetch_post). form_data/
+    # extra_headers are ignored on the default GET path.
+    method: NotRequired[str]
+    form_data: NotRequired[dict[str, str]]
+    extra_headers: NotRequired[dict[str, str]]
 
 
 # parser_fn and ingester_cls are filled in as Phase 3/4 work lands.
@@ -211,6 +217,40 @@ FEEDS: list[FeedDef] = [
         "ingester_cls": None,
         "url": settings.osm_netherlands_url,
         "schedule_class": "maintenance",
+    },
+    {
+        # ANWB jams/roadworks/dynamic radars, not an NDW file — see
+        # docs/plans/anwb-incidents-plan.md.
+        "name": "anwb_incidents",
+        "filename": "anwb_incidents.json",
+        "url": "https://api.anwb.nl/routing/v1/incidents/incidents-desktop",
+        "cadence_s": 300,
+        "parser_fn": None,
+        "ingester_cls": None,
+        "schedule_class": "realtime",
+    },
+    {
+        # Flitspalen.nl static/fixed speed cameras (NL subset only), not an
+        # NDW file — see docs/plans/anwb-incidents-plan.md.
+        "name": "flitspalen_cameras",
+        "filename": "flitspalen_cameras.json",
+        "url": "https://www.flitspalen.nl/karte/",
+        "method": "POST",
+        "form_data": {
+            "xhr": "1", "action": "all",
+            "latMax": "53.7", "lngMax": "7.2", "latMin": "50.7", "lngMin": "3.2",
+        },
+        "extra_headers": {
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest",
+            "Origin": "https://www.flitspalen.nl",
+            "Referer": "https://www.flitspalen.nl/karte/",
+            "Cookie": "LAN=nl",
+        },
+        "cadence_s": 604800,
+        "parser_fn": None,
+        "ingester_cls": None,
+        "schedule_class": "background",
     },
 ]
 

@@ -105,6 +105,12 @@ body {
 
 .hidden { display: none !important; }
 
+#attribution-body { padding: 2px 12px 12px; }
+#attribution-body a,
+#attribution-body a:visited { color: #ffffff; font-weight: 600; text-decoration: underline; }
+#attribution-body a:hover { color: #ffffff; opacity: 0.8; }
+#attribution-body .layer-row + .layer-row { margin-top: 8px; }
+
 /* ── Layer panel body ────────────────────────────────────────────────────── */
 
 #panel-body {
