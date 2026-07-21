@@ -394,10 +394,18 @@ class FlitspalenCameraRoute(Base):
     """
 
     __tablename__ = "flitspalen_camera_route"
-    __table_args__ = (Index("ix_flitspalen_camera_route_geom", "geom", postgresql_using="gist"),)
+    __table_args__ = (
+        Index("ix_flitspalen_camera_route_geom", "geom", postgresql_using="gist"),
+        Index("ix_flitspalen_camera_route_sc_id", "sc_id"),
+    )
 
-    sc_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    sce_id: Mapped[int] = mapped_column(BigInteger)
+    # sce_id (not sc_id) is the primary key: paired_sc_id() floor-divides away
+    # the SCE id's variant-index digits, so it is NOT one-to-one — one entry
+    # gantry can have multiple exit-lane SCE cameras that resolve to the same
+    # sc_id (confirmed live: sc_id 123229 <- both 1123229002 and 1123229003).
+    # sce_id is a real camera id and always unique.
+    sce_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    sc_id: Mapped[int] = mapped_column(BigInteger)
     street: Mapped[Optional[str]] = mapped_column(String)
     geom: Mapped[Optional[Any]] = mapped_column(
         Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True

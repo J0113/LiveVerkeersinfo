@@ -76,7 +76,7 @@ class FlitspalenCameraIngester(Ingester):
             route["geom"] = wkt_geom(route["geom"])
         route_run_start = datetime.now(UTC)
         if routes:
-            bulk_upsert(session, FlitspalenCameraRoute, routes, ["sc_id"])
+            bulk_upsert(session, FlitspalenCameraRoute, routes, ["sce_id"])
         session.execute(
             delete(FlitspalenCameraRoute).where(FlitspalenCameraRoute.ingested_at < route_run_start)
         )
