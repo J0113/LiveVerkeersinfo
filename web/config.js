@@ -470,6 +470,9 @@ let renderBearing = 0       // map bearing currently displayed while navigating
 let followRaf = null        // requestAnimationFrame handle for the follow loop
 let lastFollowFrameAt = null // timestamp (ms) of the previous follow frame, for dt-based bearing easing
 let pendingZoom = null      // one-shot zoom to snap to when (re)entering a follow state
+let renderZoom = null       // smoothed dynamic zoom currently displayed in navigation mode
+let manualZoomActive = false // true while user has a pinch/scroll zoom gesture in progress
+let manualZoomResumeAt = 0  // timestamp (ms): dynamic speed-zoom stays suspended until this
 let deviceHeading = null    // compass heading (deg, clockwise from true north) from DeviceOrientation
 let orientationBound = false
 let movementHeading = null  // heading derived from GPS motion only (no compass)
@@ -496,3 +499,17 @@ const BEARING_DEADBAND_DEG = 1.5
 // Exponential moving average factor for the travel heading (0..1): applied per
 // GPS fix. Lower = smoother heading, less corner jitter, slightly more lag.
 const HEADING_EMA_ALPHA = 0.4
+// Speed (km/h) → zoom breakpoints for navigation mode, closest first. Slower
+// driving zooms in for street detail; highway speed zooms out for lookahead.
+const ZOOM_SPEED_CURVE = [
+  [0, 17.5],
+  [20, 17],
+  [50, 16],
+  [80, 15],
+  [120, 14],
+  [160, 13.3]
+]
+// Time constant (s) for easing renderZoom toward the speed-derived target.
+const ZOOM_SMOOTH_TAU = 1.2
+// After a manual pinch/scroll zoom, wait this long before dynamic zoom resumes.
+const ZOOM_RESUME_DELAY_MS = 4000

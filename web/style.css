@@ -339,8 +339,8 @@ input[type="radio"] {
 
 .gps-maxspeed-sign {
   position: absolute;
-  top: -9px;
-  left: -9px;
+  top: -14px;
+  right: -14px;
   z-index: 1;
   box-sizing: border-box;
   width: 38px;

@@ -73,6 +73,21 @@ function initGPS() {
     }
   })
 
+  // Manual pinch/scroll zoom stays independent of the bearing/pitch lock: it
+  // just pauses the speed-driven auto-zoom for a bit, orientation stays locked.
+  map.on('zoomstart', (e) => {
+    if (!e.originalEvent) return
+    if (gpsState === GPS_STATES.NAVIGATION) manualZoomActive = true
+  })
+
+  map.on('zoomend', (e) => {
+    if (!e.originalEvent) return
+    if (manualZoomActive) {
+      manualZoomActive = false
+      manualZoomResumeAt = Date.now() + ZOOM_RESUME_DELAY_MS
+    }
+  })
+
   // The map is now a driving HUD by default. Start in follow mode immediately;
   // the GPS control still cycles follow → navigation → off when desired.
   setGPSState(GPS_STATES.FOLLOW)
@@ -102,6 +117,9 @@ function setGPSState(state) {
     renderBearing = 0
     lastFollowFrameAt = null
     pendingZoom = null
+    renderZoom = null
+    manualZoomActive = false
+    manualZoomResumeAt = 0
     stopFollowLoop()
     setFollowPadding(false)
     // Reset the heading-up rotation and 3D tilt back to a flat, north-up map.
@@ -194,7 +212,7 @@ function followTick () {
   if (gpsState === GPS_STATES.FOLLOW && pendingZoom === null) return
 
   const cam = { center: renderCoords }
-  if (pendingZoom !== null) { cam.zoom = pendingZoom; pendingZoom = null }
+  if (pendingZoom !== null) { cam.zoom = pendingZoom; renderZoom = pendingZoom; pendingZoom = null }
   if (gpsState === GPS_STATES.NAVIGATION) {
     const targetBearing = currentHeading()
     if (targetBearing !== null && targetBearing !== undefined) {
@@ -210,6 +228,21 @@ function followTick () {
       cam.bearing = renderBearing
     }
     cam.pitch = 55
+
+    // Speed-driven auto-zoom. Orientation (bearing/pitch) always stays locked;
+    // only zoom yields to the user, and only while they're actively pinching/
+    // scrolling — it resumes on its own a few seconds after they let go.
+    if (cam.zoom === undefined) {
+      if (manualZoomActive) {
+        renderZoom = map.getZoom() // track the user's live zoom so resume doesn't jump
+      } else if (Date.now() >= manualZoomResumeAt && userSpeedMps !== null) {
+        if (renderZoom === null) renderZoom = map.getZoom()
+        const targetZoom = zoomForSpeed(userSpeedMps)
+        const k = dt > 0 ? 1 - Math.exp(-dt / ZOOM_SMOOTH_TAU) : 0
+        renderZoom += (targetZoom - renderZoom) * k
+        cam.zoom = renderZoom
+      }
+    }
   }
   map.jumpTo(cam)
 }
@@ -243,6 +276,23 @@ function updateHeadingCone () {
   } else {
     coneEl.classList.remove('visible')
   }
+}
+
+// Map GPS speed to a target zoom via ZOOM_SPEED_CURVE, linearly interpolating
+// between breakpoints and clamping at the curve's ends.
+function zoomForSpeed (speedMps) {
+  const kmh = Math.max(0, speedMps * 3.6)
+  const curve = ZOOM_SPEED_CURVE
+  if (kmh <= curve[0][0]) return curve[0][1]
+  for (let i = 1; i < curve.length; i++) {
+    const [kmhHi, zoomHi] = curve[i]
+    if (kmh <= kmhHi) {
+      const [kmhLo, zoomLo] = curve[i - 1]
+      const t = (kmh - kmhLo) / (kmhHi - kmhLo)
+      return zoomLo + (zoomHi - zoomLo) * t
+    }
+  }
+  return curve[curve.length - 1][1]
 }
 
 // Interpolate angle a→b along the shortest arc; handles the 0/360 wrap.
