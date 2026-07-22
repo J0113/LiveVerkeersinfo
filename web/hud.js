@@ -3,8 +3,8 @@
 // ─── Drive HUD: linger / hold ────────────────────────────────────────────────
 // When a channel briefly has nothing ahead (gap between sensors/gantries), keep
 // the last selection on screen for a grace period instead of flickering off.
-const HUD_LINGER_MS = { speed: 5000, matrix: 5000, drip: 10000, traject: 4000 }
-const roadSignHudHold = { speed: null, matrix: null, drip: null, traject: null } // { data, expiresAt }
+const HUD_LINGER_MS = { speed: 5000, speedList: 5000, matrix: 5000, drip: 10000, traject: 4000 }
+const roadSignHudHold = { speed: null, speedList: null, matrix: null, drip: null, traject: null } // { data, expiresAt }
 let roadSignHudHoldTimer = null
 
 // Return the data to actually render for a channel: the fresh selection when
@@ -28,7 +28,7 @@ function scheduleHudHoldClear () {
   if (roadSignHudHoldTimer) { clearTimeout(roadSignHudHoldTimer); roadSignHudHoldTimer = null }
   const now = Date.now()
   let next = Infinity
-  for (const ch of ['speed', 'matrix', 'drip', 'traject']) {
+  for (const ch of ['speed', 'speedList', 'matrix', 'drip', 'traject']) {
     const h = roadSignHudHold[ch]
     if (h && h.expiresAt > now) next = Math.min(next, h.expiresAt)
   }
@@ -39,6 +39,7 @@ function scheduleHudHoldClear () {
 
 function resetHudHolds () {
   roadSignHudHold.speed = null
+  roadSignHudHold.speedList = null
   roadSignHudHold.matrix = null
   roadSignHudHold.drip = null
   roadSignHudHold.traject = null
@@ -105,7 +106,8 @@ function fetchRoadSignHud (force = false) {
     side: 250
   })
   const speedBbox = forwardBiasedBbox(userCoords, userHeading ?? 0, {
-    ahead: 1500,
+    // Sidebar needs room for several sensors ahead, not just the nearest one.
+    ahead: hudEnabled.has('hud_speed_sidebar') ? SPEED_SIDEBAR_MAX_DISTANCE_M + 500 : 1500,
     behind: 500,
     side: 400
   })
@@ -119,7 +121,7 @@ function fetchRoadSignHud (force = false) {
   else roadSignHudCache.matrix = EMPTY_FC
   if (userHeading !== null && hudEnabled.has('hud_drips')) requests.push(fetchRoadSignHudSource('drips', bbox, ctrl.signal))
   else roadSignHudCache.drips = EMPTY_FC
-  if (hudEnabled.has('hud_speed')) {
+  if (hudEnabled.has('hud_speed') || hudEnabled.has('hud_speed_sidebar')) {
     requests.push(fetchRoadSignHudSpeedSource(speedBbox, currentRoadBbox, ctrl.signal))
   } else {
     roadSignHudCache.speedPoints = EMPTY_FC
@@ -202,7 +204,7 @@ function fetchRoadSignHudSource (source, bbox, signal) {
 function renderRoadSignHud () {
   if (gpsState === GPS_STATES.OFF || !userCoords) {
     resetHudHolds()
-    renderRoadSignHudSelection({ matrix: null, drip: null, speed: null, gpsKmh: null, traject: null })
+    renderRoadSignHudSelection({ matrix: null, drip: null, speed: null, gpsKmh: null, traject: null, speedList: [] })
     return
   }
 
@@ -221,6 +223,17 @@ function renderRoadSignHud () {
     : selectUpcomingLaneSpeeds(roadSignHudCache.speedPoints, { coords: userCoords, heading: userHeading }, 2500)
   selected.upcoming = enrichLaneSpeedSelection(selected.upcoming, roadSignHudCache.speedLanes)
 
+  const speedList = (userHeading === null || !hudEnabled.has('hud_speed_sidebar'))
+    ? []
+    : enrichLaneSpeedSelectionList(
+        selectUpcomingLaneSpeedsList(roadSignHudCache.speedPoints, { coords: userCoords, heading: userHeading }, {
+          maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M,
+          maxCount: SPEED_SIDEBAR_MAX_COUNT
+        }),
+        roadSignHudCache.speedLanes
+      )
+  selected.speedList = speedList
+
   const currentRoadDevice = { coords: userCoords, heading: userHeading }
   selected.currentRoad = selectCurrentOsmLane(
     roadSignHudCache.speedLanes,
@@ -238,6 +251,7 @@ function renderRoadSignHud () {
   selected.matrix = holdSelection('matrix', hudEnabled.has('hud_matrix') ? selected.matrix : null)
   selected.drip = holdSelection('drip', hudEnabled.has('hud_drips') ? selected.drip : null)
   selected.upcoming = holdSelection('speed', hudEnabled.has('hud_speed') ? selected.upcoming : null)
+  selected.speedList = holdSelection('speedList', selected.speedList.length ? selected.speedList : null) || []
 
   const traject = selectTrajectProgress(roadSignHudCache.trajectPairs, userCoords, TRAJECT_MAX_DIST_M)
   selected.traject = holdSelection('traject', traject)
@@ -257,6 +271,7 @@ function renderRoadSignHudSelection (selected) {
   renderSpeedHudTile(selected.upcoming)
   renderMatrixHudTile(selected.matrix)
   renderDripHudTile(selected.drip)
+  renderSpeedSidebar(selected.speedList)
   updateGpsSpeedBadge(selected.gpsKmh, selected.currentRoad)
   renderTrajectProgressBar(selected.traject)
   const speedVisible = gpsState !== GPS_STATES.OFF && hudEnabled.has('hud_speed')
@@ -299,6 +314,94 @@ function renderSpeedHudTile (upcoming) {
     if (upcoming) road.appendChild(buildLaneSpeedRoad(upcoming.data))
     road.classList.toggle('hidden', !upcoming)
     roadSignHudRenderState.speedKey = roadKey
+  }
+}
+
+// Left sidebar: a single vertical route strip for the road ahead — bottom is
+// here/now, top is the furthest upcoming sensor. The strip is filled with a
+// gradient built from each sensor's speed colour (so it reads as one road,
+// not separate boxes), and each sensor's speed is a pill on the strip at its
+// proportional distance — same look as the on-road lane-speed-label markers.
+const SPEED_SIDEBAR_MIN_MARKER_GAP_PX = 46
+
+function renderSpeedSidebar (list) {
+  const aside = document.getElementById('speed-sidebar')
+  const track = document.getElementById('speed-sidebar-track')
+  if (!aside || !track) return
+
+  const visible = gpsState !== GPS_STATES.OFF && hudEnabled.has('hud_speed_sidebar') && list.length > 0
+  aside.classList.toggle('hidden', !visible)
+  if (!visible) {
+    if (roadSignHudRenderState.speedListKey !== null) {
+      track.replaceChildren()
+      roadSignHudRenderState.speedListKey = null
+    }
+    return
+  }
+
+  const key = list.map(s => `${s.data.site_id}:${s.fastestKmh}:${Math.round(s.cls.along / 10)}`).join('|')
+  if (roadSignHudRenderState.speedListKey === key) return
+  roadSignHudRenderState.speedListKey = key
+
+  const sorted = [...list].sort((a, b) => a.cls.along - b.cls.along)
+  const maxAlong = sorted[sorted.length - 1].cls.along || 1
+
+  // pctFromBottom: 0 = here/now, 100 = the furthest sensor (which always
+  // lands exactly on the top edge, so the strip has no undyed "unknown" gap).
+  const stops = sorted.map(s => ({
+    pct: (s.cls.along / maxAlong) * 100,
+    color: speedLimitColor(s.fastestKmh, s.data.maxspeed_kmh),
+  }))
+  track.style.background = `linear-gradient(to top, ${stops.map(s => `${s.color} ${s.pct}%`).join(', ')})`
+
+  track.replaceChildren()
+  for (const s of sorted) {
+    const p = s.data
+    const kmh = s.fastestKmh
+    const pctFromBottom = (s.cls.along / maxAlong) * 100
+
+    const marker = document.createElement('div')
+    marker.className = 'speed-sidebar-marker'
+    marker.style.top = `${100 - pctFromBottom}%`
+    marker.dataset.pct = String(100 - pctFromBottom)
+
+    const pill = document.createElement('div')
+    pill.className = 'speed-sidebar-pill'
+    pill.style.background = speedLimitColor(kmh, p.maxspeed_kmh)
+    pill.style.color = speedLimitTextColor(kmh, p.maxspeed_kmh)
+    pill.textContent = kmh !== null && kmh !== undefined ? String(Math.round(kmh)) : '?'
+
+    const distance = document.createElement('div')
+    distance.className = 'speed-sidebar-distance'
+    distance.textContent = formatDistance(Math.max(0, s.cls.along))
+
+    marker.append(pill, distance)
+    track.appendChild(marker)
+  }
+  requestAnimationFrame(layoutSpeedSidebarMarkers)
+}
+
+// Percentage-based marker positions can land closer together than their
+// pills are tall (e.g. two sensors ~200m apart on a long lookahead). Anchor
+// the nearest marker at its exact position — it's the "now" reference and
+// must not drift into the GPS badge below the track — and push farther
+// markers upward (potentially above the track's top edge; the sidebar has no
+// clipping ancestor) as needed to keep a minimum gap.
+function layoutSpeedSidebarMarkers () {
+  const track = document.getElementById('speed-sidebar-track')
+  if (!track) return
+  const H = track.clientHeight
+  if (!H) return
+
+  const markers = [...track.querySelectorAll('.speed-sidebar-marker')]
+    .map(el => ({ el, y: (parseFloat(el.dataset.pct) / 100) * H }))
+    .sort((a, b) => b.y - a.y) // nearest (largest y, bottom) first
+
+  let prevY = Infinity
+  for (const m of markers) {
+    const y = Math.min(m.y, prevY - SPEED_SIDEBAR_MIN_MARKER_GAP_PX)
+    m.el.style.top = `${y}px`
+    prevY = y
   }
 }
 

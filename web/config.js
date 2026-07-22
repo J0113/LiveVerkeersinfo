@@ -383,10 +383,17 @@ let bboxTooLarge = false
 // "HUD" section at the top of the layer panel. Only shown while GPS tracks.
 const HUD_ITEMS = [
   { key: 'hud_speed',  label: 'Driving speed', legendColor: '#00cc44' },
+  { key: 'hud_speed_sidebar', label: 'Upcoming sensors (sidebar)', legendColor: '#00cc44' },
   { key: 'hud_matrix', label: 'Matrix signs',  legendColor: '#4488ff' },
   { key: 'hud_drips',  label: 'DRIP popups',   legendColor: '#00ccaa' }
 ]
-const DEFAULT_HUD_ENABLED = new Set(['hud_speed', 'hud_matrix', 'hud_drips'])
+const DEFAULT_HUD_ENABLED = new Set(['hud_speed', 'hud_speed_sidebar', 'hud_matrix', 'hud_drips'])
+
+// Left sidebar: how many upcoming speed sensors ahead to list, and how far
+// ahead to look for them (wider than the single-sensor top tile so several
+// sensors have room to appear).
+const SPEED_SIDEBAR_MAX_COUNT = 5
+const SPEED_SIDEBAR_MAX_DISTANCE_M = 10000
 
 // Restore a previously saved toggle set from localStorage, keeping only keys
 // that still exist (drops renamed/removed layers). Falls back to the defaults
@@ -446,7 +453,7 @@ const TRAJECT_MAX_DIST_M = 35
 let roadSignHudLastFetchCoords = null
 let roadSignHudLastFetchAt = 0
 let roadSignHudLastFetchHeading = null
-const roadSignHudRenderState = { matrixKey: null, dripKey: null, speedKey: null }
+const roadSignHudRenderState = { matrixKey: null, dripKey: null, speedKey: null, speedListKey: null }
 let roadSignHudCurrentRoad = null
 
 // ─── GPS & Geolocation state ──────────────────────────────────────────────────

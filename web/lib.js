@@ -487,6 +487,67 @@ function enrichLaneSpeedSelection (selection, laneFc) {
   }
 }
 
+// Pick the next few upcoming speed sensors ahead in the travel direction
+// (sidebar list, distinct from selectUpcomingLaneSpeeds' single nearest pick).
+// Same corridor/direction gating as selectUpcomingLaneSpeeds, plus:
+//  - drop motorway_link sites (on/off-ramps), which measure ramp traffic, not
+//    the through road the driver is on. A site with no confident OSM match
+//    (osm_highway missing) is kept — treating "unknown" as "ramp" would drop
+//    legitimate mainline sensors that failed to match.
+//  - represent each site by its fastest lane reading, since the sidebar shows
+//    one number per sensor rather than a per-lane breakdown.
+//  - NDW often reports the same physical gantry as several site_ids (separate
+//    loop-detector systems per lane group, e.g. "...vwh0656ra" /
+//    "...hrl0656ra"), which share the same road+km — merge those into one
+//    entry (fastest reading wins) instead of showing near-duplicate rows.
+// Returns entries sorted nearest-first, capped at maxCount.
+function selectUpcomingLaneSpeedsList (pointFc, device, opts) {
+  const maxAhead = opts?.maxDistanceM ?? 2000
+  const maxCount = opts?.maxCount ?? 5
+  if (!device || !Array.isArray(device.coords) || !Number.isFinite(device.heading)) return []
+
+  const out = []
+  for (const feature of (pointFc?.features || [])) {
+    if (!feature.geometry || !feature.properties) continue
+    const p = feature.properties
+    if (p.osm_highway === 'motorway_link') continue
+    const speeds = (p.lanes || [])
+      .map(l => l && l.speed_kmh)
+      .filter(v => v !== null && v !== undefined)
+    if (!speeds.length) continue
+
+    const rp = relativePosition(device, feature.geometry.coordinates)
+    if (rp.along <= 0 || rp.along > maxAhead) continue
+    if (!sameCarriagewayDirection(p, device.heading)) continue
+    const corridor = Math.min(
+      LANE_SPEED_SELECT.maxCross,
+      LANE_SPEED_SELECT.baseCross + rp.along * LANE_SPEED_SELECT.crossSlope
+    )
+    if (Math.abs(rp.cross) > corridor) continue
+
+    out.push({
+      data: p,
+      fastestKmh: Math.max(...speeds),
+      cls: { status: 'ahead', along: rp.along, cross: rp.cross, dist: rp.dist },
+    })
+  }
+  const bySite = new Map()
+  for (const item of out) {
+    const key = item.data.km != null ? `${item.data.road || ''}|${item.data.km}` : item.data.site_id
+    const existing = bySite.get(key)
+    if (!existing || item.fastestKmh > existing.fastestKmh) bySite.set(key, item)
+  }
+
+  const deduped = [...bySite.values()]
+  deduped.sort((a, b) => a.cls.along - b.cls.along)
+  return deduped.slice(0, maxCount)
+}
+
+// enrichLaneSpeedSelection over a list of selections.
+function enrichLaneSpeedSelectionList (selections, laneFc) {
+  return selections.map(s => enrichLaneSpeedSelection(s, laneFc))
+}
+
 const CURRENT_ROAD_MAX_DISTANCE_M = 35
 const CURRENT_ROAD_HEADING_TOLERANCE_DEG = 55
 const CURRENT_ROAD_HYSTERESIS_M = 5
