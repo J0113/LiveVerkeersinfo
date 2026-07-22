@@ -3,8 +3,8 @@
 // ─── Drive HUD: linger / hold ────────────────────────────────────────────────
 // When a channel briefly has nothing ahead (gap between sensors/gantries), keep
 // the last selection on screen for a grace period instead of flickering off.
-const HUD_LINGER_MS = { speed: 5000, matrix: 5000, drip: 10000 }
-const roadSignHudHold = { speed: null, matrix: null, drip: null } // { data, expiresAt }
+const HUD_LINGER_MS = { speed: 5000, matrix: 5000, drip: 10000, traject: 4000 }
+const roadSignHudHold = { speed: null, matrix: null, drip: null, traject: null } // { data, expiresAt }
 let roadSignHudHoldTimer = null
 
 // Return the data to actually render for a channel: the fresh selection when
@@ -28,7 +28,7 @@ function scheduleHudHoldClear () {
   if (roadSignHudHoldTimer) { clearTimeout(roadSignHudHoldTimer); roadSignHudHoldTimer = null }
   const now = Date.now()
   let next = Infinity
-  for (const ch of ['speed', 'matrix', 'drip']) {
+  for (const ch of ['speed', 'matrix', 'drip', 'traject']) {
     const h = roadSignHudHold[ch]
     if (h && h.expiresAt > now) next = Math.min(next, h.expiresAt)
   }
@@ -41,6 +41,7 @@ function resetHudHolds () {
   roadSignHudHold.speed = null
   roadSignHudHold.matrix = null
   roadSignHudHold.drip = null
+  roadSignHudHold.traject = null
   if (roadSignHudHoldTimer) { clearTimeout(roadSignHudHoldTimer); roadSignHudHoldTimer = null }
 }
 
@@ -125,6 +126,7 @@ function fetchRoadSignHud (force = false) {
     roadSignHudCache.speedLanes = EMPTY_FC
     requests.push(fetchRoadSignHudCurrentRoadSource(currentRoadBbox, ctrl.signal))
   }
+  requests.push(fetchTrajectPairsSource(currentRoadBbox, ctrl.signal))
 
   Promise.allSettled(requests).then(results => {
     for (const result of results) {
@@ -178,6 +180,15 @@ function fetchRoadSignHudCurrentRoadSource (bbox, signal) {
     .then(fc => { roadSignHudCache.osmLanes = fc || EMPTY_FC })
 }
 
+function fetchTrajectPairsSource (bbox, signal) {
+  return fetch(`/api/flitspalen/pairs?bbox=${bbox}&limit=20`, { signal })
+    .then(response => {
+      if (!response.ok) throw new Error(`traject pairs: HTTP ${response.status}`)
+      return response.json()
+    })
+    .then(fc => { roadSignHudCache.trajectPairs = fc || EMPTY_FC })
+}
+
 function fetchRoadSignHudSource (source, bbox, signal) {
   const limit = source === 'matrix' ? 300 : 25
   return fetch(`/api/signs/${source}?bbox=${bbox}&limit=${limit}`, { signal })
@@ -191,7 +202,7 @@ function fetchRoadSignHudSource (source, bbox, signal) {
 function renderRoadSignHud () {
   if (gpsState === GPS_STATES.OFF || !userCoords) {
     resetHudHolds()
-    renderRoadSignHudSelection({ matrix: null, drip: null, speed: null, gpsKmh: null })
+    renderRoadSignHudSelection({ matrix: null, drip: null, speed: null, gpsKmh: null, traject: null })
     return
   }
 
@@ -227,6 +238,9 @@ function renderRoadSignHud () {
   selected.matrix = holdSelection('matrix', hudEnabled.has('hud_matrix') ? selected.matrix : null)
   selected.drip = holdSelection('drip', hudEnabled.has('hud_drips') ? selected.drip : null)
   selected.upcoming = holdSelection('speed', hudEnabled.has('hud_speed') ? selected.upcoming : null)
+
+  const traject = selectTrajectProgress(roadSignHudCache.trajectPairs, userCoords, TRAJECT_MAX_DIST_M)
+  selected.traject = holdSelection('traject', traject)
   scheduleHudHoldClear()
   startHudTimeTicker()
 
@@ -244,6 +258,7 @@ function renderRoadSignHudSelection (selected) {
   renderMatrixHudTile(selected.matrix)
   renderDripHudTile(selected.drip)
   updateGpsSpeedBadge(selected.gpsKmh, selected.currentRoad)
+  renderTrajectProgressBar(selected.traject)
   const speedVisible = gpsState !== GPS_STATES.OFF && hudEnabled.has('hud_speed')
   const visibleCount = [speedVisible, selected.matrix, selected.drip].filter(Boolean).length
   const visible = visibleCount > 0
@@ -316,6 +331,28 @@ function updateGpsSpeedBadge (gpsKmh, currentRoad) {
   } else {
     limitSign.removeAttribute('aria-label')
   }
+}
+
+// Bottom progress bar for an active trajectcontrole (speed-camera) section:
+// section length (km) + how far travelled / how far remains.
+function renderTrajectProgressBar (traject) {
+  const bar = document.getElementById('traject-progress')
+  const street = document.getElementById('traject-progress-street')
+  const remaining = document.getElementById('traject-progress-remaining')
+  const travelled = document.getElementById('traject-progress-travelled')
+  const total = document.getElementById('traject-progress-total')
+  const fill = document.getElementById('traject-progress-fill')
+  if (!bar || !street || !remaining || !travelled || !total || !fill) return
+
+  bar.classList.toggle('hidden', !traject)
+  if (!traject) return
+
+  setTextIfChanged(street, traject.street || 'Trajectcontrole')
+  setTextIfChanged(remaining, `${formatDistance(traject.remaining)} te gaan`)
+  setTextIfChanged(travelled, formatDistance(traject.travelled))
+  setTextIfChanged(total, formatDistance(traject.total))
+  const pct = traject.total > 0 ? Math.min(100, (traject.travelled / traject.total) * 100) : 0
+  fill.style.width = `${pct}%`
 }
 
 function renderMatrixHudTile (selection) {
@@ -441,6 +478,7 @@ function clearRoadSignHud () {
   roadSignHudCache.speedPoints = EMPTY_FC
   roadSignHudCache.speedLanes = EMPTY_FC
   roadSignHudCache.osmLanes = EMPTY_FC
+  roadSignHudCache.trajectPairs = EMPTY_FC
   roadSignHudCurrentRoad = null
   roadSignHudLastFetchCoords = null
   roadSignHudLastFetchAt = 0

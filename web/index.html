@@ -124,6 +124,21 @@
   </div>
   <div id="current-road-label" class="current-road-label hidden"></div>
 
+  <!-- Trajectcontrole progress bar (bottom), shown while GPS tracks a section -->
+  <div id="traject-progress" class="traject-progress hidden" aria-live="polite">
+    <div class="traject-progress-header">
+      <span id="traject-progress-street" class="traject-progress-street">Trajectcontrole</span>
+      <span id="traject-progress-remaining" class="traject-progress-remaining"></span>
+    </div>
+    <div class="traject-progress-track">
+      <div id="traject-progress-fill" class="traject-progress-fill"></div>
+    </div>
+    <div class="traject-progress-footer">
+      <span id="traject-progress-travelled" class="traject-progress-travelled"></span>
+      <span id="traject-progress-total" class="traject-progress-total"></span>
+    </div>
+  </div>
+
   <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
   <script src="lib.js"></script>
   <script src="config.js"></script>

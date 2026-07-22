@@ -198,6 +198,66 @@ function destinationPoint (coord, bearingDeg, distMeters) {
   return [(((lng2 * 180) / Math.PI + 540) % 360) - 180, (lat2 * 180) / Math.PI]
 }
 
+// Project `point` onto a polyline (array of [lng,lat]). Uses a flat local
+// equirectangular projection around the line's own start — fine at the
+// few-km scale of a trajectcontrole section, avoids per-segment haversine.
+// Returns { distToLine, along, total } (metres) for the closest segment, or
+// null for a degenerate (<2 point) line. `along`/`total` are cumulative
+// distance from the line's first coordinate, i.e. travel direction = start→end.
+function projectPointOnTrajectLine (point, lineCoords) {
+  if (!lineCoords || lineCoords.length < 2) return null
+  const lat0 = lineCoords[0][1]
+  const mPerLng = Math.cos((lat0 * Math.PI) / 180) * 111320
+  const mPerLat = 110540
+  const toXY = ([lng, lat]) => [(lng - lineCoords[0][0]) * mPerLng, (lat - lineCoords[0][1]) * mPerLat]
+  const p = toXY(point)
+
+  let cumulative = 0
+  let best = null
+  let prev = toXY(lineCoords[0])
+  for (let i = 1; i < lineCoords.length; i++) {
+    const cur = toXY(lineCoords[i])
+    const dx = cur[0] - prev[0]
+    const dy = cur[1] - prev[1]
+    const segLen = Math.hypot(dx, dy)
+    let t = segLen > 0 ? ((p[0] - prev[0]) * dx + (p[1] - prev[1]) * dy) / (segLen * segLen) : 0
+    t = Math.max(0, Math.min(1, t))
+    const projX = prev[0] + dx * t
+    const projY = prev[1] + dy * t
+    const distToSeg = Math.hypot(p[0] - projX, p[1] - projY)
+    const along = cumulative + segLen * t
+    if (best === null || distToSeg < best.distToLine) best = { distToLine: distToSeg, along }
+    cumulative += segLen
+    prev = cur
+  }
+  return best ? { distToLine: best.distToLine, along: best.along, total: cumulative } : null
+}
+
+// Pick the trajectcontrole (flitspalen SC→SCE) line the device currently sits
+// on, if any. Each feature's geometry runs SC (start) → SCE (end) in travel
+// direction (see ingest/flitspalen_route.py), so `along` from
+// projectPointOnTrajectLine is already distance travelled into the section.
+function selectTrajectProgress (fc, coords, maxDistM) {
+  if (!coords) return null
+  let best = null
+  for (const feature of (fc?.features || [])) {
+    const geom = feature.geometry
+    if (!geom || geom.type !== 'LineString') continue
+    const proj = projectPointOnTrajectLine(coords, geom.coordinates)
+    if (!proj || proj.distToLine > maxDistM || proj.total <= 0) continue
+    if (!best || proj.distToLine < best.proj.distToLine) best = { feature, proj }
+  }
+  if (!best) return null
+  const { feature, proj } = best
+  return {
+    street: feature.properties?.street || null,
+    scId: feature.properties?.sc_id,
+    travelled: proj.along,
+    remaining: Math.max(0, proj.total - proj.along),
+    total: proj.total,
+  }
+}
+
 // ─── Drive HUD: direction filtering ─────────────────────────────────────────────
 
 // Smallest signed angular difference a-b, normalized to (-180, 180].

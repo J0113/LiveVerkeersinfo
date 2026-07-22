@@ -437,7 +437,12 @@ const roadSignHudCache = {
   speedPoints: EMPTY_FC,
   speedLanes: EMPTY_FC,
   osmLanes: EMPTY_FC,
+  trajectPairs: EMPTY_FC,
 }
+// A GPS fix within this distance (m) of a trajectcontrole line counts as "on"
+// that section — wide enough for lane offset / GPS jitter, narrow enough to
+// not pick up a parallel carriageway or nearby road.
+const TRAJECT_MAX_DIST_M = 35
 let roadSignHudLastFetchCoords = null
 let roadSignHudLastFetchAt = 0
 let roadSignHudLastFetchHeading = null
