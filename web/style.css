@@ -305,15 +305,16 @@ input[type="radio"] {
 .speed-sidebar {
   position: fixed;
   left: max(8px, env(safe-area-inset-left));
-  /* Clears the top road-sign-hud tiles, which can grow to two rows (speed +
-     matrix/drip) — sized for that taller case rather than just the single
-     speed row so the sidebar doesn't creep under it when more tiles appear. */
-  top: max(200px, env(safe-area-inset-top) + 190px);
+  /* Fallback for the sidebar-only state. JS places this below the measured
+     road-sign HUD whenever that content-dependent panel is visible. */
+  top: max(72px, env(safe-area-inset-top) + 62px);
   bottom: calc(108px + env(safe-area-inset-bottom));
   z-index: 30;
   width: 76px;
   pointer-events: none;
 }
+
+.speed-sidebar.speed-sidebar-no-room { display: none; }
 
 /* A single continuous route strip: bottom = here/now, top = the furthest
    upcoming sensor. Filled with a gradient built from each sensor's speed

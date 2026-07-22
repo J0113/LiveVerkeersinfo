@@ -410,5 +410,8 @@ map.on('zoom', () => {
 // Keep roadside offsets correct while the map rotates (e.g. navigation mode).
 map.on('rotate', () => { updateMatrixLayout(); updateSpeedLayout() })
 
-// Refit the HUD matrix lanes when the viewport width changes (rotate phone, resize).
-window.addEventListener('resize', () => fitMatrixLanes())
+// Refit responsive HUD elements when the viewport changes (rotate phone, resize).
+window.addEventListener('resize', () => {
+  fitMatrixLanes()
+  layoutSpeedSidebar()
+})

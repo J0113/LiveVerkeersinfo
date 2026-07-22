@@ -284,9 +284,12 @@ function renderRoadSignHudSelection (selected) {
   if (visible) document.body.classList.add(`road-sign-hud-count-${visibleCount}`)
   hud.classList.toggle('hidden', !visible)
   document.body.classList.toggle('road-sign-hud-visible', visible)
-  // First matrix build measures 0 width while the tile is hidden; refit once the
-  // HUD is shown and laid out.
-  if (visible && selected.matrix) requestAnimationFrame(fitMatrixLanes)
+  // First builds measure 0 width/height while their containers are hidden;
+  // refit once the final HUD visibility and dimensions have been laid out.
+  requestAnimationFrame(() => {
+    if (visible && selected.matrix) fitMatrixLanes()
+    layoutSpeedSidebar()
+  })
 }
 
 function renderSpeedHudTile (upcoming) {
@@ -378,15 +381,38 @@ function renderSpeedSidebar (list) {
     marker.append(pill, distance)
     track.appendChild(marker)
   }
-  requestAnimationFrame(layoutSpeedSidebarMarkers)
 }
 
-// Percentage-based marker positions can land closer together than their
-// pills are tall (e.g. two sensors ~200m apart on a long lookahead). Anchor
-// the nearest marker at its exact position — it's the "now" reference and
-// must not drift into the GPS badge below the track — and push farther
-// markers upward (potentially above the track's top edge; the sidebar has no
-// clipping ancestor) as needed to keep a minimum gap.
+const SPEED_SIDEBAR_MIN_HEIGHT_PX = 140
+const SPEED_SIDEBAR_TOP_GAP_PX = 8
+const SPEED_SIDEBAR_MARKER_TOP_PADDING_PX = 20
+
+// Keep the route strip immediately below the actual HUD rather than relying on
+// a fixed estimate: the speed SVG and optional matrix/DRIP row make its height
+// content-dependent. Hide the strip when a short landscape viewport leaves no
+// useful vertical room between the HUD and the bottom driving controls.
+function layoutSpeedSidebar () {
+  const aside = document.getElementById('speed-sidebar')
+  const hud = document.getElementById('road-sign-hud')
+  if (!aside) return
+
+  aside.classList.remove('speed-sidebar-no-room')
+  if (hud && !hud.classList.contains('hidden')) {
+    aside.style.top = `${Math.ceil(hud.getBoundingClientRect().bottom + SPEED_SIDEBAR_TOP_GAP_PX)}px`
+  } else {
+    aside.style.removeProperty('top')
+  }
+  if (aside.classList.contains('hidden')) return
+
+  const hasRoom = aside.getBoundingClientRect().height >= SPEED_SIDEBAR_MIN_HEIGHT_PX
+  aside.classList.toggle('speed-sidebar-no-room', !hasRoom)
+  if (hasRoom) layoutSpeedSidebarMarkers()
+}
+
+// Percentage-based marker positions can land closer together than their pills
+// are tall. Anchor the nearest marker at its exact position and compress the
+// gap only when necessary, keeping every farther marker inside the route strip
+// instead of pushing it upward into the road-sign HUD.
 function layoutSpeedSidebarMarkers () {
   const track = document.getElementById('speed-sidebar-track')
   if (!track) return
@@ -397,9 +423,19 @@ function layoutSpeedSidebarMarkers () {
     .map(el => ({ el, y: (parseFloat(el.dataset.pct) / 100) * H }))
     .sort((a, b) => b.y - a.y) // nearest (largest y, bottom) first
 
+  const nearestY = markers[0]?.y ?? 0
+  const gap = markers.length > 1
+    ? Math.min(
+        SPEED_SIDEBAR_MIN_MARKER_GAP_PX,
+        Math.max(0, nearestY - SPEED_SIDEBAR_MARKER_TOP_PADDING_PX) / (markers.length - 1)
+      )
+    : SPEED_SIDEBAR_MIN_MARKER_GAP_PX
   let prevY = Infinity
   for (const m of markers) {
-    const y = Math.min(m.y, prevY - SPEED_SIDEBAR_MIN_MARKER_GAP_PX)
+    const y = Math.max(
+      SPEED_SIDEBAR_MARKER_TOP_PADDING_PX,
+      Math.min(m.y, prevY - gap)
+    )
     m.el.style.top = `${y}px`
     prevY = y
   }

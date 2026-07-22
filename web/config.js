@@ -389,11 +389,11 @@ const HUD_ITEMS = [
 ]
 const DEFAULT_HUD_ENABLED = new Set(['hud_speed', 'hud_speed_sidebar', 'hud_matrix', 'hud_drips'])
 
-// Left sidebar: how many upcoming speed sensors ahead to list, and how far
-// ahead to look for them (wider than the single-sensor top tile so several
-// sensors have room to appear).
+// Left sidebar: how many upcoming speed sensors ahead to list. Selection uses
+// the short-range, heading-relative road corridor from the regular speed HUD;
+// do not extend this horizon without route-aware road geometry matching.
 const SPEED_SIDEBAR_MAX_COUNT = 5
-const SPEED_SIDEBAR_MAX_DISTANCE_M = 10000
+const SPEED_SIDEBAR_MAX_DISTANCE_M = 2000
 
 // Restore a previously saved toggle set from localStorage, keeping only keys
 // that still exist (drops renamed/removed layers). Falls back to the defaults
