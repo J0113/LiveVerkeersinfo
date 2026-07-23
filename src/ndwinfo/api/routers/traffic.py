@@ -126,9 +126,14 @@ def _build_speed_features(db: DbDep, scope: _SpeedScope, limit: int) -> tuple[li
         if scope.order_by_km
         else (TrafficMeasurement.site_id,)
     )
+    # GROUP BY (site_id, km) instead of SELECT DISTINCT site_id: Postgres
+    # requires DISTINCT's ORDER BY expressions to appear in the select list,
+    # which would force km into the scalar subquery's single output column.
+    # km is single-valued per site_id, so grouping on both changes nothing
+    # about which/how-many site_ids come out, only lets ORDER BY use km.
     candidate_site_ids = (
         select(TrafficMeasurement.site_id)
-        .distinct()
+        .group_by(TrafficMeasurement.site_id, MeasurementSite.km)
         .join(MeasurementSite, TrafficMeasurement.site_id == MeasurementSite.id)
         .join(
             MeasurementCharacteristic,
