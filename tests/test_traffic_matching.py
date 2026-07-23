@@ -225,8 +225,10 @@ def test_osm_attachment_exposes_replacement_api_contract():
         source_id=565536411,
         lane_count=1,
         ref="N203",
+        name="Provincialeweg",
         direction="fwd",
         highway="primary",
+        osm_tags={"maxspeed": "80"},
         connected_source_ids=[],
         distance_m=3.6,
         bearing=261.3,
@@ -249,4 +251,7 @@ def test_osm_attachment_exposes_replacement_api_contract():
     assert props["osm_match_method"] == "vild_bearing"
     assert props["osm_highway"] == "primary"
     assert props["osm_bearing"] == 261.3
+    assert props["osm_ref"] == "N203"
+    assert props["osm_name"] == "Provincialeweg"
+    assert props["maxspeed_kmh"] == 80
     assert not any(key.startswith("weggeg_") for key in props)

@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import and_, case, func, select, text, tuple_
+from sqlalchemy import ColumnElement, and_, case, func, select, text, tuple_
 
-from ndwinfo.api.deps import BBox, BBoxDep, DbDep
+from ndwinfo.api.deps import BBox, BBoxDep, DbDep, OptionalBBoxDep
 from ndwinfo.api.geo import geo_response, make_fc
 from ndwinfo.config import settings
 from ndwinfo.models import (
@@ -44,13 +45,63 @@ def _speed_location_key(
     return (coords, road, carriageway or tmc_direction, side)
 
 
-@router.get("/speed")
-def get_speed(
-    b: BBoxDep,
-    db: DbDep,
-    limit: Annotated[int, Query(ge=1, le=settings.api_max_limit)] = settings.api_default_limit,
-):
-    """Return one GeoJSON feature per location with merged per-lane speed/flow.
+@dataclass
+class _SpeedScope:
+    """WHERE-clause + ordering for one speed-feature query: bbox, road, or both."""
+
+    predicates: list[ColumnElement]
+    order_by_km: bool = False
+
+
+def _normalize_carriageway(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().upper()
+    if normalized not in {"R", "L"}:
+        raise HTTPException(400, "carriageway: expected 'R' or 'L'")
+    return normalized
+
+
+def _infer_carriageway(
+    db: DbDep, road: str, lon: float, lat: float, heading: float | None
+) -> str | None:
+    """Nearest effective_carriageway for `road` at (lon, lat), direction-checked.
+
+    Opposite carriageways are physically separated (a median, or simply two
+    distinct roadways), so nearest-by-distance is already a strong signal.
+    When a heading is given and a candidate has a known VILD travel bearing,
+    prefer the first candidate whose bearing roughly agrees with it.
+    """
+    rows = db.execute(
+        text(
+            """
+            SELECT effective_carriageway, vild_bearing
+            FROM measurement_site
+            WHERE effective_road = :road
+              AND effective_carriageway IS NOT NULL
+              AND geom IS NOT NULL
+            ORDER BY geom <-> ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)
+            LIMIT 5
+            """
+        ),
+        {"road": road, "lon": lon, "lat": lat},
+    ).all()
+    if not rows:
+        return None
+    if heading is not None:
+        for row in rows:
+            if row.vild_bearing is None:
+                continue
+            if _angular_difference(float(row.vild_bearing), heading) <= 90:
+                return row.effective_carriageway
+    return rows[0].effective_carriageway
+
+
+def _build_speed_features(db: DbDep, scope: _SpeedScope, limit: int) -> tuple[list[dict], int]:
+    """Query + merge speed features for `scope`. Returns (features, total_matched).
+
+    `total_matched` is the location count before the `limit` slice, so callers
+    can report truncation instead of silently dropping matches.
 
     Filters to anyVehicle aggregate measurements (no vehicle-length constraint)
     so each lane yields exactly one speed and one flow value.
@@ -60,18 +111,21 @@ def get_speed(
     the latest timestamp are averaged; otherwise the latest non-null/non-zero
     reading wins. One marker per (location, side) instead of stacked duplicates.
     """
-    bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
-
     # Bound candidate sites *before* the join/aggregation below so `limit`
     # constrains DB/CPU/JSON work, not just the Python-side feature count.
     # Must apply the same usability filters as the main query (lane present,
-    # no vehicle-length constraint) rather than just bbox membership: most
+    # no vehicle-length constraint) rather than just scope membership: most
     # sites in this dataset have no usable lane reading (filtered out below),
-    # and bounding on bbox-membership alone risks the whole candidate window
-    # filling with unusable sites, silently emptying the result for large
-    # viewports with a comparatively small limit. 6x margin keeps co-located
+    # and bounding on scope-membership alone risks the whole candidate window
+    # filling with unusable sites, silently emptying the result for a large
+    # scope with a comparatively small limit. 6x margin keeps co-located
     # opposite-direction site pairs (2 distinct MeasurementSite rows sharing a
     # physical location) together.
+    order_cols = (
+        (MeasurementSite.km.asc().nulls_last(), TrafficMeasurement.site_id)
+        if scope.order_by_km
+        else (TrafficMeasurement.site_id,)
+    )
     candidate_site_ids = (
         select(TrafficMeasurement.site_id)
         .distinct()
@@ -84,12 +138,12 @@ def get_speed(
             ),
         )
         .where(
-            func.ST_Intersects(MeasurementSite.geom, bbox_geom),
+            *scope.predicates,
             MeasurementCharacteristic.lane.isnot(None),
             MeasurementCharacteristic.veh_length_min.is_(None),
             MeasurementCharacteristic.veh_length_max.is_(None),
         )
-        .order_by(TrafficMeasurement.site_id)
+        .order_by(*order_cols)
         .limit(limit * 6)
         .scalar_subquery()
     )
@@ -148,7 +202,7 @@ def get_speed(
         .outerjoin(VildTmc, MeasurementSite.tmc_primary == VildTmc.loc_nr)
         .where(
             TrafficMeasurement.site_id.in_(candidate_site_ids),
-            func.ST_Intersects(MeasurementSite.geom, bbox_geom),
+            *scope.predicates,
             MeasurementCharacteristic.lane.isnot(None),
             MeasurementCharacteristic.veh_length_min.is_(None),
             MeasurementCharacteristic.veh_length_max.is_(None),
@@ -172,7 +226,7 @@ def get_speed(
             MeasurementCharacteristic.lane,
             MeasurementSite.geom,
         )
-        .order_by(TrafficMeasurement.site_id, MeasurementCharacteristic.lane)
+        .order_by(*order_cols, MeasurementCharacteristic.lane)
     ).all()
 
     # Identify road/carriageway metadata available at each physical point first.
@@ -302,7 +356,66 @@ def get_speed(
 
     _attach_osm_matches(db, features)
     _attach_fallback_bearings(db, features)
-    return geo_response({"type": "FeatureCollection", "features": features})
+    return features, len(locs)
+
+
+@router.get("/speed")
+def get_speed(
+    db: DbDep,
+    b: OptionalBBoxDep = None,
+    road: str | None = Query(None, description="Road number, e.g. A2 — normalized (a02 == A2)"),
+    carriageway: str | None = Query(
+        None, description="R or L; auto-detected from lon/lat/heading if omitted"
+    ),
+    km_min: float | None = None,
+    km_max: float | None = None,
+    lon: float | None = Query(None, description="With lat/heading, infers carriageway if omitted"),
+    lat: float | None = None,
+    heading: float | None = Query(None, ge=0, lt=360),
+    limit: Annotated[int, Query(ge=1, le=settings.api_max_limit)] = settings.api_default_limit,
+):
+    """Return one GeoJSON feature per location with merged per-lane speed/flow.
+
+    Scope is `bbox`, `road` (+ optional `carriageway`/`km_min`/`km_max`), or
+    both combined — at least one is required so this never returns the
+    unfiltered national set. `road` matches the ingest-resolved
+    `effective_road`/`effective_carriageway` (explicit, else VILD-derived,
+    else inherited from a co-located sibling site), not the raw columns.
+    """
+    if b is None and road is None:
+        raise HTTPException(400, "bbox or road is required")
+
+    predicates: list[ColumnElement] = []
+    if b is not None:
+        bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
+        predicates.append(func.ST_Intersects(MeasurementSite.geom, bbox_geom))
+
+    road_norm = None
+    if road is not None:
+        road_norm = _normalized_road_ref(road)
+        if road_norm is None:
+            raise HTTPException(400, "road: not a recognizable road reference")
+        predicates.append(MeasurementSite.effective_road == road_norm)
+
+        cw = _normalize_carriageway(carriageway)
+        if cw is None and lon is not None and lat is not None:
+            cw = _infer_carriageway(db, road_norm, lon, lat, heading)
+        if cw is not None:
+            predicates.append(MeasurementSite.effective_carriageway == cw)
+
+        if km_min is not None:
+            predicates.append(MeasurementSite.km >= km_min)
+        if km_max is not None:
+            predicates.append(MeasurementSite.km <= km_max)
+
+    scope = _SpeedScope(predicates=predicates, order_by_km=road is not None)
+    features, total_matched = _build_speed_features(db, scope, limit)
+    return geo_response({
+        "type": "FeatureCollection",
+        "features": features,
+        "count": len(features),
+        "truncated": total_matched > limit,
+    })
 
 
 def _normalized_road_ref(value: str | None) -> str | None:
@@ -470,8 +583,10 @@ def _attach_osm_matches(db, features: list[dict]) -> None:
                    o.source_id,
                    o.lane_count,
                    o.ref,
+                   o.name,
                    o.direction,
                    o.highway,
+                   r.raw AS osm_tags,
                    ARRAY(
                        SELECT o2.source_id
                        FROM osm_road_lane o2
@@ -506,6 +621,7 @@ def _attach_osm_matches(db, features: list[dict]) -> None:
                  s.point::geography,
                  :max_distance_m
              )
+            JOIN osm_road r ON r.osm_id = o.source_id
             CROSS JOIN LATERAL (SELECT ST_LineMerge(o.geom) AS line) merged
             WHERE GeometryType(merged.line) = 'LINESTRING'
             ORDER BY s.i, distance_m
@@ -536,6 +652,12 @@ def _attach_osm_matches(db, features: list[dict]) -> None:
         props["osm_match_method"] = "vild_bearing"
         props["osm_highway"] = selected.highway
         props["osm_bearing"] = round(float(selected.bearing) % 360, 1)
+        # Carried directly on the point so a road-scoped result (no matching
+        # local lane fetch) can still render road name/speed limit — see
+        # enrichLaneSpeedSelection in lib.js, which prefers these when present.
+        props["osm_ref"] = selected.ref
+        props["osm_name"] = selected.name
+        props["maxspeed_kmh"] = _osm_maxspeed_kmh(selected.osm_tags, selected.direction)
 
 
 def _attach_fallback_bearings(db, features: list[dict]) -> None:
@@ -725,22 +847,26 @@ def get_speed_map(
     fetch_bbox = BBox(
         b.min_lon - margin, b.min_lat - margin, b.max_lon + margin, b.max_lat + margin
     )
-    point_response = get_speed(b=fetch_bbox, db=db, limit=limit)
-    points = json.loads(point_response.body)
+    fetch_bbox_geom = func.ST_MakeEnvelope(
+        fetch_bbox.min_lon, fetch_bbox.min_lat, fetch_bbox.max_lon, fetch_bbox.max_lat, 4326
+    )
+    scope = _SpeedScope(predicates=[func.ST_Intersects(MeasurementSite.geom, fetch_bbox_geom)])
+    point_features, _total_matched = _build_speed_features(db, scope, limit)
     lanes = (
-        _osm_lane_speed_feature_collection(db, points["features"], b)
+        _osm_lane_speed_feature_collection(db, point_features, b)
         if include_lanes
         else {"type": "FeatureCollection", "features": []}
     )
     # Clip point markers back to the requested viewport; the wider fetch exists
     # only to feed lane matching, not to draw sensors outside the frame.
-    points["features"] = [
+    point_features = [
         f
-        for f in points["features"]
+        for f in point_features
         if f.get("geometry")
         and b.min_lon <= f["geometry"]["coordinates"][0] <= b.max_lon
         and b.min_lat <= f["geometry"]["coordinates"][1] <= b.max_lat
     ]
+    points = {"type": "FeatureCollection", "features": point_features}
     return Response(
         content=json.dumps({"points": points, "lanes": lanes}),
         media_type="application/json",

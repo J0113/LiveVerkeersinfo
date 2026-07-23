@@ -20,9 +20,7 @@ class BBox:
     max_lat: float
 
 
-def parse_bbox(
-    bbox: Annotated[str, Query(description="minLon,minLat,maxLon,maxLat")]
-) -> BBox:
+def _parse_bbox_str(bbox: str) -> BBox:
     try:
         parts = [float(x) for x in bbox.split(",")]
     except ValueError:
@@ -41,9 +39,25 @@ def parse_bbox(
     return BBox(min_lon, min_lat, max_lon, max_lat)
 
 
+def parse_bbox(
+    bbox: Annotated[str, Query(description="minLon,minLat,maxLon,maxLat")]
+) -> BBox:
+    return _parse_bbox_str(bbox)
+
+
+def parse_bbox_optional(
+    bbox: Annotated[
+        str | None,
+        Query(description="minLon,minLat,maxLon,maxLat — omit when another scope is given"),
+    ] = None,
+) -> BBox | None:
+    return _parse_bbox_str(bbox) if bbox is not None else None
+
+
 def get_db() -> Generator[Session, None, None]:
     yield from get_session()
 
 
 BBoxDep = Annotated[BBox, Depends(parse_bbox)]
+OptionalBBoxDep = Annotated[BBox | None, Depends(parse_bbox_optional)]
 DbDep = Annotated[Session, Depends(get_db)]

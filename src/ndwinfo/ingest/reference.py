@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from ndwinfo.download import DownloadResult
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, json_safe, wkt_geom
 from ndwinfo.ingest.traveltime_geometry import rebuild_traveltime_geometry
-from ndwinfo.ingest.vild_direction import rebuild_speed_site_directions
+from ndwinfo.ingest.vild_direction import rebuild_speed_site_directions, resolve_effective_road
 from ndwinfo.models import (
     MeetlocatiePunt,
     MeetlocatieVak,
@@ -141,5 +141,6 @@ class VildIngester(Ingester):
         # VILD just refreshed → rebuild road-following travel-time geometry.
         rebuild_traveltime_geometry(session)
         rebuild_speed_site_directions(session)
+        resolve_effective_road(session)
 
         return total

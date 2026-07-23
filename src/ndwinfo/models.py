@@ -33,7 +33,15 @@ _tz = DateTime(timezone=True)
 
 class MeasurementSite(Base):
     __tablename__ = "measurement_site"
-    __table_args__ = (Index("ix_measurement_site_geom", "geom", postgresql_using="gist"),)
+    __table_args__ = (
+        Index("ix_measurement_site_geom", "geom", postgresql_using="gist"),
+        Index(
+            "ix_measurement_site_effective_road",
+            "effective_road",
+            "effective_carriageway",
+            "km",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[Optional[str]] = mapped_column(String)
@@ -48,6 +56,12 @@ class MeasurementSite(Base):
     vild_carriageway: Mapped[Optional[str]] = mapped_column(String)
     vild_carriageway_source: Mapped[Optional[str]] = mapped_column(String)
     carriageway_direction_conflict: Mapped[Optional[bool]] = mapped_column(Boolean)
+    # Resolved by ingest.vild_direction.resolve_effective_road: explicit
+    # road/carriageway, else VILD-derived, else inherited from a co-located
+    # sibling site — the single field API queries filter/index on.
+    effective_road: Mapped[Optional[str]] = mapped_column(String)
+    effective_carriageway: Mapped[Optional[str]] = mapped_column(String)
+    effective_source: Mapped[Optional[str]] = mapped_column(String)
     km: Mapped[Optional[Any]] = mapped_column(Numeric)
     openlr_bearing: Mapped[Optional[int]] = mapped_column(Integer)
     vild_bearing: Mapped[Optional[Any]] = mapped_column(Numeric)

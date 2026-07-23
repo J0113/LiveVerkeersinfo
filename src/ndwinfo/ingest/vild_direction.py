@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections import defaultdict
 from dataclasses import dataclass
 
 from pyproj import Transformer
@@ -248,4 +249,129 @@ def rebuild_speed_site_directions(session) -> int:
         session.bulk_update_mappings(MeasurementSite, updates[start:start + 1000])
     session.flush()
     logger.info("VILD sensor direction: rebuilt %d fixed sites", len(updates))
+    return len(updates)
+
+
+@dataclass(frozen=True)
+class EffectiveRoadInput:
+    id: str
+    road: str | None
+    carriageway: str | None
+    vild_carriageway: str | None
+    vild_road_number: str | None
+    side: str | None
+    tmc_direction: str | None
+    coords: tuple[float, float] | None  # (lon, lat) rounded to ~1m, or None if no geom
+
+
+def compute_effective_road(
+    inputs: list[EffectiveRoadInput],
+) -> dict[str, tuple[str | None, str | None, str | None]]:
+    """Pure resolution: explicit > VILD-derived > co-located-inherited.
+
+    Precedence: explicit ``road``/``carriageway``, else VILD-derived
+    (``vild_road_number`` from the site's VILD TMC chain point,
+    ``vild_carriageway`` as already computed by
+    :func:`rebuild_speed_site_directions`), else inherited from another site
+    at the exact same coordinates/side/direction — the same physical gantry
+    measured by a second system (e.g. MONICA next to a MONIBAS aggregate)
+    that happens to carry the road/carriageway metadata this one lacks.
+    Inherit only when every resolved sibling at that position agrees.
+
+    Returns ``{id: (effective_road, effective_carriageway, effective_source)}``.
+    ``effective_source`` tracks *road* provenance only (explicit /
+    vild_road_number / inherited); carriageway provenance already has its own
+    ``carriageway_source`` / ``vild_carriageway_source`` columns.
+    """
+    resolved: dict[str, list] = {}
+    for item in inputs:
+        if item.road:
+            road, road_source = item.road, "explicit"
+        elif item.vild_road_number:
+            road, road_source = item.vild_road_number, "vild_road_number"
+        else:
+            road, road_source = None, None
+        carriageway = item.carriageway or item.vild_carriageway
+        resolved[item.id] = [road, carriageway, road_source]
+
+    groups: dict[tuple, list[str]] = defaultdict(list)
+    for item in inputs:
+        if item.coords is None:
+            continue
+        groups[(item.coords, item.side, item.tmc_direction)].append(item.id)
+
+    for ids in groups.values():
+        if len(ids) < 2:
+            continue
+        candidates = {
+            (resolved[i][0], resolved[i][1]) for i in ids if resolved[i][0] is not None
+        }
+        if len(candidates) != 1:
+            continue
+        road, carriageway = next(iter(candidates))
+        for i in ids:
+            if resolved[i][0] is None:
+                resolved[i][0], resolved[i][1], resolved[i][2] = road, carriageway, "inherited"
+
+    return {site_id: tuple(values) for site_id, values in resolved.items()}
+
+
+def resolve_effective_road(session) -> int:
+    """Materialize effective_road/effective_carriageway/effective_source.
+
+    Loads sites (+ VILD road_number via tmc_primary), delegates the actual
+    resolution to the pure :func:`compute_effective_road`, and writes the
+    result back. Must run after :func:`rebuild_speed_site_directions` in the
+    same session — it depends on that job's freshly written
+    ``vild_carriageway``.
+    """
+    rows = session.execute(
+        select(
+            MeasurementSite.id,
+            MeasurementSite.road,
+            MeasurementSite.carriageway,
+            MeasurementSite.vild_carriageway,
+            MeasurementSite.side,
+            MeasurementSite.tmc_direction,
+            VildTmc.road_number.label("vild_road_number"),
+            func.ST_AsText(MeasurementSite.geom).label("geom_wkt"),
+        ).outerjoin(VildTmc, MeasurementSite.tmc_primary == VildTmc.loc_nr)
+    ).all()
+
+    inputs = []
+    for row in rows:
+        coords = None
+        if row.geom_wkt:
+            try:
+                point = shapely_wkt.loads(row.geom_wkt)
+                coords = (round(point.x, 5), round(point.y, 5))
+            except (TypeError, ValueError):
+                coords = None
+        inputs.append(
+            EffectiveRoadInput(
+                id=row.id,
+                road=row.road,
+                carriageway=row.carriageway,
+                vild_carriageway=row.vild_carriageway,
+                vild_road_number=row.vild_road_number,
+                side=row.side,
+                tmc_direction=row.tmc_direction,
+                coords=coords,
+            )
+        )
+
+    resolved = compute_effective_road(inputs)
+    updates = [
+        {
+            "id": site_id,
+            "effective_road": road,
+            "effective_carriageway": carriageway,
+            "effective_source": source,
+        }
+        for site_id, (road, carriageway, source) in resolved.items()
+    ]
+    for start in range(0, len(updates), 1000):
+        session.bulk_update_mappings(MeasurementSite, updates[start:start + 1000])
+    session.flush()
+    logger.info("Effective road/carriageway: resolved %d sites", len(updates))
     return len(updates)

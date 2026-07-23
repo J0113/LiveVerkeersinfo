@@ -445,7 +445,20 @@ const roadSignHudCache = {
   speedLanes: EMPTY_FC,
   osmLanes: EMPTY_FC,
   trajectPairs: EMPTY_FC,
+  // Road+carriageway-scoped speed points (GET /api/traffic/speed?road=...),
+  // covering the whole carriageway instead of just the bbox around the car.
+  // Preferred source for the "next sensor" / sidebar selection once a road
+  // ref is known; the bbox-based speedPoints above remain the fallback.
+  speedPointsRoad: EMPTY_FC,
 }
+// Debounce for the road-scoped speed fetch: refetch immediately on a road
+// change, otherwise no more often than a normal HUD refetch cycle.
+// `attemptedRoad`/`attemptedAt` gate when a new request fires; `road` only
+// updates on a successful response, so renderRoadSignHud's speedSource stays
+// on stale-but-valid data through a transient failure instead of falling
+// back to the bbox source every retry.
+const ROAD_SCOPED_SPEED_REFETCH_MS = ROAD_SIGN_HUD_REFETCH_MS
+let roadScopedSpeedFetch = { attemptedRoad: null, attemptedAt: 0, road: null }
 // A GPS fix within this distance (m) of a trajectcontrole line counts as "on"
 // that section — wide enough for lane offset / GPS jitter, narrow enough to
 // not pick up a parallel carriageway or nearby road.

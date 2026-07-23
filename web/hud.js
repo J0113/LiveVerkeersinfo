@@ -173,6 +173,54 @@ async function fetchRoadSignHudSpeedSource (bbox, currentRoadBbox, signal) {
   if (speedError) throw speedError
 }
 
+// Fetch every speed sensor on `road`'s current carriageway (server infers the
+// carriageway from lon/lat/heading), replacing the bbox-window candidate pool
+// used for the "next sensor" / sidebar selection with the road's full extent.
+// Debounced: immediate on a road change, otherwise no more than once per
+// normal HUD refetch cycle.
+function fetchRoadScopedSpeedIfDue (road, coords, heading) {
+  const now = Date.now()
+  const changed = roadScopedSpeedFetch.attemptedRoad !== road
+  if (!changed && now - roadScopedSpeedFetch.attemptedAt < ROAD_SCOPED_SPEED_REFETCH_MS) return
+  roadScopedSpeedFetch.attemptedRoad = road
+  roadScopedSpeedFetch.attemptedAt = now
+
+  controllers['road-scoped-speed']?.abort()
+  const ctrl = new AbortController()
+  controllers['road-scoped-speed'] = ctrl
+
+  const params = new URLSearchParams({
+    road,
+    lon: String(coords[0]),
+    lat: String(coords[1]),
+    heading: String(Math.round(heading) % 360),
+    limit: '1000',
+  })
+  fetch(`/api/traffic/speed?${params}`, { signal: ctrl.signal })
+    .then(response => {
+      if (!response.ok) throw new Error(`speed by road: HTTP ${response.status}`)
+      return response.json()
+    })
+    .then(fc => {
+      roadSignHudCache.speedPointsRoad = fc || EMPTY_FC
+      // Only flip the render-time source (see `speedSource` in
+      // renderRoadSignHud) once a fetch for this road actually succeeded —
+      // never point it at a bbox-unrelated road's cached points.
+      roadScopedSpeedFetch.road = road
+      if (fc?.truncated) {
+        console.warn(`[road-sign-hud] speed by road truncated for ${road}: showing ${fc.count}`)
+      }
+      renderRoadSignHud()
+    })
+    .catch(error => {
+      if (error.name === 'AbortError') return
+      // Leave roadScopedSpeedFetch.road as-is: if we'd already loaded this
+      // road successfully before, keep using that (still valid) data instead
+      // of flipping to the bbox fallback on a single transient failure.
+      console.warn('[road-sign-hud] speed by road', error.message || error)
+    })
+}
+
 function fetchRoadSignHudCurrentRoadSource (bbox, signal) {
   return fetch(`/api/osm/lanes?bbox=${bbox}`, { signal })
     .then(response => {
@@ -218,21 +266,6 @@ function renderRoadSignHud () {
       )
 
   selected.gpsKmh = Number.isFinite(userSpeedMps) ? userSpeedMps * 3.6 : null
-  selected.upcoming = (userHeading === null || !hudEnabled.has('hud_speed'))
-    ? null
-    : selectUpcomingLaneSpeeds(roadSignHudCache.speedPoints, { coords: userCoords, heading: userHeading }, 2500)
-  selected.upcoming = enrichLaneSpeedSelection(selected.upcoming, roadSignHudCache.speedLanes)
-
-  const speedList = (userHeading === null || !hudEnabled.has('hud_speed_sidebar'))
-    ? []
-    : enrichLaneSpeedSelectionList(
-        selectUpcomingLaneSpeedsList(roadSignHudCache.speedPoints, { coords: userCoords, heading: userHeading }, {
-          maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M,
-          maxCount: SPEED_SIDEBAR_MAX_COUNT
-        }),
-        roadSignHudCache.speedLanes
-      )
-  selected.speedList = speedList
 
   const currentRoadDevice = { coords: userCoords, heading: userHeading }
   selected.currentRoad = selectCurrentOsmLane(
@@ -245,6 +278,33 @@ function renderRoadSignHud () {
     roadSignHudCurrentRoad
   )
   roadSignHudCurrentRoad = selected.currentRoad
+
+  // Prefer the road+carriageway-scoped fetch (whole carriageway, not just the
+  // bbox around the car) once we know which road we're on; bbox stays the
+  // fallback for cold start / no confident OSM match / on-/off-ramps.
+  const currentRoadRef = selected.currentRoad?.data?.ref || null
+  if (currentRoadRef && userCoords && userHeading !== null) {
+    fetchRoadScopedSpeedIfDue(currentRoadRef, userCoords, userHeading)
+  }
+  const speedSource = currentRoadRef && roadScopedSpeedFetch.road === currentRoadRef
+    ? roadSignHudCache.speedPointsRoad
+    : roadSignHudCache.speedPoints
+
+  selected.upcoming = (userHeading === null || !hudEnabled.has('hud_speed'))
+    ? null
+    : selectUpcomingLaneSpeeds(speedSource, { coords: userCoords, heading: userHeading }, 2500)
+  selected.upcoming = enrichLaneSpeedSelection(selected.upcoming, roadSignHudCache.speedLanes)
+
+  const speedList = (userHeading === null || !hudEnabled.has('hud_speed_sidebar'))
+    ? []
+    : enrichLaneSpeedSelectionList(
+        selectUpcomingLaneSpeedsList(speedSource, { coords: userCoords, heading: userHeading }, {
+          maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M,
+          maxCount: SPEED_SIDEBAR_MAX_COUNT
+        }),
+        roadSignHudCache.speedLanes
+      )
+  selected.speedList = speedList
 
   // Keep a just-passed selection on screen briefly instead of flickering off in
   // the gap before the next one. Disabled channels hold null (cleared instantly).
@@ -611,6 +671,7 @@ function setTextIfChanged (element, value) {
 
 function clearRoadSignHud () {
   controllers['road-sign-hud']?.abort()
+  controllers['road-scoped-speed']?.abort()
   resetHudHolds()
   roadSignHudCache.matrix = EMPTY_FC
   roadSignHudCache.drips = EMPTY_FC
@@ -618,6 +679,8 @@ function clearRoadSignHud () {
   roadSignHudCache.speedLanes = EMPTY_FC
   roadSignHudCache.osmLanes = EMPTY_FC
   roadSignHudCache.trajectPairs = EMPTY_FC
+  roadSignHudCache.speedPointsRoad = EMPTY_FC
+  roadScopedSpeedFetch = { attemptedRoad: null, attemptedAt: 0, road: null }
   roadSignHudCurrentRoad = null
   roadSignHudLastFetchCoords = null
   roadSignHudLastFetchAt = 0

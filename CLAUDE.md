@@ -65,8 +65,9 @@ Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
 
 - Keep raw downloaded snapshots out of git (`data/` is scratch; add `.gitignore`).
 - One ingester per feed family; share the generic DATEX-v3-situation parser.
-- API: spatial filter param (bbox or polygon) required on list endpoints; never
-  return the full national set unfiltered.
+- API: a scoping param required on list endpoints — bbox/polygon, or (for
+  `/api/traffic/speed`) `road` (+ optional `carriageway`/`km_min`/`km_max`) —
+  never return the full national set unfiltered.
 - Document any new feed/field back into `docs/`.
 
 ## Decisions (locked 2026-05-29)
@@ -78,6 +79,13 @@ Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
   state (no time-series retention in v1).
 - **Area selection**: **bounding box** (min/max lat/lon) on all list endpoints.
   `ST_Intersects`/`ST_MakeEnvelope(…, 4326)` against GiST-indexed geometry.
+  `/api/traffic/speed` additionally accepts `road` (+ optional `carriageway`/
+  `km_min`/`km_max`) as an alternate or combined scope — bbox stays optional
+  when `road` is given, and vice versa, but at least one is required. `road`
+  filters on `measurement_site.effective_road`/`effective_carriageway`
+  (ingest-resolved: explicit → VILD-derived → co-located-inherited; see
+  `ndwinfo.ingest.vild_direction.resolve_effective_road`), not the raw
+  `road`/`carriageway` columns.
 
 ## Status
 
