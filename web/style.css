@@ -1125,3 +1125,46 @@ body.drive {
 }
 
 #hud-passed { margin-top: 4px; }
+
+/* ── Hectometer sign markers (NL hectometerpaal style) ──────────────────── */
+
+.hecto-sign {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #007a3d;
+  border: 2px solid #fff;
+  border-radius: 3px;
+  padding: 2px 6px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  font-family: 'Arial Narrow', Arial, sans-serif;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+}
+
+.hecto-shield {
+  display: inline-block;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-weight: 700;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #fff;
+}
+.hecto-shield-a { background: #c8102e; }      /* rijksweg: red */
+.hecto-shield-n { background: #f5c400; color: #1a1a1a; }  /* provincial: yellow */
+.hecto-shield-other { background: #555; }
+
+.hecto-carriageway {
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.hecto-km {
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+}

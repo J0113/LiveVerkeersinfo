@@ -191,8 +191,8 @@ map.on('load', () => {
   setupLaneArrowImages()
 
   for (const layer of LAYERS) {
-    // MSI gantries and speed points are HTML markers, not MapLibre layers.
-    if (layer.geomType === 'msi' || layer.geomType === 'speed-points') continue
+    // MSI gantries, speed points and hectometer signs are HTML markers, not MapLibre layers.
+    if (layer.geomType === 'msi' || layer.geomType === 'speed-points' || layer.geomType === 'hectometer-sign') continue
 
     const srcOpts = { type: 'geojson', data: EMPTY_FC }
     if (layer.promoteId) srcOpts.promoteId = layer.promoteId

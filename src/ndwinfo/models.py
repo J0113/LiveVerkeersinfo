@@ -252,6 +252,30 @@ class OsmRoadLane(Base):
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
 
+class HectometerPoint(Base):
+    """Every-100m hectometerpaal marker, derived from measurement-site km
+    anchors (not polled). road/km/carriageway are interpolated between
+    consecutive same-(road,carriageway) measurement_site rows (see
+    parsers/datex_v2.py for how those are decoded); geometry snaps to the
+    nearest matching-ref osm_road way where one is found. See
+    ingest/hectometer.py:rebuild_hectometer_points for why an earlier
+    VILD-chain-based approach was abandoned.
+    """
+
+    __tablename__ = "hectometer_point"
+    __table_args__ = (Index("ix_hectometer_point_geom", "geom", postgresql_using="gist"),)
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # f"{road}:{carriageway}:{km:.1f}"
+    road: Mapped[Optional[str]] = mapped_column(String)  # "A9", "N200"
+    carriageway: Mapped[Optional[str]] = mapped_column(String)  # "Re" | "Li"
+    km: Mapped[Optional[Any]] = mapped_column(Numeric)
+    matched_osm_id: Mapped[Optional[int]] = mapped_column(BigInteger)  # provenance, nullable
+    geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
 # ---------------------------------------------------------------------------
 # Real-time measurement (latest per site+index)
 # ---------------------------------------------------------------------------

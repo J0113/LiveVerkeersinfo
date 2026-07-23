@@ -183,6 +183,17 @@ const LAYERS = [
     }
   },
 
+  // ── Hectometer signage ─────────────────────────────────────────────────────
+  {
+    // Every-100m hectometerpaal markers, both carriageways. km/road come from
+    // VILD's per-link HSTART_POS/HEND_POS chain (see ingest/hectometer.py);
+    // physical left/right placement snaps to the matching-ref OSM road so
+    // widely-separated carriageways (medians) render apart. Custom HTML
+    // marker (see web/hectometers.js), not a MapLibre circle/line layer.
+    key: 'hectometers', label: 'Hectometers', group: 'kaart',
+    endpoint: '/hectometers', geomType: 'hectometer-sign', legendColor: '#0a7a3d',
+  },
+
   // ── VILD reference geometry ────────────────────────────────────────────────
   {
     key: 'vild_point', label: 'VILD Points', group: 'reference',
@@ -202,7 +213,7 @@ const LAYERS = [
       line: { 'line-color': '#3366cc', 'line-width': 1.5, 'line-opacity': 0.8 }
     }
   },
-  // ── OpenStreetMap ──────────────────────────────────────────────────────────
+  // ── Wegennetwerk (OpenStreetMap road reference) ───────────────────────────
   {
     // Driving-road network from a Geofabrik province extract (currently
     // Noord-Holland). highway=motorway/trunk/primary/secondary + their _link
@@ -210,7 +221,7 @@ const LAYERS = [
     // shown in the click popup, not a curated subset.
     // sendZoom: the API tiers highway classes by zoom (see api/routers/osm.py)
     // but the generic fetch path only sends bbox unless a layer opts in here.
-    key: 'osm_roads', label: 'Driving Roads', group: 'osm',
+    key: 'osm_roads', label: 'Driving Roads', group: 'kaart',
     endpoint: '/osm/roads', geomType: 'line', minZoom: 7, sendZoom: true, legendColor: '#e8a33d',
     paint: {
       'line-color': ['match', ['get', 'highway'],
@@ -230,7 +241,7 @@ const LAYERS = [
     // converges into its neighbour. Drawn at true ground width (metresWide, in
     // lib.js) so neighbouring lanes touch and read as one carriageway instead
     // of as separate hairlines with gaps between them.
-    key: 'osm_lanes', label: 'Lane Detail', group: 'osm',
+    key: 'osm_lanes', label: 'Lane Detail', group: 'kaart',
     endpoint: '/osm/lanes', geomType: 'line', minZoom: 15, legendColor: LANE_ASPHALT,
     // Butt caps. A round cap would fill the small wedge that opens on the
     // outside of a bend where two ways meet (each band is its own feature, so
@@ -369,7 +380,7 @@ const GROUPS = [
   { key: 'truckparking', label: 'Truck Parking' },
   { key: 'other',        label: 'Zones & Signs' },
   { key: 'reference',    label: 'Reference' },
-  { key: 'osm',          label: 'OpenStreetMap' }
+  { key: 'kaart',        label: 'Wegennetwerk' }
 ]
 
 // The detailed map overlays remain available in the layer panel, but the clean
@@ -432,6 +443,7 @@ let activePopup = null
 let selectedFeature = null  // { source, id } currently highlighted (feature-state)
 let speedMarkers = []  // maplibregl.Marker instances for traffic speed sites
 let msiMarkers = []    // { marker, el, bearing } for MSI gantries (map render)
+let hectometerMarkers = [] // maplibregl.Marker instances for hectometer signs
 const MATRIX_MIN_ZOOM = 11
 let laneSpeedMarkers = [] // upright numeric labels snapped to matched OSM lanes
 

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from ndwinfo.download import DownloadResult
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, json_safe, wkt_geom
+from ndwinfo.ingest.hectometer import rebuild_hectometer_points
 from ndwinfo.models import OsmRoad, OsmRoadExtract, OsmRoadLane
 from ndwinfo.parsers.osm_junctions import (
     continuation_records,
@@ -105,6 +106,10 @@ class OsmRoadIngester(Ingester):
             delete(OsmRoad).where(~OsmRoad.osm_id.in_(select(OsmRoadExtract.osm_id)))
         )
         session.flush()
+
+        # OSM roads just refreshed → hectometer marker placement (snaps to
+        # matching-ref OSM ways) may have new candidates to snap onto.
+        rebuild_hectometer_points(session)
 
         return total
 

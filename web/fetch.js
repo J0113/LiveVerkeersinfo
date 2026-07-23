@@ -17,6 +17,7 @@ function fetchLayer (layer) {
   if (layer.geomType === 'msi') { fetchMatrixSigns(); return }
   if (layer.geomType === 'speed') { fetchSpeedLanes(); return }
   if (layer.geomType === 'speed-points') { fetchSpeedPoints(); return }
+  if (layer.geomType === 'hectometer-sign') { fetchHectometerSigns(); return }
 
   if (layer.minZoom && map.getZoom() < layer.minZoom) {
     map.getSource(layer.key)?.setData(EMPTY_FC)

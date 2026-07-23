@@ -273,6 +273,11 @@ function setLayerVisibility (layer, visible) {
     }
     return
   }
+  if (layer.geomType === 'hectometer-sign') {
+    // Enable path: the change handler calls fetchLayer → fetchHectometerSigns.
+    if (!visible) { for (const m of hectometerMarkers) m.remove(); hectometerMarkers = [] }
+    return
+  }
   const vis = visible ? 'visible' : 'none'
   if (layer.geomType === 'line') {
     for (const fill of layer.fills || []) {
