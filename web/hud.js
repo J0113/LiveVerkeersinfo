@@ -107,7 +107,11 @@ function fetchRoadSignHud (force = false) {
   })
   const speedBbox = forwardBiasedBbox(userCoords, userHeading ?? 0, {
     // Sidebar needs room for several sensors ahead, not just the nearest one.
-    ahead: hudEnabled.has('hud_speed_sidebar') ? SPEED_SIDEBAR_MAX_DISTANCE_M + 500 : 1500,
+    // This bbox pool is only the cold-start / no-road-match fallback (see
+    // fetchRoadScopedSpeedIfDue for the normal, much-longer road-scoped path),
+    // so it stays short-range — SPEED_SIDEBAR_FALLBACK_DISTANCE_M, not the
+    // full 10km sidebar horizon.
+    ahead: hudEnabled.has('hud_speed_sidebar') ? SPEED_SIDEBAR_FALLBACK_DISTANCE_M + 500 : 1500,
     behind: 500,
     side: 400
   })
@@ -175,7 +179,10 @@ async function fetchRoadSignHudSpeedSource (bbox, currentRoadBbox, signal) {
 
 // Fetch every speed sensor on `road`'s current carriageway (server infers the
 // carriageway from lon/lat/heading), replacing the bbox-window candidate pool
-// used for the "next sensor" / sidebar selection with the road's full extent.
+// used for the "next sensor" / sidebar selection with the road's full extent
+// — narrowed with a forward-biased bbox (SPEED_SIDEBAR_MAX_DISTANCE_M ahead)
+// so a long road doesn't pull sensors from far behind or well past the
+// sidebar's horizon.
 // Debounced: immediate on a road change, otherwise no more than once per
 // normal HUD refetch cycle.
 function fetchRoadScopedSpeedIfDue (road, coords, heading) {
@@ -189,8 +196,14 @@ function fetchRoadScopedSpeedIfDue (road, coords, heading) {
   const ctrl = new AbortController()
   controllers['road-scoped-speed'] = ctrl
 
+  const bbox = forwardBiasedBbox(coords, heading, {
+    ahead: SPEED_SIDEBAR_MAX_DISTANCE_M + 500,
+    behind: 500,
+    side: SPEED_SIDEBAR_MAX_CROSS_M
+  })
   const params = new URLSearchParams({
     road,
+    bbox,
     lon: String(coords[0]),
     lat: String(coords[1]),
     heading: String(Math.round(heading) % 360),
@@ -286,7 +299,8 @@ function renderRoadSignHud () {
   if (currentRoadRef && userCoords && userHeading !== null) {
     fetchRoadScopedSpeedIfDue(currentRoadRef, userCoords, userHeading)
   }
-  const speedSource = currentRoadRef && roadScopedSpeedFetch.road === currentRoadRef
+  const usingRoadScopedSpeed = currentRoadRef && roadScopedSpeedFetch.road === currentRoadRef
+  const speedSource = usingRoadScopedSpeed
     ? roadSignHudCache.speedPointsRoad
     : roadSignHudCache.speedPoints
 
@@ -299,7 +313,12 @@ function renderRoadSignHud () {
     ? []
     : enrichLaneSpeedSelectionList(
         selectUpcomingLaneSpeedsList(speedSource, { coords: userCoords, heading: userHeading }, {
-          maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M,
+          // Full 10km horizon + loosened corridor only once road-scoped data
+          // (server-verified road+carriageway) backs the list; the bbox
+          // fallback pool keeps the short range/tight corridor it was fetched
+          // and gated for.
+          maxDistanceM: usingRoadScopedSpeed ? SPEED_SIDEBAR_MAX_DISTANCE_M : SPEED_SIDEBAR_FALLBACK_DISTANCE_M,
+          maxCrossM: usingRoadScopedSpeed ? SPEED_SIDEBAR_MAX_CROSS_M : undefined,
           maxCount: SPEED_SIDEBAR_MAX_COUNT
         }),
         roadSignHudCache.speedLanes
@@ -407,10 +426,15 @@ function renderSpeedSidebar (list) {
   roadSignHudRenderState.speedListKey = key
 
   const sorted = [...list].sort((a, b) => a.cls.along - b.cls.along)
-  const maxAlong = sorted[sorted.length - 1].cls.along || 1
+  // Fixed scale, not the furthest found sensor's distance — otherwise a
+  // sensor at 1000m and one at 10m both land pinned to the top edge (100%)
+  // instead of at their actual 10%/0.1% height on the strip.
+  const maxAlong = SPEED_SIDEBAR_MAX_DISTANCE_M
 
-  // pctFromBottom: 0 = here/now, 100 = the furthest sensor (which always
-  // lands exactly on the top edge, so the strip has no undyed "unknown" gap).
+  // pctFromBottom: 0 = here/now, 100 = SPEED_SIDEBAR_MAX_DISTANCE_M out. When
+  // the furthest known sensor is short of that, the strip's top portion holds
+  // that sensor's colour (CSS gradients extend the last stop's colour past it)
+  // rather than showing an artificial cutoff.
   const stops = sorted.map(s => ({
     pct: (s.cls.along / maxAlong) * 100,
     color: speedLimitColor(s.fastestKmh, s.data.maxspeed_kmh),

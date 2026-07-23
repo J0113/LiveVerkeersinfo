@@ -389,11 +389,27 @@ const HUD_ITEMS = [
 ]
 const DEFAULT_HUD_ENABLED = new Set(['hud_speed', 'hud_speed_sidebar', 'hud_matrix', 'hud_drips'])
 
-// Left sidebar: how many upcoming speed sensors ahead to list. Selection uses
-// the short-range, heading-relative road corridor from the regular speed HUD;
-// do not extend this horizon without route-aware road geometry matching.
+// Left sidebar: how many upcoming speed sensors ahead to list, and how far.
+// Once the current road is known, the sidebar is fed by the road+carriageway
+// -scoped /api/traffic/speed?road=... fetch (fetchRoadScopedSpeedIfDue in
+// hud.js) instead of the bbox candidate pool, so this horizon is safe to run
+// long: the server already guarantees every candidate is on the correct road
+// and carriageway, not just geometrically nearby. Falls back to the tighter
+// bbox pool (2km ahead, see speedBbox in fetchRoadSignHud) when the road isn't
+// resolved yet (cold start, no confident OSM match, on-/off-ramps).
 const SPEED_SIDEBAR_MAX_COUNT = 5
-const SPEED_SIDEBAR_MAX_DISTANCE_M = 2000
+const SPEED_SIDEBAR_MAX_DISTANCE_M = 10000
+// Corridor cap used only for road-scoped candidates (see maxCrossM in
+// selectUpcomingLaneSpeedsList) — looser than the bbox-pool default since
+// direction/road are already server-verified, so this only needs to reject
+// stray far-off geometry, not disambiguate nearby roads.
+const SPEED_SIDEBAR_MAX_CROSS_M = 400
+// Cold-start / no-confident-road-match fallback: bbox candidate pool stays
+// short-range (unlike the road-scoped horizon above) since a plain bbox has no
+// road/carriageway filter — a wide one would pull in stray nearby roads that
+// only the tight default cross-corridor gate (LANE_SPEED_SELECT.maxCross)
+// then has to reject.
+const SPEED_SIDEBAR_FALLBACK_DISTANCE_M = 2000
 
 // Restore a previously saved toggle set from localStorage, keeping only keys
 // that still exist (drops renamed/removed layers). Falls back to the defaults

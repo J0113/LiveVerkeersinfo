@@ -500,10 +500,18 @@ function enrichLaneSpeedSelection (selection, laneFc) {
 //    loop-detector systems per lane group, e.g. "...vwh0656ra" /
 //    "...hrl0656ra"), which share the same road+km — merge those into one
 //    entry (fastest reading wins) instead of showing near-duplicate rows.
+// `opts.maxCrossM` overrides the corridor cap (default LANE_SPEED_SELECT.maxCross,
+// tuned for close-range disambiguation between nearby roads/ramps from a bbox
+// candidate pool). Callers feeding an already road+carriageway-scoped pool (see
+// fetchRoadScopedSpeedIfDue) can pass a much larger cap — the server already
+// guarantees the correct road, so the only reason left to bound `cross` is
+// discarding stray far-off geometry, not disambiguating direction, and a tight
+// cap would otherwise drop legitimate sensors on gentle curves at long range.
 // Returns entries sorted nearest-first, capped at maxCount.
 function selectUpcomingLaneSpeedsList (pointFc, device, opts) {
   const maxAhead = opts?.maxDistanceM ?? 2000
   const maxCount = opts?.maxCount ?? 5
+  const maxCross = opts?.maxCrossM ?? LANE_SPEED_SELECT.maxCross
   if (!device || !Array.isArray(device.coords) || !Number.isFinite(device.heading)) return []
 
   const out = []
@@ -520,7 +528,7 @@ function selectUpcomingLaneSpeedsList (pointFc, device, opts) {
     if (rp.along <= 0 || rp.along > maxAhead) continue
     if (!sameCarriagewayDirection(p, device.heading)) continue
     const corridor = Math.min(
-      LANE_SPEED_SELECT.maxCross,
+      maxCross,
       LANE_SPEED_SELECT.baseCross + rp.along * LANE_SPEED_SELECT.crossSlope
     )
     if (Math.abs(rp.cross) > corridor) continue

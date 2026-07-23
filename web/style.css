@@ -316,8 +316,10 @@ input[type="radio"] {
 
 .speed-sidebar.speed-sidebar-no-room { display: none; }
 
-/* A single continuous route strip: bottom = here/now, top = the furthest
-   upcoming sensor. Filled with a gradient built from each sensor's speed
+/* A single continuous route strip: bottom = here/now, top = a fixed distance
+   ahead (SPEED_SIDEBAR_MAX_DISTANCE_M in config.js, currently 10km) — not the
+   furthest found sensor, so a marker's height on the strip always matches its
+   real distance. Filled with a gradient built from each sensor's speed
    colour, so the whole road ahead reads as one coloured line rather than a
    list of separate boxes. */
 .speed-sidebar-track {
