@@ -388,6 +388,12 @@ const HUD_ITEMS = [
   { key: 'hud_drips',  label: 'DRIP popups',   legendColor: '#00ccaa' }
 ]
 const DEFAULT_HUD_ENABLED = new Set(['hud_speed', 'hud_speed_sidebar', 'hud_matrix', 'hud_drips'])
+const HUD_SETTINGS_VERSION = 1
+// `hud_speed_sidebar` was added after HUD preferences were first persisted.
+// A legacy array therefore cannot distinguish "this option did not exist yet"
+// from "the user disabled it". Migrate that old shape once, then store a
+// versioned object so an explicit disable remains disabled on later loads.
+const LEGACY_DEFAULT_HUD_ADDITIONS = new Set(['hud_speed_sidebar'])
 
 // Left sidebar: how many upcoming speed sensors ahead to list, and how far.
 // Both speed displays are fed exclusively by the road+carriageway+hectometre
@@ -420,6 +426,31 @@ function loadSavedSet (storageKey, validKeys, fallback) {
   return new Set(fallback)
 }
 
+function loadSavedHudSet (validKeys, fallback) {
+  try {
+    const raw = localStorage.getItem('hudLayers')
+    if (!raw) return new Set(fallback)
+
+    const saved = JSON.parse(raw)
+    if (saved?.version === HUD_SETTINGS_VERSION && Array.isArray(saved.enabled)) {
+      return new Set(saved.enabled.filter(k => validKeys.has(k)))
+    }
+
+    if (Array.isArray(saved)) {
+      const migrated = new Set(saved.filter(k => validKeys.has(k)))
+      for (const key of LEGACY_DEFAULT_HUD_ADDITIONS) {
+        if (validKeys.has(key)) migrated.add(key)
+      }
+      localStorage.setItem('hudLayers', JSON.stringify({
+        version: HUD_SETTINGS_VERSION,
+        enabled: [...migrated],
+      }))
+      return migrated
+    }
+  } catch {}
+  return new Set(fallback)
+}
+
 function persistLayers () {
   try { localStorage.setItem('layers', JSON.stringify([...enabled])) } catch {}
 }
@@ -430,13 +461,18 @@ function layerEnabled (layer) {
   return enabled.has(layer.key) || (layer.linkedTo && enabled.has(layer.linkedTo))
 }
 function persistHud () {
-  try { localStorage.setItem('hudLayers', JSON.stringify([...hudEnabled])) } catch {}
+  try {
+    localStorage.setItem('hudLayers', JSON.stringify({
+      version: HUD_SETTINGS_VERSION,
+      enabled: [...hudEnabled],
+    }))
+  } catch {}
 }
 
 // ─── Runtime state ────────────────────────────────────────────────────────────
 
 const enabled = loadSavedSet('layers', new Set(LAYERS.map(l => l.key)), DEFAULT_ENABLED)
-const hudEnabled = loadSavedSet('hudLayers', new Set(HUD_ITEMS.map(i => i.key)), DEFAULT_HUD_ENABLED)
+const hudEnabled = loadSavedHudSet(new Set(HUD_ITEMS.map(i => i.key)), DEFAULT_HUD_ENABLED)
 const controllers = {}  // key → AbortController
 let debounceTimer = null
 let activePopup = null

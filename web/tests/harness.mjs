@@ -79,13 +79,19 @@ const DEFAULT_SCRIPTS = ['lib.js', 'config.js', 'hud.js']
  * `fetchImpl(url)` stands in for the network; it receives the request URL and
  * should resolve to a plain object (parsed JSON body).
  */
-export function loadWeb ({ scripts = DEFAULT_SCRIPTS, fetchImpl } = {}) {
+export function loadWeb ({ scripts = DEFAULT_SCRIPTS, fetchImpl, localStorageData = {} } = {}) {
   const document = createDocument()
   const requests = []
+  const storage = new Map(Object.entries(localStorageData))
 
   const context = {
     console,
     document,
+    localStorage: {
+      getItem (key) { return storage.has(key) ? storage.get(key) : null },
+      setItem (key, value) { storage.set(key, String(value)) },
+      removeItem (key) { storage.delete(key) },
+    },
     setTimeout,
     clearTimeout,
     setInterval,
@@ -112,6 +118,7 @@ export function loadWeb ({ scripts = DEFAULT_SCRIPTS, fetchImpl } = {}) {
   }
 
   context.requests = requests
+  context.storageValue = key => storage.get(key)
   context.isHidden = id => isHidden(context, id)
   context.textOf = id => document.getElementById(id).textContent
   // `let`/`const` declarations live in the context's lexical scope, not on its

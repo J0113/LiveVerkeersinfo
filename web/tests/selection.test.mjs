@@ -69,6 +69,60 @@ test('carriageway L counts hectometres downward', () => {
   assert.equal(Math.round(picked.cls.along), 1200)
 })
 
+test('the N470 carriageway-L example yields the two expected sidebar markers', () => {
+  const coords = [4.346025374342275, 51.98617174469409]
+  const context = {
+    road: 'N470',
+    carriageway: 'L',
+    anchorKm: 2.1957,
+    anchorDistanceM: 99.4,
+    coords,
+  }
+  const features = [
+    sensor({
+      siteId: 'km-1.295',
+      road: 'N470',
+      carriageway: 'L',
+      km: 1.295,
+      coords: [4.33336, 51.98422],
+      speeds: [56, 51],
+      highway: 'primary',
+    }),
+    sensor({
+      siteId: 'km-1.899',
+      road: 'N470',
+      carriageway: 'L',
+      km: 1.899,
+      coords: [4.34183, 51.9855],
+      speeds: [73, 68],
+      highway: 'primary',
+    }),
+    sensor({
+      siteId: 'km-2.295',
+      road: 'N470',
+      carriageway: 'L',
+      km: 2.295,
+      coords: [4.34743, 51.9864],
+      speeds: [67, 62],
+      highway: 'primary',
+    }),
+  ]
+
+  const candidates = selectRoadScopedSensors(
+    featureCollection(features),
+    context,
+    { coords, heading: 258 },
+    { maxDistanceM: 10000 }
+  )
+  const list = buildSpeedSidebarList(candidates, { maxDistanceM: 10000, maxCount: 5 })
+
+  assert.equal(ids(list), 'km-1.899,km-1.295')
+  assert.deepEqual(
+    [...list].map(item => [item.data.km, Math.round(item.cls.along), item.fastestKmh]),
+    [[1.899, 297, 73], [1.295, 901, 56]]
+  )
+})
+
 test('sensors behind us are dropped', () => {
   const coords = offsetCoords(HERE, { north: -800 })
   assert.equal(select([sensor({ km: 11.2, coords })]).length, 0)
