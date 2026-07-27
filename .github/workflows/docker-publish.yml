@@ -63,10 +63,13 @@ jobs:
           # the cleanup step below would then delete out from under the image.
           provenance: false
 
+      # GITHUB_TOKEN can push to GHCR but cannot manage versions of a package
+      # owned by a user account, so cleanup needs a classic PAT with
+      # read:packages + delete:packages in the GHCR_CLEANUP_TOKEN secret.
       - name: Prune old package versions
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN || secrets.GITHUB_TOKEN }}
         run: .github/scripts/ghcr-prune.sh
 
   delete-branch-image:
@@ -83,6 +86,6 @@ jobs:
       - name: Delete image for deleted branch
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GHCR_CLEANUP_TOKEN || secrets.GITHUB_TOKEN }}
           BRANCH: ${{ github.event.ref }}
         run: .github/scripts/ghcr-delete-branch.sh
