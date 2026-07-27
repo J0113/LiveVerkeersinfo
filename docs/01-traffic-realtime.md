@@ -98,6 +98,52 @@ road; missing measurement context stays point-only.
 The adjacent DRIP/VMS panel uses the same selection rule and displays the
 nearest message without changing the road-following lane visualization.
 
+#### Current-road context
+
+The two speed displays — the "snelheid per rijstrook" tile and the left speed
+bar — are scoped by one **road context**, resolved in two halves:
+
+| part | source |
+|---|---|
+| road (`A9`) | OSM lane map-matching in the client (`selectCurrentOsmLane`) |
+| carriageway (`R`/`L`) | `GET /api/traffic/road-context` — nearest `measurement_site` on that road, direction-checked against `vild_bearing` |
+| our hectometre (`anchor_km`) | same endpoint: the nearest site's `km`, walked back along the direction of travel by its along-track offset, so it describes the **vehicle's** position |
+
+`anchor_distance_m` reports how far away the anchor site was, so the client can
+reject a context too weak to place sensors (>2 km, i.e. a sparsely instrumented
+stretch). The road label under the speed dial shows the carriageway once it is
+resolved: `A9 • Re` (`R`) / `A9 • Li` (`L`).
+
+#### Selecting what is ahead
+
+Upcoming sensors are fetched with `road` + `carriageway` + `km_min`/`km_max`
+around the anchor (10 km ahead, 0.5 km behind) — **not** a forward bounding box.
+Distance ahead is then the signed hectometre difference: hectometrering runs
+with the direction of travel on carriageway `R` and against it on `L`
+(see [docs/10](10-carriageway-direction-quality.md)), so it measures distance
+*along the road* and neither the fetch nor the selection loses a sensor round a
+bend the way a straight corridor does. No bearing or cross-track gate is applied
+to hectometre-placed sensors: on a curve the road's bearing legitimately differs
+from ours, and road + carriageway already pin the direction.
+
+Guards, because a hectometre is only trustworthy if it is *ours*:
+
+- a road can only be longer than the chord it spans, so a hectometre distance
+  far below the straight-line distance (or far above it) is rejected — this
+  catches hectometrering resets at province boundaries and stray `km` values on
+  co-located sites. The tolerance scales with `anchor_distance_m`, since a
+  distant anchor is legitimately less precise;
+- sites with no usable `km` fall back to straight-line placement under a tight
+  corridor, ordered approximately rather than dropped;
+- `motorway_link` sites are excluded from both displays: they carry the road's
+  reference and hectometrering but measure ramp traffic, not our carriageway.
+
+Both displays render **only** with a resolved context and real readings — there
+is no geometric fallback pool, since the alternative to showing nothing is
+showing another road's traffic. Cached sensors are keyed by road *and*
+carriageway and fenced by a request generation, so a U-turn drops them
+immediately and a late response from the previous direction is discarded.
+
 ### Postgres model
 `traffic_measurement` (site_id, index, measured_at, value_type, value) — append
 per cycle or upsert latest; partition/retain as needed.

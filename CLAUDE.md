@@ -68,6 +68,10 @@ Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
 - API: a scoping param required on list endpoints — bbox/polygon, or (for
   `/api/traffic/speed`) `road` (+ optional `carriageway`/`km_min`/`km_max`) —
   never return the full national set unfiltered.
+- Tests: `pytest` for the backend (`tests/`, DB-free — pure helpers and
+  directly-called endpoint functions with a fake session), `node --test
+  "web/tests/*.test.mjs"` for the frontend (loads the plain-globals web scripts
+  into a `vm` sandbox, so no build step or source changes).
 - Document any new feed/field back into `docs/`.
 
 ## Decisions (locked 2026-05-29)
@@ -114,6 +118,7 @@ src/ndwinfo/
 │   ├── geo.py             # ST_AsGeoJSON formatting, make_fc helper
 │   └── routers/           # One per feed family:
 │       ├── traffic.py     # GET /api/traffic/speed, /api/traffic/traveltime (TrafficMeasurement join MeasurementSite)
+│       │                  #   + /api/traffic/road-context (carriageway + vehicle hectometre for a position)
 │       ├── situations.py  # GET /api/situations (Situation with geometry)
 │       ├── signs.py       # GET /api/signs (Sign, SignMessage tables)
 │       ├── charging.py    # GET /api/charging (ChargingStation, Tariff tables)
@@ -149,11 +154,13 @@ web/                    # Static frontend:
 ├── map.js              #   basemaps, map init, map.on(load/move/zoom/rotate) handlers
 ├── fetch.js            #   fetchAll/fetchLayer/NWB roads, viewportBbox, public config
 ├── matrix.js           #   MSI gantry HTML markers (map render)
-├── hud.js              #   GPS-relative road-sign HUD tiles
+├── hud.js              #   GPS-relative road-sign HUD tiles + current-road context
+│                       #   (road/carriageway/hectometre) and the speed bar
 ├── speed.js            #   speed lanes/points markers, gradient lanes, feed status
 ├── ui.js               #   popups, layer panel, panel toggles, basemap picker, zoom hint
 ├── gps.js              #   GPS/compass/follow-loop + geo math helpers
-└── style.css           # Map styling
+├── style.css           # Map styling
+└── tests/              # node --test specs; harness.mjs loads the scripts in a vm sandbox
 data/                   # Downloaded snapshots (gitignored)
 ├── .meta/              # Feed metadata JSON (last_modified, etag, download time)
 └── samples/            # (Optional) sample files for testing

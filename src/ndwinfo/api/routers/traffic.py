@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -62,39 +63,126 @@ def _normalize_carriageway(value: str | None) -> str | None:
     return normalized
 
 
-def _infer_carriageway(
-    db: DbDep, road: str, lon: float, lat: float, heading: float | None
-) -> str | None:
-    """Nearest effective_carriageway for `road` at (lon, lat), direction-checked.
+# How many nearest sites to consider when resolving a road context. Wider than
+# a pure carriageway pick needs: the nearest few sites may lack `km`, and the
+# anchor hectometre has to come from a site on the *chosen* carriageway.
+ROAD_CONTEXT_CANDIDATES = 25
 
-    Opposite carriageways are physically separated (a median, or simply two
-    distinct roadways), so nearest-by-distance is already a strong signal.
-    When a heading is given and a candidate has a known VILD travel bearing,
-    prefer the first candidate whose bearing roughly agrees with it.
-    """
-    rows = db.execute(
+# Hectometrering runs with the direction of travel on carriageway R and against
+# it on L (see docs/10-carriageway-direction-quality.md), so this is the sign of
+# "one metre further along our direction of travel" in km terms.
+CARRIAGEWAY_KM_SIGN = {"R": 1.0, "L": -1.0}
+
+
+def _road_context_rows(db: DbDep, road: str, lon: float, lat: float) -> list:
+    """Nearest carriageway-tagged sites on `road`, closest first."""
+    return db.execute(
         text(
             """
-            SELECT effective_carriageway, vild_bearing
+            SELECT effective_carriageway, vild_bearing, km,
+                   ST_X(geom) AS lon, ST_Y(geom) AS lat
             FROM measurement_site
             WHERE effective_road = :road
               AND effective_carriageway IS NOT NULL
               AND geom IS NOT NULL
             ORDER BY geom <-> ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)
-            LIMIT 5
+            LIMIT :limit
             """
         ),
-        {"road": road, "lon": lon, "lat": lat},
+        {"road": road, "lon": lon, "lat": lat, "limit": ROAD_CONTEXT_CANDIDATES},
     ).all()
+
+
+def _local_offsets_m(
+    lon: float, lat: float, other_lon: float, other_lat: float
+) -> tuple[float, float]:
+    """East/north offset (m) from (lon, lat) to the other point.
+
+    Equirectangular: these are map-matching distances of at most a few km, well
+    inside the approximation's error budget.
+    """
+    east = (other_lon - lon) * 111320.0 * math.cos(math.radians(lat))
+    north = (other_lat - lat) * 110540.0
+    return east, north
+
+
+def _along_track_m(
+    lon: float, lat: float, heading: float | None, other_lon: float, other_lat: float
+) -> tuple[float, float]:
+    """(along, distance) in metres: how far ahead a point is, and how far away.
+
+    `along` is positive ahead of the vehicle, negative behind. With no heading
+    there is no travel axis to project onto, so `along` is 0.
+    """
+    east, north = _local_offsets_m(lon, lat, other_lon, other_lat)
+    distance = math.hypot(east, north)
+    if heading is None:
+        return 0.0, distance
+    bearing = math.degrees(math.atan2(east, north)) % 360
+    return distance * math.cos(math.radians(bearing - heading)), distance
+
+
+def _resolve_road_context(
+    rows: list, lon: float, lat: float, heading: float | None
+) -> dict | None:
+    """Resolve carriageway + vehicle hectometre for a position on one road.
+
+    `rows` are the nearest carriageway-tagged sites on the road, closest first
+    (see `_road_context_rows`). Returns ``None`` when the road has no usable
+    site at all; ``anchor_km`` is ``None`` when no site on the chosen
+    carriageway carries a hectometre.
+
+    Opposite carriageways are physically separated (a median, or simply two
+    distinct roadways), so nearest-by-distance is already a strong signal. When
+    a heading is given and a candidate has a known VILD travel bearing, prefer
+    the first candidate whose bearing roughly agrees with it.
+
+    The anchor is reported for the **vehicle's** position, not the site's: the
+    site's hectometre is walked back along the direction of travel by the
+    site's along-track offset. That makes `anchor_km` directly comparable with
+    other sites' `km`, which is what turns a hectometre difference into a
+    distance that follows the road through curves.
+    """
     if not rows:
         return None
+
+    chosen = None
     if heading is not None:
         for row in rows:
             if row.vild_bearing is None:
                 continue
             if _angular_difference(float(row.vild_bearing), heading) <= 90:
-                return row.effective_carriageway
-    return rows[0].effective_carriageway
+                chosen = row
+                break
+    if chosen is None:
+        chosen = rows[0]
+    carriageway = chosen.effective_carriageway
+
+    anchor_km = None
+    anchor_distance_m = None
+    sign = CARRIAGEWAY_KM_SIGN.get(carriageway)
+    if sign is not None:
+        for row in rows:
+            if row.effective_carriageway != carriageway or row.km is None:
+                continue
+            along, distance = _along_track_m(lon, lat, heading, float(row.lon), float(row.lat))
+            anchor_km = round(float(row.km) - sign * along / 1000.0, 4)
+            anchor_distance_m = round(distance, 1)
+            break
+
+    return {
+        "carriageway": carriageway,
+        "anchor_km": anchor_km,
+        "anchor_distance_m": anchor_distance_m,
+    }
+
+
+def _infer_carriageway(
+    db: DbDep, road: str, lon: float, lat: float, heading: float | None
+) -> str | None:
+    """Nearest effective_carriageway for `road` at (lon, lat), direction-checked."""
+    context = _resolve_road_context(_road_context_rows(db, road, lon, lat), lon, lat, heading)
+    return context["carriageway"] if context else None
 
 
 def _build_speed_features(db: DbDep, scope: _SpeedScope, limit: int) -> tuple[list[dict], int]:
@@ -396,6 +484,7 @@ def get_speed(
         predicates.append(func.ST_Intersects(MeasurementSite.geom, bbox_geom))
 
     road_norm = None
+    cw = None
     if road is not None:
         road_norm = _normalized_road_ref(road)
         if road_norm is None:
@@ -420,7 +509,49 @@ def get_speed(
         "features": features,
         "count": len(features),
         "truncated": total_matched > limit,
+        # Echo the scope actually applied (both null for a bbox-only request) so
+        # a client can tell which carriageway an inferred result belongs to, and
+        # discard a response that arrived after it changed direction.
+        "road": road_norm,
+        "carriageway": cw,
     })
+
+
+@router.get("/road-context")
+def get_road_context(
+    db: DbDep,
+    road: str = Query(..., description="Road number, e.g. A2 — normalized (a02 == A2)"),
+    lon: float = Query(..., ge=-180, le=180),
+    lat: float = Query(..., ge=-90, le=90),
+    heading: float | None = Query(None, ge=0, lt=360),
+):
+    """Resolve which carriageway of `road` a position is on, and its hectometre.
+
+    The drive HUD needs three things before it can show anything: the road, the
+    direction on it, and where along it the vehicle is. Road comes from OSM lane
+    map-matching in the client; this endpoint supplies the other two from the
+    NDW measurement sites, so upcoming sensors can be selected by hectometre
+    difference (which follows the road through curves) instead of by a
+    straight-line corridor (which does not).
+
+    `anchor_km` is the vehicle's own hectometre, derived from the nearest site
+    on the resolved carriageway. `anchor_distance_m` is how far away that site
+    was, so the caller can reject a low-confidence anchor on a sparsely
+    instrumented stretch.
+    """
+    road_norm = _normalized_road_ref(road)
+    if road_norm is None:
+        raise HTTPException(400, "road: not a recognizable road reference")
+
+    context = _resolve_road_context(
+        _road_context_rows(db, road_norm, lon, lat), lon, lat, heading
+    )
+    return {
+        "road": road_norm,
+        "carriageway": context["carriageway"] if context else None,
+        "anchor_km": context["anchor_km"] if context else None,
+        "anchor_distance_m": context["anchor_distance_m"] if context else None,
+    }
 
 
 def _normalized_road_ref(value: str | None) -> str | None:

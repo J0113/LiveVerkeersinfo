@@ -390,26 +390,21 @@ const HUD_ITEMS = [
 const DEFAULT_HUD_ENABLED = new Set(['hud_speed', 'hud_speed_sidebar', 'hud_matrix', 'hud_drips'])
 
 // Left sidebar: how many upcoming speed sensors ahead to list, and how far.
-// Once the current road is known, the sidebar is fed by the road+carriageway
-// -scoped /api/traffic/speed?road=... fetch (fetchRoadScopedSpeedIfDue in
-// hud.js) instead of the bbox candidate pool, so this horizon is safe to run
-// long: the server already guarantees every candidate is on the correct road
-// and carriageway, not just geometrically nearby. Falls back to the tighter
-// bbox pool (2km ahead, see speedBbox in fetchRoadSignHud) when the road isn't
-// resolved yet (cold start, no confident OSM match, on-/off-ramps).
+// Both speed displays are fed exclusively by the road+carriageway+hectometre
+// -scoped /api/traffic/speed fetch (fetchRoadScopedSpeedIfDue in hud.js): the
+// server guarantees every candidate is on our road and carriageway, and the
+// selection places them by hectometre difference, so the horizon can run long
+// without a corridor gate to lose sensors round a bend. There is deliberately
+// no geometric fallback pool — without a resolved road context both displays
+// show nothing rather than risk another road's sensors.
 const SPEED_SIDEBAR_MAX_COUNT = 5
 const SPEED_SIDEBAR_MAX_DISTANCE_M = 10000
-// Corridor cap used only for road-scoped candidates (see maxCrossM in
-// selectUpcomingLaneSpeedsList) — looser than the bbox-pool default since
-// direction/road are already server-verified, so this only needs to reject
-// stray far-off geometry, not disambiguate nearby roads.
-const SPEED_SIDEBAR_MAX_CROSS_M = 400
-// Cold-start / no-confident-road-match fallback: bbox candidate pool stays
-// short-range (unlike the road-scoped horizon above) since a plain bbox has no
-// road/carriageway filter — a wide one would pull in stray nearby roads that
-// only the tight default cross-corridor gate (LANE_SPEED_SELECT.maxCross)
-// then has to reject.
-const SPEED_SIDEBAR_FALLBACK_DISTANCE_M = 2000
+// Horizon for the single "next sensor" tile, which is about what is imminent
+// rather than what is on the road ahead in general.
+const HUD_SPEED_TILE_MAX_DISTANCE_M = 2500
+// A little slack behind the anchor in the fetched hectometre window, so a
+// sensor we are just passing (or a slightly stale anchor) stays in the pool.
+const SPEED_SCOPE_BEHIND_M = 500
 
 // Restore a previously saved toggle set from localStorage, keeping only keys
 // that still exist (drops renamed/removed layers). Falls back to the defaults
@@ -457,24 +452,44 @@ const ROAD_SIGN_HUD_REFETCH_MS = 15000
 const roadSignHudCache = {
   matrix: EMPTY_FC,
   drips: EMPTY_FC,
-  speedPoints: EMPTY_FC,
+  // Lane geometry around the vehicle: used to map-match the current road and to
+  // fill in OSM name/limit for a selected sensor. Not a candidate pool.
   speedLanes: EMPTY_FC,
   osmLanes: EMPTY_FC,
   trajectPairs: EMPTY_FC,
-  // Road+carriageway-scoped speed points (GET /api/traffic/speed?road=...),
-  // covering the whole carriageway instead of just the bbox around the car.
-  // Preferred source for the "next sensor" / sidebar selection once a road
-  // ref is known; the bbox-based speedPoints above remain the fallback.
+  // The only candidate pool for the speed tile and the speed bar: sensors on
+  // our road+carriageway within a hectometre window ahead
+  // (GET /api/traffic/speed?road=…&carriageway=…&km_min=…&km_max=…).
   speedPointsRoad: EMPTY_FC,
 }
-// Debounce for the road-scoped speed fetch: refetch immediately on a road
-// change, otherwise no more often than a normal HUD refetch cycle.
-// `attemptedRoad`/`attemptedAt` gate when a new request fires; `road` only
-// updates on a successful response, so renderRoadSignHud's speedSource stays
-// on stale-but-valid data through a transient failure instead of falling
-// back to the bbox source every retry.
+
+// ─── Current-road context ────────────────────────────────────────────────────
+// Road comes from OSM lane map-matching in the client; carriageway and our own
+// hectometre come from GET /api/traffic/road-context. Both speed displays stay
+// blank until all three are known, so they can never describe another road or
+// the opposite carriageway.
+const ROAD_CONTEXT_REFETCH_MS = ROAD_SIGN_HUD_REFETCH_MS
+const ROAD_CONTEXT_REFETCH_DISTANCE_M = 150
+const ROAD_CONTEXT_REFETCH_HEADING_DEG = 20
+// Beyond this the anchor site is too far away for its hectometre to describe
+// our position usefully (sparsely instrumented rural stretches).
+const ROAD_CONTEXT_MAX_ANCHOR_DISTANCE_M = 2000
+// A context older than this is stale regardless of distance moved (e.g. the
+// vehicle stopped and requests failed).
+const ROAD_CONTEXT_MAX_AGE_MS = 120000
+// { road, carriageway, anchorKm, anchorDistanceM, coords, at } — coords is the
+// position the anchor was resolved for, so it can be advanced between fetches.
+let roadContext = null
+let roadContextFetch = { road: null, at: 0, coords: null, heading: null, generation: 0 }
+
+// Debounce for the road-scoped speed fetch. Identity is road *and* carriageway:
+// a U-turn keeps the road but must never keep the opposite carriageway's
+// sensors, so a key change refetches immediately and drops the cached points.
+// `loadedKey` only updates on a successful response, so a transient failure
+// leaves stale-but-valid data in place instead of blanking the displays.
+// `generation` fences a slow response from a superseded key.
 const ROAD_SCOPED_SPEED_REFETCH_MS = ROAD_SIGN_HUD_REFETCH_MS
-let roadScopedSpeedFetch = { attemptedRoad: null, attemptedAt: 0, road: null }
+let roadScopedSpeedFetch = { attemptedKey: null, attemptedAt: 0, loadedKey: null, generation: 0 }
 // A GPS fix within this distance (m) of a trajectcontrole line counts as "on"
 // that section — wide enough for lane offset / GPS jitter, narrow enough to
 // not pick up a parallel carriageway or nearby road.
@@ -482,7 +497,12 @@ const TRAJECT_MAX_DIST_M = 35
 let roadSignHudLastFetchCoords = null
 let roadSignHudLastFetchAt = 0
 let roadSignHudLastFetchHeading = null
-const roadSignHudRenderState = { matrixKey: null, dripKey: null, speedKey: null, speedListKey: null }
+const roadSignHudRenderState = {
+  matrixKey: null, dripKey: null, speedKey: null, speedListKey: null,
+  // road|carriageway the speed displays currently describe; a change clears
+  // their linger holds so nothing survives a U-turn or a road change.
+  contextKey: null,
+}
 let roadSignHudCurrentRoad = null
 
 // ─── GPS & Geolocation state ──────────────────────────────────────────────────

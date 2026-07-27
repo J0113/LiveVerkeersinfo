@@ -112,6 +112,14 @@ direction and records the relationship in `HECTO_DIR` (see sections 3.3 and
 Equivalently, R applies when the travel-direction sign equals `HECTO_DIR`; L
 applies when the signs differ.
 
+The drive HUD relies on the first sentence of this section directly: because
+hectometrering rises with travel on R and falls on L, a signed hectometre
+difference is a distance measured along the road. `GET /api/traffic/road-context`
+resolves which carriageway a position is on and reports the vehicle's own
+hectometre, and the HUD then places every upcoming sensor by hectometre instead
+of by straight-line geometry — see
+[docs/01](01-traffic-realtime.md#current-road-context).
+
 ### Validated against ground truth — the rule helps, but is not exact
 
 The `HECTO_DIR`-adjusted rule above was checked against an independent

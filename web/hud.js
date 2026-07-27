@@ -106,12 +106,11 @@ function fetchRoadSignHud (force = false) {
     side: 250
   })
   const speedBbox = forwardBiasedBbox(userCoords, userHeading ?? 0, {
-    // Sidebar needs room for several sensors ahead, not just the nearest one.
-    // This bbox pool is only the cold-start / no-road-match fallback (see
-    // fetchRoadScopedSpeedIfDue for the normal, much-longer road-scoped path),
-    // so it stays short-range — SPEED_SIDEBAR_FALLBACK_DISTANCE_M, not the
-    // full 10km sidebar horizon.
-    ahead: hudEnabled.has('hud_speed_sidebar') ? SPEED_SIDEBAR_FALLBACK_DISTANCE_M + 500 : 1500,
+    // Lane geometry around the vehicle — current-road map-matching and OSM
+    // name/limit enrichment. The upcoming-sensor pool comes from the
+    // road+carriageway+hectometre fetch, so this no longer has to reach as far
+    // ahead as the sidebar horizon.
+    ahead: 1500,
     behind: 500,
     side: 400
   })
@@ -128,7 +127,6 @@ function fetchRoadSignHud (force = false) {
   if (hudEnabled.has('hud_speed') || hudEnabled.has('hud_speed_sidebar')) {
     requests.push(fetchRoadSignHudSpeedSource(speedBbox, currentRoadBbox, ctrl.signal))
   } else {
-    roadSignHudCache.speedPoints = EMPTY_FC
     roadSignHudCache.speedLanes = EMPTY_FC
     requests.push(fetchRoadSignHudCurrentRoadSource(currentRoadBbox, ctrl.signal))
   }
@@ -150,12 +148,10 @@ async function fetchRoadSignHudSpeedSource (bbox, currentRoadBbox, signal) {
     const response = await fetch(`/api/traffic/speed/map?bbox=${bbox}&include_lanes=true&limit=500`, { signal })
     if (!response.ok) throw new Error(`speed: HTTP ${response.status}`)
     const data = await response.json()
-    roadSignHudCache.speedPoints = data.points || EMPTY_FC
     roadSignHudCache.speedLanes = data.lanes || EMPTY_FC
   } catch (error) {
     if (error.name === 'AbortError') throw error
     speedError = error
-    roadSignHudCache.speedPoints = EMPTY_FC
     roadSignHudCache.speedLanes = EMPTY_FC
   }
 
@@ -177,36 +173,144 @@ async function fetchRoadSignHudSpeedSource (bbox, currentRoadBbox, signal) {
   if (speedError) throw speedError
 }
 
-// Fetch every speed sensor on `road`'s current carriageway (server infers the
-// carriageway from lon/lat/heading), replacing the bbox-window candidate pool
-// used for the "next sensor" / sidebar selection with the road's full extent
-// — narrowed with a forward-biased bbox (SPEED_SIDEBAR_MAX_DISTANCE_M ahead)
-// so a long road doesn't pull sensors from far behind or well past the
-// sidebar's horizon.
-// Debounced: immediate on a road change, otherwise no more than once per
-// normal HUD refetch cycle.
-function fetchRoadScopedSpeedIfDue (road, coords, heading) {
+// Resolve which carriageway of `road` we are on, and our hectometre on it.
+// Refetched on a road change, a direction change, or after moving/waiting far
+// enough that the anchor would drift.
+function fetchRoadContextIfDue (road, coords, heading) {
   const now = Date.now()
-  const changed = roadScopedSpeedFetch.attemptedRoad !== road
+  const previous = roadContextFetch
+  const headingChanged = heading !== null && (
+    previous.heading === null ||
+    Math.abs(angleDiff(heading, previous.heading)) >= ROAD_CONTEXT_REFETCH_HEADING_DEG
+  )
+  const moved = previous.coords ? calculateDistance(previous.coords, coords) : Infinity
+  const due = previous.road !== road ||
+    headingChanged ||
+    moved >= ROAD_CONTEXT_REFETCH_DISTANCE_M ||
+    now - previous.at >= ROAD_CONTEXT_REFETCH_MS
+  if (!due) return
+
+  // A road or direction change invalidates the resolved carriageway, so drop it
+  // (and the sensors fetched for it) right away rather than rendering the old
+  // one until the new response lands.
+  if (previous.road !== road || headingChanged) invalidateRoadContext()
+
+  const generation = roadContextFetch.generation + 1
+  roadContextFetch = { road, at: now, coords: [...coords], heading, generation }
+
+  controllers['road-context']?.abort()
+  const ctrl = new AbortController()
+  controllers['road-context'] = ctrl
+
+  const params = new URLSearchParams({
+    road,
+    lon: String(coords[0]),
+    lat: String(coords[1]),
+  })
+  if (heading !== null) params.set('heading', String(((Math.round(heading) % 360) + 360) % 360))
+
+  fetch(`/api/traffic/road-context?${params}`, { signal: ctrl.signal })
+    .then(response => {
+      if (!response.ok) throw new Error(`road context: HTTP ${response.status}`)
+      return response.json()
+    })
+    .then(data => {
+      // Fence a slow response from a superseded request: by the time it lands
+      // we may already be on another road or the opposite carriageway.
+      if (generation !== roadContextFetch.generation) return
+      roadContext = {
+        road: data.road || road,
+        carriageway: data.carriageway || null,
+        anchorKm: Number.isFinite(data.anchor_km) ? data.anchor_km : null,
+        anchorDistanceM: Number.isFinite(data.anchor_distance_m) ? data.anchor_distance_m : null,
+        coords: [...coords],
+        at: Date.now(),
+      }
+      renderRoadSignHud()
+    })
+    .catch(error => {
+      if (error.name === 'AbortError') return
+      console.warn('[road-sign-hud] road context', error.message || error)
+    })
+}
+
+function invalidateRoadContext () {
+  roadContext = null
+  roadSignHudCache.speedPointsRoad = EMPTY_FC
+  roadScopedSpeedFetch = {
+    attemptedKey: null,
+    attemptedAt: 0,
+    loadedKey: null,
+    generation: roadScopedSpeedFetch.generation + 1,
+  }
+  controllers['road-scoped-speed']?.abort()
+}
+
+// The current road context, or null when it isn't (yet) resolved well enough to
+// show anything. `road` + `carriageway` are enough to name the road we are on;
+// `usableForSelection` additionally requires a hectometre anchor close enough to
+// place sensors along the road.
+function buildRoadContext (road) {
+  if (!road || !roadContext || roadContext.road !== road || !roadContext.carriageway) return null
+  if (Date.now() - roadContext.at > ROAD_CONTEXT_MAX_AGE_MS) return null
+  const anchorUsable = Number.isFinite(roadContext.anchorKm) &&
+    Number.isFinite(roadContext.anchorDistanceM) &&
+    roadContext.anchorDistanceM <= ROAD_CONTEXT_MAX_ANCHOR_DISTANCE_M
+  return {
+    road,
+    carriageway: roadContext.carriageway,
+    anchorKm: roadContext.anchorKm,
+    anchorDistanceM: roadContext.anchorDistanceM,
+    coords: roadContext.coords,
+    usableForSelection: anchorUsable,
+  }
+}
+
+function roadScopedSpeedKey (context) {
+  return `${context.road}|${context.carriageway}`
+}
+
+// Fetch every speed sensor on our carriageway within a hectometre window ahead.
+// Scoping by km_min/km_max instead of a forward bbox is what makes the selection
+// curve-proof: hectometrering follows the road, a bbox does not.
+// Debounced: immediate on a road/carriageway change, otherwise no more than once
+// per normal HUD refetch cycle.
+function fetchRoadScopedSpeedIfDue (context, coords) {
+  const anchorKm = roadContextAnchorKm(context, coords)
+  const sign = carriagewayKmSign(context.carriageway)
+  // Without a hectometre and a direction for it there is no window to ask for.
+  // buildRoadContext already gates on this; this keeps the fetch honest on its
+  // own terms rather than sending NaN bounds.
+  if (sign === null || !Number.isFinite(anchorKm)) return
+
+  const key = roadScopedSpeedKey(context)
+  const now = Date.now()
+  const changed = roadScopedSpeedFetch.attemptedKey !== key
   if (!changed && now - roadScopedSpeedFetch.attemptedAt < ROAD_SCOPED_SPEED_REFETCH_MS) return
-  roadScopedSpeedFetch.attemptedRoad = road
-  roadScopedSpeedFetch.attemptedAt = now
+  if (changed) {
+    // Never let the previous carriageway's sensors render against the new key.
+    roadSignHudCache.speedPointsRoad = EMPTY_FC
+    roadScopedSpeedFetch.loadedKey = null
+  }
+  const generation = roadScopedSpeedFetch.generation + 1
+  roadScopedSpeedFetch = {
+    attemptedKey: key,
+    attemptedAt: now,
+    loadedKey: roadScopedSpeedFetch.loadedKey,
+    generation,
+  }
 
   controllers['road-scoped-speed']?.abort()
   const ctrl = new AbortController()
   controllers['road-scoped-speed'] = ctrl
 
-  const bbox = forwardBiasedBbox(coords, heading, {
-    ahead: SPEED_SIDEBAR_MAX_DISTANCE_M + 500,
-    behind: 500,
-    side: SPEED_SIDEBAR_MAX_CROSS_M
-  })
+  const aheadKm = (SPEED_SIDEBAR_MAX_DISTANCE_M / 1000) * sign
+  const behindKm = (SPEED_SCOPE_BEHIND_M / 1000) * sign
   const params = new URLSearchParams({
-    road,
-    bbox,
-    lon: String(coords[0]),
-    lat: String(coords[1]),
-    heading: String(Math.round(heading) % 360),
+    road: context.road,
+    carriageway: context.carriageway,
+    km_min: String(Math.min(anchorKm - behindKm, anchorKm + aheadKm)),
+    km_max: String(Math.max(anchorKm - behindKm, anchorKm + aheadKm)),
     limit: '1000',
   })
   fetch(`/api/traffic/speed?${params}`, { signal: ctrl.signal })
@@ -215,21 +319,20 @@ function fetchRoadScopedSpeedIfDue (road, coords, heading) {
       return response.json()
     })
     .then(fc => {
+      if (generation !== roadScopedSpeedFetch.generation) return
       roadSignHudCache.speedPointsRoad = fc || EMPTY_FC
-      // Only flip the render-time source (see `speedSource` in
-      // renderRoadSignHud) once a fetch for this road actually succeeded —
-      // never point it at a bbox-unrelated road's cached points.
-      roadScopedSpeedFetch.road = road
+      // Only start rendering from this pool once a fetch for this exact
+      // road+carriageway succeeded — never against another key's points.
+      roadScopedSpeedFetch.loadedKey = key
       if (fc?.truncated) {
-        console.warn(`[road-sign-hud] speed by road truncated for ${road}: showing ${fc.count}`)
+        console.warn(`[road-sign-hud] speed by road truncated for ${key}: showing ${fc.count}`)
       }
       renderRoadSignHud()
     })
     .catch(error => {
       if (error.name === 'AbortError') return
-      // Leave roadScopedSpeedFetch.road as-is: if we'd already loaded this
-      // road successfully before, keep using that (still valid) data instead
-      // of flipping to the bbox fallback on a single transient failure.
+      // Leave loadedKey as-is: if this key had already loaded successfully,
+      // keep that (still valid) data through a transient failure.
       console.warn('[road-sign-hud] speed by road', error.message || error)
     })
 }
@@ -292,41 +395,58 @@ function renderRoadSignHud () {
   )
   roadSignHudCurrentRoad = selected.currentRoad
 
-  // Prefer the road+carriageway-scoped fetch (whole carriageway, not just the
-  // bbox around the car) once we know which road we're on; bbox stays the
-  // fallback for cold start / no confident OSM match / on-/off-ramps.
-  const currentRoadRef = selected.currentRoad?.data?.ref || null
-  if (currentRoadRef && userCoords && userHeading !== null) {
-    fetchRoadScopedSpeedIfDue(currentRoadRef, userCoords, userHeading)
+  // Everything about the road ahead hangs off one context: the map-matched road,
+  // the carriageway of it we are on, and our hectometre along that carriageway.
+  const currentRoadRef = normalizeRoadRef(selected.currentRoad?.data?.ref)
+  if (currentRoadRef) fetchRoadContextIfDue(currentRoadRef, userCoords, userHeading)
+  else if (roadContext) invalidateRoadContext()
+
+  const context = buildRoadContext(currentRoadRef)
+  selected.roadContext = context
+  if (context?.usableForSelection) fetchRoadScopedSpeedIfDue(context, userCoords)
+
+  // Sensors are only ever selected from the pool fetched for this exact
+  // road+carriageway. No context (or no matching pool yet) means no candidates
+  // — deliberately, since the alternative is showing another road's traffic.
+  const contextKeyChanged = roadSignHudRenderState.contextKey !==
+    (context ? roadScopedSpeedKey(context) : null)
+  if (contextKeyChanged) {
+    roadSignHudRenderState.contextKey = context ? roadScopedSpeedKey(context) : null
+    roadSignHudHold.speed = null
+    roadSignHudHold.speedList = null
   }
-  const usingRoadScopedSpeed = currentRoadRef && roadScopedSpeedFetch.road === currentRoadRef
-  const speedSource = usingRoadScopedSpeed
-    ? roadSignHudCache.speedPointsRoad
-    : roadSignHudCache.speedPoints
 
-  selected.upcoming = (userHeading === null || !hudEnabled.has('hud_speed'))
-    ? null
-    : selectUpcomingLaneSpeeds(speedSource, { coords: userCoords, heading: userHeading }, 2500)
-  selected.upcoming = enrichLaneSpeedSelection(selected.upcoming, roadSignHudCache.speedLanes)
+  const candidates = (context?.usableForSelection &&
+    roadScopedSpeedFetch.loadedKey === roadScopedSpeedKey(context))
+    ? selectRoadScopedSensors(
+        roadSignHudCache.speedPointsRoad,
+        context,
+        { coords: userCoords, heading: userHeading },
+        { maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M }
+      )
+    : []
 
-  const speedList = (userHeading === null || !hudEnabled.has('hud_speed_sidebar'))
-    ? []
-    : enrichLaneSpeedSelectionList(
-        selectUpcomingLaneSpeedsList(speedSource, { coords: userCoords, heading: userHeading }, {
-          // Full 10km horizon + loosened corridor only once road-scoped data
-          // (server-verified road+carriageway) backs the list; the bbox
-          // fallback pool keeps the short range/tight corridor it was fetched
-          // and gated for.
-          maxDistanceM: usingRoadScopedSpeed ? SPEED_SIDEBAR_MAX_DISTANCE_M : SPEED_SIDEBAR_FALLBACK_DISTANCE_M,
-          maxCrossM: usingRoadScopedSpeed ? SPEED_SIDEBAR_MAX_CROSS_M : undefined,
+  selected.upcoming = hudEnabled.has('hud_speed')
+    ? enrichLaneSpeedSelection(
+        pickNextLaneSpeedSensor(candidates, HUD_SPEED_TILE_MAX_DISTANCE_M),
+        roadSignHudCache.speedLanes
+      )
+    : null
+
+  selected.speedList = hudEnabled.has('hud_speed_sidebar')
+    ? enrichLaneSpeedSelectionList(
+        buildSpeedSidebarList(candidates, {
+          maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M,
           maxCount: SPEED_SIDEBAR_MAX_COUNT
         }),
         roadSignHudCache.speedLanes
       )
-  selected.speedList = speedList
+    : []
 
   // Keep a just-passed selection on screen briefly instead of flickering off in
-  // the gap before the next one. Disabled channels hold null (cleared instantly).
+  // the gap before the next one. Disabled channels hold null (cleared instantly),
+  // and a context change cleared the speed holds above so a lingering tile can
+  // never outlive the carriageway it belongs to.
   selected.matrix = holdSelection('matrix', hudEnabled.has('hud_matrix') ? selected.matrix : null)
   selected.drip = holdSelection('drip', hudEnabled.has('hud_drips') ? selected.drip : null)
   selected.upcoming = holdSelection('speed', hudEnabled.has('hud_speed') ? selected.upcoming : null)
@@ -351,9 +471,14 @@ function renderRoadSignHudSelection (selected) {
   renderMatrixHudTile(selected.matrix)
   renderDripHudTile(selected.drip)
   renderSpeedSidebar(selected.speedList)
-  updateGpsSpeedBadge(selected.gpsKmh, selected.currentRoad)
+  updateGpsSpeedBadge(selected.gpsKmh, selected.currentRoad, selected.roadContext)
   renderTrajectProgressBar(selected.traject)
-  const speedVisible = gpsState !== GPS_STATES.OFF && hudEnabled.has('hud_speed')
+  // Only shown with an actual reading to show: without a resolved road context
+  // there is nothing trustworthy to put in it, and an empty "Meetpunt zoeken"
+  // tile just takes HUD space from the channels that do have something.
+  const speedVisible = gpsState !== GPS_STATES.OFF &&
+    hudEnabled.has('hud_speed') &&
+    Boolean(selected.upcoming)
   const visibleCount = [speedVisible, selected.matrix, selected.drip].filter(Boolean).length
   const visible = visibleCount > 0
   speedTile.classList.toggle('hidden', !speedVisible)
@@ -526,8 +651,10 @@ function layoutSpeedSidebarMarkers () {
 }
 
 // Circular GPS-speed badge (km/h) bottom-left, with the road we are on in the
-// centre-bottom label — shown only while tracking.
-function updateGpsSpeedBadge (gpsKmh, currentRoad) {
+// centre-bottom label — shown only while tracking. The label carries the
+// carriageway too when it is resolved ("A9 • Re"), since which direction of a
+// road you are on is what the rest of the HUD is scoped by.
+function updateGpsSpeedBadge (gpsKmh, currentRoad, context) {
   const badge = document.getElementById('gps-speed-badge')
   const value = document.getElementById('gps-speed-value')
   const limitSign = document.getElementById('gps-maxspeed-sign')
@@ -541,8 +668,10 @@ function updateGpsSpeedBadge (gpsKmh, currentRoad) {
 
   const data = currentRoad?.data || {}
   const road = data.ref || data.name || null
-  roadLabel.classList.toggle('hidden', !tracking || !road)
-  if (tracking && road) setTextIfChanged(roadLabel, road)
+  const direction = carriagewayLabel(context?.carriageway)
+  const label = road && direction ? `${road} • ${direction}` : road
+  roadLabel.classList.toggle('hidden', !tracking || !label)
+  if (tracking && label) setTextIfChanged(roadLabel, label)
 
   const maxspeed = Number(data.maxspeed_kmh)
   const showLimit = tracking && Number.isFinite(maxspeed) && maxspeed > 0
@@ -696,15 +825,26 @@ function setTextIfChanged (element, value) {
 function clearRoadSignHud () {
   controllers['road-sign-hud']?.abort()
   controllers['road-scoped-speed']?.abort()
+  controllers['road-context']?.abort()
   resetHudHolds()
   roadSignHudCache.matrix = EMPTY_FC
   roadSignHudCache.drips = EMPTY_FC
-  roadSignHudCache.speedPoints = EMPTY_FC
   roadSignHudCache.speedLanes = EMPTY_FC
   roadSignHudCache.osmLanes = EMPTY_FC
   roadSignHudCache.trajectPairs = EMPTY_FC
   roadSignHudCache.speedPointsRoad = EMPTY_FC
-  roadScopedSpeedFetch = { attemptedRoad: null, attemptedAt: 0, road: null }
+  roadScopedSpeedFetch = {
+    attemptedKey: null,
+    attemptedAt: 0,
+    loadedKey: null,
+    generation: roadScopedSpeedFetch.generation + 1,
+  }
+  roadContext = null
+  roadContextFetch = {
+    road: null, at: 0, coords: null, heading: null,
+    generation: roadContextFetch.generation + 1,
+  }
+  roadSignHudRenderState.contextKey = null
   roadSignHudCurrentRoad = null
   roadSignHudLastFetchCoords = null
   roadSignHudLastFetchAt = 0

@@ -411,12 +411,12 @@ function selectUpcomingRoadSigns (matrixFc, dripFc, device, maxDistanceM) {
   return { matrix, drip }
 }
 
-// Direction / corridor tuning for the drive-HUD "next sensor" pick.
+// Direction tolerance for the geometric fallback placement (sensors with no
+// usable hectometre). Hectometre-placed sensors are not bearing-gated at all:
+// on a bend the road's bearing legitimately differs from ours by far more than
+// this, and road+carriageway already pin the direction.
 const LANE_SPEED_SELECT = {
-  axisTol: 55,        // deg; fallback road-axis (mod 180) tolerance when no roadside
-  baseCross: 45,      // m; corridor half-width right at the device
-  crossSlope: 0.12,   // corridor widening per metre ahead (~7deg cone)
-  maxCross: 130,      // m; corridor half-width cap
+  axisTol: 55,        // deg; road-axis tolerance against our heading
 }
 
 // True when the sensor measures our travel direction. VILD enrichment gives a
@@ -428,44 +428,177 @@ function sameCarriagewayDirection (p, heading) {
   return Math.abs(angleDiff(bearing, heading)) <= LANE_SPEED_SELECT.axisTol
 }
 
-// Pick the nearest speed-measurement site AHEAD in the travel direction (the
-// "next upcoming sensor") whose lanes carry at least one speed reading. Point
-// features come from /traffic/speed/map (data.points), each carrying a `lanes`
-// array plus num_lanes / osm_lane_count for entry/exit detection.
+// ─── Drive HUD: current-road context ────────────────────────────────────────
 //
-// Direction is filtered on the VILD-oriented travel bearing so the oncoming
-// carriageway is rejected;
-// the lateral corridor then widens with distance so a sensor ahead around a
-// curve is picked up early instead of only once you are almost on top of it.
-function selectUpcomingLaneSpeeds (pointFc, device, maxDistanceM) {
-  const maxAhead = maxDistanceM ?? 2000
-  if (!device || !Array.isArray(device.coords) || !Number.isFinite(device.heading)) return null
+// Everything the HUD shows about the road ahead is scoped by one context:
+// which road we are on (OSM lane map-matching, client-side), which carriageway
+// of it (NDW measurement sites, server-side) and our own hectometre on that
+// carriageway (likewise). See GET /api/traffic/road-context.
+//
+// Hectometrering runs with the direction of travel on carriageway R and against
+// it on L, so a signed hectometre difference is a distance measured *along the
+// road*. That is the whole point: a straight-line corridor loses a sensor round
+// a bend (its along-track offset collapses and its cross-track offset explodes),
+// while a hectometre difference does not care about geometry at all.
+const CARRIAGEWAY_KM_SIGN = { R: 1, L: -1 }
+const CARRIAGEWAY_LABEL = { R: 'Re', L: 'Li' }
 
-  let best = null
+// The pipeline only ever produces R/L: the DATEX parser folds Re/Li (and
+// hrr/hrl, HRR/HRL) into R/L at ingest, and the API rejects anything else.
+// Widening this to further codes (Op/Af, parallel carriageways) is a data-model
+// change in the parser + column + validator, not a display change here.
+function carriagewayLabel (carriageway) {
+  return CARRIAGEWAY_LABEL[carriageway] || null
+}
+
+function carriagewayKmSign (carriageway) {
+  return CARRIAGEWAY_KM_SIGN[carriageway] ?? null
+}
+
+// Normalize a road reference for comparison — mirrors _normalized_road_ref in
+// the API (a02 == A2, "A9;A200" takes the first).
+function normalizeRoadRef (value) {
+  if (!value) return null
+  const m = String(value).toUpperCase().match(/(?<![A-Z0-9])([AN])?\s*0*(\d+)([A-Z]?)(?![A-Z0-9])/)
+  if (!m) return null
+  return `${m[1] || ''}${parseInt(m[2], 10)}${m[3] || ''}`
+}
+
+// Our hectometre now, from the anchor resolved at `context.coords`. Refetched
+// every HUD cycle (~100m / 15s), so this only bridges the gap between fetches —
+// short enough that straight-line travelled distance is a fine stand-in for
+// distance along the road.
+function roadContextAnchorKm (context, coords) {
+  if (!context || !Number.isFinite(context.anchorKm)) return null
+  const sign = carriagewayKmSign(context.carriageway)
+  if (sign === null || !Array.isArray(coords) || !Array.isArray(context.coords)) {
+    return context.anchorKm
+  }
+  return context.anchorKm + (sign * calculateDistance(context.coords, coords)) / 1000
+}
+
+// Sanity bounds on a hectometre-derived distance, checked against the straight
+// line to the sensor. A road can only be longer than the chord it spans, never
+// shorter, so a hectometre distance far below the chord means the hectometrering
+// is not ours (a reset at a province boundary, a stray km on a co-located site);
+// one far above means the same in the other direction.
+// The slack term scales with how far away the anchor site was: our hectometre
+// is only as good as the site it was derived from, so a 500m-distant anchor can
+// legitimately misplace a nearby sensor by that much. The guard is aimed at
+// hectometre *resets*, which are kilometres out, so it survives the loosening.
+const ROAD_SCOPED_SELECT = {
+  minChordRatio: 0.9,       // km-distance below this × chord = not our hectometrering
+  chordSlackM: 100,         // absorbs anchor/GPS error at short range
+  maxChordRatio: 3,         // a real road rarely trebles the chord over these ranges
+  maxChordSlackM: 500,
+  fallbackBaseCross: 45,    // no-km sensors fall back to geometric placement
+  fallbackCrossSlope: 0.12,
+  fallbackMaxCross: 130,
+}
+
+function roadScopedRoadMatches (properties, context) {
+  if (!context.road) return true
+  const ref = normalizeRoadRef(properties.road) || normalizeRoadRef(properties.osm_ref)
+  // A site with no road reference at all stays in: the pool it came from was
+  // already scoped to this road server-side (effective_road), and dropping
+  // unlabelled sites would silently lose legitimate mainline sensors.
+  return ref === null || ref === context.road
+}
+
+function roadScopedCarriagewayMatches (properties, context) {
+  if (!context.carriageway) return true
+  const cw = properties.carriageway ?? properties.derived_carriageway ?? null
+  return cw === null || cw === context.carriageway
+}
+
+function hasLaneSpeed (properties) {
+  return (properties.lanes || []).some(l => l && l.speed_kmh !== null && l.speed_kmh !== undefined)
+}
+
+// Every speed sensor ahead of us on the current road+carriageway, nearest first.
+// Feeds both the "snelheid per rijstrook" tile (nearest entry) and the left
+// speed bar (deduplicated list) so the two can never disagree about which road
+// they are describing.
+//
+// Placement is by hectometre where possible (`placement: 'km'`) — curve-proof,
+// and needing no corridor gate at all, since road and carriageway are already
+// pinned by the context. Sites without a usable hectometre fall back to
+// straight-line placement (`placement: 'geom'`) under the old tight corridor;
+// they are ordered approximately rather than dropped.
+function selectRoadScopedSensors (pointFc, context, device, opts) {
+  const maxAhead = opts?.maxDistanceM ?? 2000
+  if (!context || !context.carriageway) return []
+  if (!device || !Array.isArray(device.coords)) return []
+
+  const anchorKm = roadContextAnchorKm(context, device.coords)
+  const sign = carriagewayKmSign(context.carriageway)
+  const headingKnown = Number.isFinite(device.heading)
+  const slack = Math.max(
+    ROAD_SCOPED_SELECT.chordSlackM,
+    Number.isFinite(context.anchorDistanceM) ? context.anchorDistanceM : 0
+  )
+  const out = []
+
   for (const feature of (pointFc?.features || [])) {
     if (!feature.geometry || !feature.properties) continue
     const p = feature.properties
-    const hasSpeed = (p.lanes || []).some(l => l && l.speed_kmh !== null && l.speed_kmh !== undefined)
-    if (!hasSpeed) continue
+    if (!hasLaneSpeed(p)) continue
+    if (!roadScopedRoadMatches(p, context)) continue
+    if (!roadScopedCarriagewayMatches(p, context)) continue
+    // On/off-ramps carry the road's reference and hectometrering but measure
+    // ramp traffic, not the carriageway we are driving. A site with no
+    // confident OSM match (osm_highway absent) is kept — treating "unknown" as
+    // "ramp" would drop legitimate mainline sensors that failed to match.
+    if (p.osm_highway === 'motorway_link') continue
 
-    const rp = relativePosition(device, feature.geometry.coordinates)
+    const coords = feature.geometry.coordinates
+    const dist = calculateDistance(device.coords, coords)
+    const rp = headingKnown ? relativePosition(device, coords) : null
+
+    if (Number.isFinite(p.km) && Number.isFinite(anchorKm) && sign !== null) {
+      const along = (p.km - anchorKm) * sign * 1000
+      if (along <= 0 || along > maxAhead) continue
+      if (along < dist * ROAD_SCOPED_SELECT.minChordRatio - slack) continue
+      if (along > dist * ROAD_SCOPED_SELECT.maxChordRatio + ROAD_SCOPED_SELECT.maxChordSlackM + slack) continue
+      out.push({
+        data: p,
+        placement: 'km',
+        cls: { status: 'ahead', along, cross: rp ? rp.cross : 0, dist },
+      })
+      continue
+    }
+
+    if (!rp) continue
     if (rp.along <= 0 || rp.along > maxAhead) continue
     if (!sameCarriagewayDirection(p, device.heading)) continue
     const corridor = Math.min(
-      LANE_SPEED_SELECT.maxCross,
-      LANE_SPEED_SELECT.baseCross + rp.along * LANE_SPEED_SELECT.crossSlope
+      ROAD_SCOPED_SELECT.fallbackMaxCross,
+      ROAD_SCOPED_SELECT.fallbackBaseCross + rp.along * ROAD_SCOPED_SELECT.fallbackCrossSlope
     )
     if (Math.abs(rp.cross) > corridor) continue
-
-    const cls = { status: 'ahead', along: rp.along, cross: rp.cross, dist: rp.dist }
-    if (!best || cls.along < best.cls.along) best = { data: p, cls }
+    out.push({
+      data: p,
+      placement: 'geom',
+      cls: { status: 'ahead', along: rp.along, cross: rp.cross, dist },
+    })
   }
-  return best
+
+  out.sort((a, b) => a.cls.along - b.cls.along)
+  return out
+}
+
+// The "next sensor" tile takes the nearest candidate as-is (before the sidebar's
+// deduplication), so it keeps that site's own per-lane readings.
+function pickNextLaneSpeedSensor (candidates, maxDistanceM) {
+  const limit = maxDistanceM ?? Infinity
+  return (candidates || []).find(c => c.cls.along <= limit) || null
 }
 
 // Add the OSM metadata belonging to an upcoming point. Point and lane features
 // share the confidently matched source/direction pair, while maxspeed/name/ref
-// live on the lane response returned by include_lanes=true.
+// live on the lane response returned by include_lanes=true. Road-scoped points
+// already carry these directly (see _attach_osm_matches), so a lane match only
+// fills gaps — it must not overwrite a known value with an absent one.
 function enrichLaneSpeedSelection (selection, laneFc) {
   if (!selection) return null
   const point = selection.data || {}
@@ -480,68 +613,36 @@ function enrichLaneSpeedSelection (selection, laneFc) {
     ...selection,
     data: {
       ...point,
-      osm_name: p.name,
-      osm_ref: p.ref,
-      maxspeed_kmh: p.maxspeed_kmh,
+      osm_name: p.name ?? point.osm_name,
+      osm_ref: p.ref ?? point.osm_ref,
+      maxspeed_kmh: p.maxspeed_kmh ?? point.maxspeed_kmh,
     }
   }
 }
 
-// Pick the next few upcoming speed sensors ahead in the travel direction
-// (sidebar list, distinct from selectUpcomingLaneSpeeds' single nearest pick).
-// Same corridor/direction gating as selectUpcomingLaneSpeeds, plus:
-//  - drop motorway_link sites (on/off-ramps), which measure ramp traffic, not
-//    the through road the driver is on. A site with no confident OSM match
-//    (osm_highway missing) is kept — treating "unknown" as "ramp" would drop
-//    legitimate mainline sensors that failed to match.
+// The left speed bar over the same candidates, with two sidebar-specific rules:
 //  - represent each site by its fastest lane reading, since the sidebar shows
 //    one number per sensor rather than a per-lane breakdown.
 //  - NDW often reports the same physical gantry as several site_ids (separate
 //    loop-detector systems per lane group, e.g. "...vwh0656ra" /
 //    "...hrl0656ra"), which share the same road+km — merge those into one
 //    entry (fastest reading wins) instead of showing near-duplicate rows.
-// `opts.maxCrossM` overrides the corridor cap (default LANE_SPEED_SELECT.maxCross,
-// tuned for close-range disambiguation between nearby roads/ramps from a bbox
-// candidate pool). Callers feeding an already road+carriageway-scoped pool (see
-// fetchRoadScopedSpeedIfDue) can pass a much larger cap — the server already
-// guarantees the correct road, so the only reason left to bound `cross` is
-// discarding stray far-off geometry, not disambiguating direction, and a tight
-// cap would otherwise drop legitimate sensors on gentle curves at long range.
 // Returns entries sorted nearest-first, capped at maxCount.
-function selectUpcomingLaneSpeedsList (pointFc, device, opts) {
-  const maxAhead = opts?.maxDistanceM ?? 2000
+function buildSpeedSidebarList (candidates, opts) {
+  const maxAhead = opts?.maxDistanceM ?? Infinity
   const maxCount = opts?.maxCount ?? 5
-  const maxCross = opts?.maxCrossM ?? LANE_SPEED_SELECT.maxCross
-  if (!device || !Array.isArray(device.coords) || !Number.isFinite(device.heading)) return []
 
-  const out = []
-  for (const feature of (pointFc?.features || [])) {
-    if (!feature.geometry || !feature.properties) continue
-    const p = feature.properties
-    if (p.osm_highway === 'motorway_link') continue
+  const bySite = new Map()
+  for (const candidate of (candidates || [])) {
+    const p = candidate.data
+    if (candidate.cls.along > maxAhead) continue
     const speeds = (p.lanes || [])
       .map(l => l && l.speed_kmh)
       .filter(v => v !== null && v !== undefined)
     if (!speeds.length) continue
 
-    const rp = relativePosition(device, feature.geometry.coordinates)
-    if (rp.along <= 0 || rp.along > maxAhead) continue
-    if (!sameCarriagewayDirection(p, device.heading)) continue
-    const corridor = Math.min(
-      maxCross,
-      LANE_SPEED_SELECT.baseCross + rp.along * LANE_SPEED_SELECT.crossSlope
-    )
-    if (Math.abs(rp.cross) > corridor) continue
-
-    out.push({
-      data: p,
-      fastestKmh: Math.max(...speeds),
-      cls: { status: 'ahead', along: rp.along, cross: rp.cross, dist: rp.dist },
-    })
-  }
-  const bySite = new Map()
-  for (const item of out) {
-    const key = item.data.km != null ? `${item.data.road || ''}|${item.data.km}` : item.data.site_id
+    const item = { ...candidate, fastestKmh: Math.max(...speeds) }
+    const key = p.km != null ? `${p.road || ''}|${p.km}` : p.site_id
     const existing = bySite.get(key)
     if (!existing || item.fastestKmh > existing.fastestKmh) bySite.set(key, item)
   }
