@@ -3,14 +3,23 @@ name: Build and push Docker image
 on:
   push:
     branches:
-      - main
+      - '**'
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  # Fires when a branch is deleted, so its image can be removed from GHCR.
+  delete:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Keep this many sha-<commit> versions; older ones are pruned after each build.
+  KEEP_SHA_VERSIONS: 10
 
 jobs:
   build-and-push:
+    # Forks build into their own namespace; only the upstream repo publishes here.
+    if: github.event_name == 'push' && github.event.repository.fork == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,9 +41,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # main -> latest; every other branch -> its own name ('/' becomes '-').
           tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch,enable=${{ github.ref_name != github.event.repository.default_branch }}
             type=sha,prefix=sha-
-            type=raw,value=latest
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -48,3 +59,30 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # No provenance attestation: it lands as an extra untagged manifest that
+          # the cleanup step below would then delete out from under the image.
+          provenance: false
+
+      - name: Prune old package versions
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/ghcr-prune.sh
+
+  delete-branch-image:
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Delete image for deleted branch
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.ref }}
+        run: .github/scripts/ghcr-delete-branch.sh
