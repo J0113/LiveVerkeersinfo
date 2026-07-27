@@ -587,7 +587,8 @@ function enrichLaneSpeedSelection (selection, laneFc) {
 //    loop-detector systems per lane group, e.g. "...vwh0656ra" /
 //    "...hrl0656ra"), which share the same road+km — merge those into one
 //    entry (fastest reading wins) instead of showing near-duplicate rows.
-// Returns entries sorted nearest-first, capped at maxCount.
+// Returns entries sorted nearest-first, thinned to maxCount by
+// thinSpeedSidebarList.
 function buildSpeedSidebarList (candidates, opts) {
   const maxAhead = opts?.maxDistanceM ?? Infinity
   const maxCount = opts?.maxCount ?? 5
@@ -609,7 +610,56 @@ function buildSpeedSidebarList (candidates, opts) {
 
   const deduped = [...bySite.values()]
   deduped.sort((a, b) => a.cls.along - b.cls.along)
-  return deduped.slice(0, maxCount)
+  return thinSpeedSidebarList(deduped, maxCount)
+}
+
+// Reduce a nearest-first sidebar list to maxCount entries by dropping from the
+// middle, never from the ends: slicing off the tail would silently shorten the
+// road ahead, and on a sensor-dense motorway (A9: a gantry roughly every 500m)
+// the bar would only ever describe the first couple of kilometres.
+//
+// Always kept, in this priority order:
+//  1. the nearest sensor — what we are about to reach,
+//  2. the furthest one — the end of the horizon the strip is drawn to,
+//  3. the slowest one — the queue ahead is the whole reason to look at the bar.
+// Remaining slots go to whichever sensor sits in the largest distance gap
+// between two already-kept ones, so the survivors stay spread over the road
+// rather than clustering where the sensors happen to be dense.
+function thinSpeedSidebarList (list, maxCount) {
+  if (!(maxCount > 0)) return []
+  if (list.length <= maxCount) return list
+
+  const slowest = list.reduce(
+    (best, item, i) => (item.fastestKmh < list[best].fastestKmh ? i : best),
+    0
+  )
+  const keep = new Set()
+  for (const index of [0, list.length - 1, slowest]) {
+    if (keep.size < maxCount) keep.add(index)
+  }
+
+  while (keep.size < maxCount) {
+    const kept = [...keep].sort((a, b) => a - b)
+    let best = null
+    for (let k = 0; k < kept.length - 1; k++) {
+      const [lo, hi] = [kept[k], kept[k + 1]]
+      if (hi - lo < 2) continue
+      const gap = list[hi].cls.along - list[lo].cls.along
+      if (best && gap <= best.gap) continue
+      // The entry nearest the middle of the gap, by distance rather than by
+      // index, so a cluster on one side does not pull the pick towards it.
+      const middle = (list[lo].cls.along + list[hi].cls.along) / 2
+      let pick = lo + 1
+      for (let i = lo + 1; i < hi; i++) {
+        if (Math.abs(list[i].cls.along - middle) < Math.abs(list[pick].cls.along - middle)) pick = i
+      }
+      best = { gap, pick }
+    }
+    if (!best) break
+    keep.add(best.pick)
+  }
+
+  return [...keep].sort((a, b) => a - b).map(index => list[index])
 }
 
 // enrichLaneSpeedSelection over a list of selections.

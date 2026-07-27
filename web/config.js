@@ -403,7 +403,9 @@ const LEGACY_DEFAULT_HUD_ADDITIONS = new Set(['hud_speed_sidebar'])
 // without a corridor gate to lose sensors round a bend. There is deliberately
 // no geometric fallback pool — without a resolved road context both displays
 // show nothing rather than risk another road's sensors.
-const SPEED_SIDEBAR_MAX_COUNT = 5
+// Over the cap the list is thinned from the middle (thinSpeedSidebarList in
+// lib.js), keeping the nearest, the furthest and the slowest sensor.
+const SPEED_SIDEBAR_MAX_COUNT = 8
 const SPEED_SIDEBAR_MAX_DISTANCE_M = 10000
 // Horizon for the single "next sensor" tile, which is about what is imminent
 // rather than what is on the road ahead in general.

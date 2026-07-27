@@ -281,3 +281,39 @@ test('the sidebar caps its list', () => {
   }))
   assert.equal(buildSpeedSidebarList(select(features), { maxCount: 5 }).length, 5)
 })
+
+// A9-like density: a gantry every 500m. Over the cap the list must still span
+// the whole road ahead, so the ends and the slow spot survive and the middle
+// thins out.
+function densePool (speedsBySite = {}) {
+  return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => sensor({
+    siteId: `s${i}`,
+    km: 12 + i * 0.5,
+    coords: offsetCoords(HERE, { north: i * 500 }),
+    speeds: [speedsBySite[`s${i}`] ?? 100],
+  }))
+}
+
+test('thinning keeps the nearest, the furthest and the slowest sensor', () => {
+  const list = buildSpeedSidebarList(select(densePool({ s4: 32 })), { maxCount: 8 })
+  const kept = ids(list).split(',')
+  assert.equal(kept.length, 8)
+  assert.equal(kept[0], 's1')
+  assert.equal(kept.at(-1), 's10')
+  assert.ok(kept.includes('s4'))
+  // Nearest-first order is preserved through the thinning.
+  assert.deepEqual([...list].map(item => item.cls.along), [...list].map(item => item.cls.along).sort((a, b) => a - b))
+})
+
+test('thinning drops from the middle, not off the far end', () => {
+  const list = buildSpeedSidebarList(select(densePool()), { maxCount: 4 })
+  assert.equal(ids(list), 's1,s5,s7,s10')
+})
+
+test('thinning gives up slots to the pinned three before spreading', () => {
+  const list = buildSpeedSidebarList(select(densePool({ s6: 28 })), { maxCount: 3 })
+  assert.equal(ids(list), 's1,s6,s10')
+  // Below three pinned entries the priority order decides: nearest, furthest.
+  assert.equal(ids(buildSpeedSidebarList(select(densePool({ s6: 28 })), { maxCount: 2 })), 's1,s10')
+  assert.equal(buildSpeedSidebarList(select(densePool()), { maxCount: 0 }).length, 0)
+})
