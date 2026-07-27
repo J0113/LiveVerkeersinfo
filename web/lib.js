@@ -411,23 +411,6 @@ function selectUpcomingRoadSigns (matrixFc, dripFc, device, maxDistanceM) {
   return { matrix, drip }
 }
 
-// Direction tolerance for the geometric fallback placement (sensors with no
-// usable hectometre). Hectometre-placed sensors are not bearing-gated at all:
-// on a bend the road's bearing legitimately differs from ours by far more than
-// this, and road+carriageway already pin the direction.
-const LANE_SPEED_SELECT = {
-  axisTol: 55,        // deg; road-axis tolerance against our heading
-}
-
-// True when the sensor measures our travel direction. VILD enrichment gives a
-// signed travel bearing, so unlike the old road-axis fallback this rejects the
-// opposite carriageway directly.
-function sameCarriagewayDirection (p, heading) {
-  const bearing = Number(p.bearing)
-  if (!Number.isFinite(bearing)) return true // no direction info — don't over-filter
-  return Math.abs(angleDiff(bearing, heading)) <= LANE_SPEED_SELECT.axisTol
-}
-
 // ─── Drive HUD: current-road context ────────────────────────────────────────
 //
 // Everything the HUD shows about the road ahead is scoped by one context:
@@ -491,9 +474,6 @@ const ROAD_SCOPED_SELECT = {
   chordSlackM: 100,         // absorbs anchor/GPS error at short range
   maxChordRatio: 3,         // a real road rarely trebles the chord over these ranges
   maxChordSlackM: 500,
-  fallbackBaseCross: 45,    // no-km sensors fall back to geometric placement
-  fallbackCrossSlope: 0.12,
-  fallbackMaxCross: 130,
 }
 
 function roadScopedRoadMatches (properties, context) {
@@ -520,11 +500,10 @@ function hasLaneSpeed (properties) {
 // speed bar (deduplicated list) so the two can never disagree about which road
 // they are describing.
 //
-// Placement is by hectometre where possible (`placement: 'km'`) — curve-proof,
-// and needing no corridor gate at all, since road and carriageway are already
-// pinned by the context. Sites without a usable hectometre fall back to
-// straight-line placement (`placement: 'geom'`) under the old tight corridor;
-// they are ordered approximately rather than dropped.
+// Placement is by hectometre (`placement: 'km'`) — curve-proof, and needing no
+// corridor gate at all, since road and carriageway are already pinned by the
+// context. The km-bounded API query cannot return null-km sites, so the selector
+// deliberately fails closed rather than carrying an unreachable geometric path.
 function selectRoadScopedSensors (pointFc, context, device, opts) {
   const maxAhead = opts?.maxDistanceM ?? 2000
   if (!context || !context.carriageway) return []
@@ -532,7 +511,6 @@ function selectRoadScopedSensors (pointFc, context, device, opts) {
 
   const anchorKm = roadContextAnchorKm(context, device.coords)
   const sign = carriagewayKmSign(context.carriageway)
-  const headingKnown = Number.isFinite(device.heading)
   const slack = Math.max(
     ROAD_SCOPED_SELECT.chordSlackM,
     Number.isFinite(context.anchorDistanceM) ? context.anchorDistanceM : 0
@@ -553,33 +531,15 @@ function selectRoadScopedSensors (pointFc, context, device, opts) {
 
     const coords = feature.geometry.coordinates
     const dist = calculateDistance(device.coords, coords)
-    const rp = headingKnown ? relativePosition(device, coords) : null
-
-    if (Number.isFinite(p.km) && Number.isFinite(anchorKm) && sign !== null) {
-      const along = (p.km - anchorKm) * sign * 1000
-      if (along <= 0 || along > maxAhead) continue
-      if (along < dist * ROAD_SCOPED_SELECT.minChordRatio - slack) continue
-      if (along > dist * ROAD_SCOPED_SELECT.maxChordRatio + ROAD_SCOPED_SELECT.maxChordSlackM + slack) continue
-      out.push({
-        data: p,
-        placement: 'km',
-        cls: { status: 'ahead', along, cross: rp ? rp.cross : 0, dist },
-      })
-      continue
-    }
-
-    if (!rp) continue
-    if (rp.along <= 0 || rp.along > maxAhead) continue
-    if (!sameCarriagewayDirection(p, device.heading)) continue
-    const corridor = Math.min(
-      ROAD_SCOPED_SELECT.fallbackMaxCross,
-      ROAD_SCOPED_SELECT.fallbackBaseCross + rp.along * ROAD_SCOPED_SELECT.fallbackCrossSlope
-    )
-    if (Math.abs(rp.cross) > corridor) continue
+    if (!Number.isFinite(p.km) || !Number.isFinite(anchorKm) || sign === null) continue
+    const along = (p.km - anchorKm) * sign * 1000
+    if (along <= 0 || along > maxAhead) continue
+    if (along < dist * ROAD_SCOPED_SELECT.minChordRatio - slack) continue
+    if (along > dist * ROAD_SCOPED_SELECT.maxChordRatio + ROAD_SCOPED_SELECT.maxChordSlackM + slack) continue
     out.push({
       data: p,
-      placement: 'geom',
-      cls: { status: 'ahead', along: rp.along, cross: rp.cross, dist },
+      placement: 'km',
+      cls: { status: 'ahead', along, cross: 0, dist },
     })
   }
 

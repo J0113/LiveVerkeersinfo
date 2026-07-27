@@ -110,7 +110,7 @@ bar — are scoped by one **road context**, resolved in two halves:
 | our hectometre (`anchor_km`) | same endpoint: the nearest site's `km`, walked back along the direction of travel by its along-track offset, so it describes the **vehicle's** position |
 
 `anchor_distance_m` reports how far away the anchor site was, so the client can
-reject a context too weak to place sensors (>2 km, i.e. a sparsely instrumented
+reject a context too weak to place sensors (>500 m, i.e. a sparsely instrumented
 stretch). The road label under the speed dial shows the carriageway once it is
 resolved: `A9 • Re` (`R`) / `A9 • Li` (`L`).
 
@@ -133,8 +133,8 @@ Guards, because a hectometre is only trustworthy if it is *ours*:
   catches hectometrering resets at province boundaries and stray `km` values on
   co-located sites. The tolerance scales with `anchor_distance_m`, since a
   distant anchor is legitimately less precise;
-- sites with no usable `km` fall back to straight-line placement under a tight
-  corridor, ordered approximately rather than dropped;
+- sites with no usable `km` are omitted: the kilometre-bounded request cannot
+  retrieve them safely without reintroducing a separate geometric candidate pool;
 - `motorway_link` sites are excluded from both displays: they carry the road's
   reference and hectometrering but measure ramp traffic, not our carriageway.
 

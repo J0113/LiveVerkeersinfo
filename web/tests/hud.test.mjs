@@ -77,12 +77,24 @@ test('a resolved context drives a road+carriageway+hectometre scoped fetch', asy
 test('a low-confidence anchor is not usable for selection', () => {
   const web = bootHud()
   web.run(`roadContext = {
-    road: 'A9', carriageway: 'R', anchorKm: 12, anchorDistanceM: 5000,
+    road: 'A9', carriageway: 'R', anchorKm: 12,
+    anchorDistanceM: ROAD_CONTEXT_MAX_ANCHOR_DISTANCE_M + 1,
     coords: userCoords, at: Date.now(),
   }`)
   assert.equal(web.run(`buildRoadContext('A9').usableForSelection`), false)
   // The carriageway is still known, so the road label can still show it.
   assert.equal(web.run(`buildRoadContext('A9').carriageway`), 'R')
+})
+
+test('an anchor at the 500m confidence boundary remains usable', () => {
+  const web = bootHud()
+  web.run(`roadContext = {
+    road: 'A9', carriageway: 'R', anchorKm: 12,
+    anchorDistanceM: ROAD_CONTEXT_MAX_ANCHOR_DISTANCE_M,
+    coords: userCoords, at: Date.now(),
+  }`)
+  assert.equal(web.run(`ROAD_CONTEXT_MAX_ANCHOR_DISTANCE_M`), 500)
+  assert.equal(web.run(`buildRoadContext('A9').usableForSelection`), true)
 })
 
 test('a context for another road is not used', () => {
@@ -127,6 +139,23 @@ test('reversing direction on the same road drops the cached sensors', async () =
   // Hectometres now count downward: the window runs below the anchor.
   assert.match(speedUrl, /km_min=2/)
   assert.match(speedUrl, /km_max=12\.5/)
+})
+
+test('an ordinary bend refreshes without dropping the current context', async () => {
+  const fetchImpl = deferredFetch()
+  const web = bootHud({ fetchImpl })
+
+  web.run(`fetchRoadContextIfDue('A9', userCoords, 0)`)
+  await fetchImpl.resolveNext('road-context', CONTEXT_BODY)
+  web.run(`fetchRoadScopedSpeedIfDue(buildRoadContext('A9'), userCoords)`)
+  await fetchImpl.resolveNext('/api/traffic/speed?', speedBody([AHEAD]))
+
+  web.run(`userHeading = 25; fetchRoadContextIfDue('A9', userCoords, 25)`)
+  assert.equal(web.run(`roadContext.carriageway`), 'R')
+  assert.equal(web.run(`roadScopedSpeedFetch.loadedKey`), 'A9|R')
+
+  await fetchImpl.resolveNext('road-context', CONTEXT_BODY)
+  assert.equal(web.run(`roadContext.carriageway`), 'R')
 })
 
 test('a road-context response that arrives after a direction change is ignored', async () => {

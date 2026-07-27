@@ -67,6 +67,8 @@ def _normalize_carriageway(value: str | None) -> str | None:
 # a pure carriageway pick needs: the nearest few sites may lack `km`, and the
 # anchor hectometre has to come from a site on the *chosen* carriageway.
 ROAD_CONTEXT_CANDIDATES = 25
+ROAD_CONTEXT_HEADING_TOLERANCE_DEG = 55.0
+ROAD_CONTEXT_MAX_DISTANCE_M = 500.0
 
 # Hectometrering runs with the direction of travel on carriageway R and against
 # it on L (see docs/10-carriageway-direction-quality.md), so this is the sign of
@@ -98,7 +100,7 @@ def _local_offsets_m(
 ) -> tuple[float, float]:
     """East/north offset (m) from (lon, lat) to the other point.
 
-    Equirectangular: these are map-matching distances of at most a few km, well
+    Equirectangular: these are map-matching distances of at most a few hundred metres, well
     inside the approximation's error budget.
     """
     east = (other_lon - lon) * 111320.0 * math.cos(math.radians(lat))
@@ -133,9 +135,10 @@ def _resolve_road_context(
     carriageway carries a hectometre.
 
     Opposite carriageways are physically separated (a median, or simply two
-    distinct roadways), so nearest-by-distance is already a strong signal. When
-    a heading is given and a candidate has a known VILD travel bearing, prefer
-    the first candidate whose bearing roughly agrees with it.
+    distinct roadways), so nearest-by-distance is useful when no heading exists.
+    When a heading is given, however, only a candidate whose VILD travel bearing
+    confidently agrees may resolve the carriageway. Failing closed avoids
+    selecting the opposite direction from a remote sensor around a bend.
 
     The anchor is reported for the **vehicle's** position, not the site's: the
     site's hectometre is walked back along the direction of travel by the
@@ -151,11 +154,24 @@ def _resolve_road_context(
         for row in rows:
             if row.vild_bearing is None:
                 continue
-            if _angular_difference(float(row.vild_bearing), heading) <= 90:
+            _, distance = _along_track_m(lon, lat, heading, float(row.lon), float(row.lat))
+            if distance > ROAD_CONTEXT_MAX_DISTANCE_M:
+                continue
+            if (
+                _angular_difference(float(row.vild_bearing), heading)
+                <= ROAD_CONTEXT_HEADING_TOLERANCE_DEG
+            ):
                 chosen = row
                 break
-    if chosen is None:
+        if chosen is None:
+            return None
+    else:
         chosen = rows[0]
+        _, distance = _along_track_m(
+            lon, lat, None, float(chosen.lon), float(chosen.lat)
+        )
+        if distance > ROAD_CONTEXT_MAX_DISTANCE_M:
+            return None
     carriageway = chosen.effective_carriageway
 
     anchor_km = None

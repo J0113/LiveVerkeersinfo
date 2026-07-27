@@ -179,10 +179,15 @@ async function fetchRoadSignHudSpeedSource (bbox, currentRoadBbox, signal) {
 function fetchRoadContextIfDue (road, coords, heading) {
   const now = Date.now()
   const previous = roadContextFetch
+  const headingDelta = heading !== null && previous.heading !== null
+    ? Math.abs(angleDiff(heading, previous.heading))
+    : null
   const headingChanged = heading !== null && (
     previous.heading === null ||
-    Math.abs(angleDiff(heading, previous.heading)) >= ROAD_CONTEXT_REFETCH_HEADING_DEG
+    headingDelta >= ROAD_CONTEXT_REFETCH_HEADING_DEG
   )
+  const headingReversed = headingDelta !== null &&
+    headingDelta >= ROAD_CONTEXT_INVALIDATE_HEADING_DEG
   const moved = previous.coords ? calculateDistance(previous.coords, coords) : Infinity
   const due = previous.road !== road ||
     headingChanged ||
@@ -190,10 +195,10 @@ function fetchRoadContextIfDue (road, coords, heading) {
     now - previous.at >= ROAD_CONTEXT_REFETCH_MS
   if (!due) return
 
-  // A road or direction change invalidates the resolved carriageway, so drop it
-  // (and the sensors fetched for it) right away rather than rendering the old
-  // one until the new response lands.
-  if (previous.road !== road || headingChanged) invalidateRoadContext()
+  // A road change or clear reversal invalidates the resolved carriageway
+  // immediately. An ordinary bend still triggers a refresh, but retains the
+  // current context until the response confirms whether its key changed.
+  if (previous.road !== road || headingReversed) invalidateRoadContext()
 
   const generation = roadContextFetch.generation + 1
   roadContextFetch = { road, at: now, coords: [...coords], heading, generation }

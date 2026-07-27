@@ -96,10 +96,20 @@ def test_heading_picks_the_agreeing_carriageway_over_the_nearest():
     assert context["carriageway"] == "R"
 
 
-def test_nearest_wins_when_no_bearing_agrees_with_the_heading():
+def test_known_heading_fails_closed_when_no_bearing_agrees():
     rows = [site("L", bearing=180, km=10.0), site("R", bearing=175, km=10.0)]
-    context = _resolve_road_context(rows, LON, LAT, 0)
-    assert context["carriageway"] == "L"
+    assert _resolve_road_context(rows, LON, LAT, 0) is None
+
+
+def test_perpendicular_bearings_do_not_resolve_either_carriageway():
+    rows = [site("L", bearing=180, km=10.0), site("R", bearing=0, km=10.0)]
+    assert _resolve_road_context(rows, LON, LAT, 90) is None
+
+
+def test_direction_candidate_beyond_500m_is_not_used():
+    lon, lat = offset(metres_north=501)
+    rows = [site("R", bearing=0, km=12.0, lon=lon, lat=lat)]
+    assert _resolve_road_context(rows, LON, LAT, 0) is None
 
 
 def test_nearest_wins_without_a_heading():
@@ -144,15 +154,15 @@ def test_anchor_uses_a_site_behind_us_too():
 
 def test_anchor_comes_from_the_chosen_carriageway_only():
     near_lon, near_lat = offset(metres_east=20)
-    far_lon, far_lat = offset(metres_north=800)
+    far_lon, far_lat = offset(metres_north=400)
     rows = [
         site("L", bearing=180, km=99.0, lon=near_lon, lat=near_lat),
         site("R", bearing=0, km=12.0, lon=far_lon, lat=far_lat),
     ]
     context = _resolve_road_context(rows, LON, LAT, 0)
     assert context["carriageway"] == "R"
-    assert context["anchor_km"] == pytest.approx(11.2, abs=0.02)
-    assert context["anchor_distance_m"] == pytest.approx(800, abs=2)
+    assert context["anchor_km"] == pytest.approx(11.6, abs=0.02)
+    assert context["anchor_distance_m"] == pytest.approx(400, abs=2)
 
 
 def test_carriageway_without_any_hectometre_yields_a_null_anchor():

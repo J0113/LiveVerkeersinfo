@@ -471,9 +471,12 @@ const roadSignHudCache = {
 const ROAD_CONTEXT_REFETCH_MS = ROAD_SIGN_HUD_REFETCH_MS
 const ROAD_CONTEXT_REFETCH_DISTANCE_M = 150
 const ROAD_CONTEXT_REFETCH_HEADING_DEG = 20
+// Refetch on an ordinary bend, but only discard the current context immediately
+// when the heading change is large enough to be a genuine reversal.
+const ROAD_CONTEXT_INVALIDATE_HEADING_DEG = 120
 // Beyond this the anchor site is too far away for its hectometre to describe
 // our position usefully (sparsely instrumented rural stretches).
-const ROAD_CONTEXT_MAX_ANCHOR_DISTANCE_M = 2000
+const ROAD_CONTEXT_MAX_ANCHOR_DISTANCE_M = 500
 // A context older than this is stale regardless of distance moved (e.g. the
 // vehicle stopped and requests failed).
 const ROAD_CONTEXT_MAX_AGE_MS = 120000

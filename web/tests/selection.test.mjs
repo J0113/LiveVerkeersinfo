@@ -155,30 +155,15 @@ test('a curve stays within the guard band', () => {
   assert.equal(select([sensor({ km: 14.0, coords })]).length, 1)
 })
 
-// ─── sensors without a hectometre ────────────────────────────────────────────
-
-test('a sensor with no km falls back to straight-line placement', () => {
+test('a sensor without a hectometre is excluded', () => {
   const coords = offsetCoords(HERE, { north: 800 })
-  const [picked] = select([sensor({ km: null, coords })])
-  assert.equal(picked.placement, 'geom')
-  assert.equal(Math.round(picked.cls.along / 10) * 10, 800)
-})
-
-test('a no-km sensor facing the other way is rejected', () => {
-  const coords = offsetCoords(HERE, { north: 800 })
-  assert.equal(select([sensor({ km: null, coords, bearing: 180 })]).length, 0)
-})
-
-test('a no-km sensor outside the corridor is rejected', () => {
-  const coords = offsetCoords(HERE, { north: 800, east: 400 })
   assert.equal(select([sensor({ km: null, coords })]).length, 0)
 })
 
-test('no anchor hectometre leaves every sensor on geometric placement', () => {
+test('no anchor hectometre leaves every sensor unselected', () => {
   const context = { ...CONTEXT, anchorKm: null }
   const coords = offsetCoords(HERE, { north: 800 })
-  const [picked] = select([sensor({ km: 13.0, coords })], { context })
-  assert.equal(picked.placement, 'geom')
+  assert.equal(select([sensor({ km: 13.0, coords })], { context }).length, 0)
 })
 
 // ─── anchor advance between fetches ──────────────────────────────────────────
