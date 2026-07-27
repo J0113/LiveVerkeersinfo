@@ -22,12 +22,10 @@ OSM-sourced independent of the basemap underneath it.
 - **Provider**: Geofabrik, https://download.geofabrik.de/europe/netherlands.html
 - **Ingested file**: `netherlands-latest.osm.pbf` (country extract, ~1.3 GB gz)
 - **Format**: OSM PBF (protobuf), parsed with `osmium` (pyosmium)'s
-  `FileProcessor` streaming iterator — not `SimpleHandler`, whose
-  `way()`/`node()` callbacks can't `yield` to an outer generator.
-  `with_locations("sparse_mem_array")` resolves way geometry from node
-  coordinates in one pass (verified ~910MB peak RSS for this extract's
-  ~18.6M nodes; a full-Netherlands extract will need its own RSS check
-  before deploying — see "Scaling to the full Netherlands" below).
+  `FileProcessor` iterator in two passes. The first retains only selected
+  driving ways and their node ids; the second resolves coordinates only for
+  those ids. This avoids an in-memory location index for every node in the
+  country extract — see "Scaling to the full Netherlands" below.
 - **Update cadence**: Geofabrik regenerates ~daily; ingested weekly
   (`cadence_s: 604800` in `feeds.py`) since the full-NL extract is large.
 - **CRS**: WGS84 (EPSG:4326) — matches project convention
@@ -444,16 +442,20 @@ their lane count.
 ## Scaling to the full Netherlands
 
 Switched from the Noord-Holland extract to `netherlands-latest.osm.pbf`
-(`config.py`'s `osm_netherlands_url`, feed `osm_netherlands`). **Peak RSS on
-this extract is not yet re-benchmarked** — nationwide node count could push
-`with_locations("sparse_mem_array")` into multi-GB territory (Noord-Holland's
-18.6M nodes cost ~910MB; NL has ~10x the population/road density). Watch the
-first real ingest's memory use; if it blows up, fall back to a two-pass parse
-(collect matching ways' referenced node ids first, then resolve only those
-coordinates in a second pass) rather than assuming the single-pass approach
-scales. `/api/osm/roads` is already zoom-tiered (`_highway_types_for_zoom`
-in `api/routers/osm.py`) so the API side doesn't need rework — only the
-parser's memory profile needs re-checking.
+(`config.py`'s `osm_netherlands_url`, feed `osm_netherlands`). The original
+single-pass `with_locations("sparse_mem_array")` parser exceeded the practical
+memory budget: RSS grew from ~0.9 GiB to ~1.6 GiB in 30 seconds while it was
+still building the nationwide node index, against a 3.8-GiB Docker limit.
+
+`parse_roads` therefore uses two PBF passes. Pass 1 collects only matching
+ways and referenced node ids; pass 2 stores coordinates only for those ids.
+The first production country import completed on 2026-07-27 in about 12.5
+minutes, with observed RSS around 1.8 GiB during database upserts. It imported
+167,169 ways and generated 497,582 lane features. The resulting extent
+(3.347–7.241 E, 50.748–53.447 N) covers the Netherlands.
+
+`/api/osm/roads` remains zoom-tiered (`_highway_types_for_zoom` in
+`api/routers/osm.py`), so the API side needs no country-scale special case.
 
 ## Serving
 

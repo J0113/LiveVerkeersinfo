@@ -1,12 +1,11 @@
 """Parser for Geofabrik OSM PBF extracts: driving-road ways only.
 
-Streams a province/country .osm.pbf with pyosmium's FileProcessor (not
-SimpleHandler -- its way()/node() callbacks can't yield to an outer
-iterator). with_locations() resolves way geometry from node coordinates in
-one pass, caching node locations in a sparse in-memory index sized for the
-extract's node count (verified ~910MB peak RSS for the ~18.6M-node
-Noord-Holland extract; re-benchmark before pointing this at a full-country
-extract).
+The country extract is read in two passes.  The first pass retains only the
+selected driving ways and their referenced node ids; the second resolves
+coordinates only for those ids.  This is deliberately slower than
+``with_locations("sparse_mem_array")``, but avoids allocating an index for
+every node in the Netherlands extract and keeps the import within Docker's
+memory limit.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import osmium
-import osmium.geom
+from shapely.geometry import LineString
 
 ROAD_HIGHWAY_TYPES = {
     "motorway", "trunk", "primary", "secondary",
@@ -43,16 +42,45 @@ def _way_row(osm_id: int, tags: dict[str, str], wkt: str | None) -> dict[str, An
 
 
 def parse_roads(path: Path) -> Iterator[dict[str, Any]]:
-    """Stream driving-road way dicts from a local .osm.pbf extract."""
-    wkt_factory = osmium.geom.WKTFactory()
-    processor = osmium.FileProcessor(str(path)).with_locations("sparse_mem_array")
-    for obj in processor:
+    """Yield driving-road way dicts without indexing every node in the PBF."""
+    pending_ways: list[tuple[int, dict[str, str], tuple[int, ...]]] = []
+    unresolved_node_ids: set[int] = set()
+
+    # Pass 1: node objects are ignored.  Retain just the relatively small
+    # subset of ways that the application serves and the ids they reference.
+    for obj in osmium.FileProcessor(str(path)):
         if not obj.is_way():
             continue
+        tags = dict(obj.tags)
+        if tags.get("highway") not in ROAD_HIGHWAY_TYPES:
+            continue
+        node_refs = tuple(node.ref for node in obj.nodes)
+        if len(node_refs) < 2:
+            continue
+        pending_ways.append((obj.id, tags, node_refs))
+        unresolved_node_ids.update(node_refs)
+
+    # Pass 2: resolve only nodes used by retained ways.  Discarding ids as
+    # they are found prevents keeping both a full id set and coordinate map
+    # alive for the entire node section.
+    locations: dict[int, tuple[float, float]] = {}
+    for obj in osmium.FileProcessor(str(path)):
+        if not obj.is_node() or obj.id not in unresolved_node_ids:
+            continue
+        location = obj.location
+        if not location.valid():
+            continue
+        locations[obj.id] = (location.lon, location.lat)
+        unresolved_node_ids.discard(obj.id)
+
+    for osm_id, tags, node_refs in pending_ways:
         try:
-            wkt = wkt_factory.create_linestring(obj)
-        except Exception:
-            wkt = None  # e.g. way with fewer than 2 resolved node locations
-        row = _way_row(obj.id, dict(obj.tags), wkt)
+            coordinates = [locations[node_id] for node_id in node_refs]
+            wkt = LineString(coordinates).wkt
+        except (KeyError, ValueError):
+            # Truncated/corrupt extracts or ways with unresolved coordinates
+            # are skipped, matching the old WKTFactory behaviour.
+            wkt = None
+        row = _way_row(osm_id, tags, wkt)
         if row:
             yield row
