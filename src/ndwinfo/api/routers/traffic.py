@@ -25,6 +25,7 @@ from ndwinfo.models import (
     TravelTime,
     VildTmc,
 )
+from ndwinfo.osm_tags import osm_carriageway_ref
 from ndwinfo.osm_tags import osm_maxspeed_kmh as _osm_maxspeed_kmh
 
 router = APIRouter(prefix="/traffic", tags=["traffic"])
@@ -809,6 +810,7 @@ def _attach_osm_matches(db, features: list[dict]) -> None:
         # enrichLaneSpeedSelection in lib.js, which prefers these when present.
         props["osm_ref"] = selected.ref
         props["osm_name"] = selected.name
+        props["osm_carriageway_ref"] = osm_carriageway_ref(selected.osm_tags)
         props["maxspeed_kmh"] = _osm_maxspeed_kmh(selected.osm_tags, selected.direction)
 
 
@@ -957,6 +959,7 @@ def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDe
                 "highway": row.highway,
                 "name": row.name,
                 "ref": row.ref,
+                "carriageway_ref": osm_carriageway_ref(row.osm_tags),
                 "width_m": float(row.width_m) if row.width_m is not None else None,
                 "maxspeed_kmh": _osm_maxspeed_kmh(row.osm_tags, row.direction),
                 "road": point_props.get("road"),

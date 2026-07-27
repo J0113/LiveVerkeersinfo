@@ -424,14 +424,14 @@ function selectUpcomingRoadSigns (matrixFc, dripFc, device, maxDistanceM) {
 // a bend (its along-track offset collapses and its cross-track offset explodes),
 // while a hectometre difference does not care about geometry at all.
 const CARRIAGEWAY_KM_SIGN = { R: 1, L: -1 }
-const CARRIAGEWAY_LABEL = { R: 'Re', L: 'Li' }
 
-// The pipeline only ever produces R/L: the DATEX parser folds Re/Li (and
-// hrr/hrl, HRR/HRL) into R/L at ingest, and the API rejects anything else.
-// Widening this to further codes (Op/Af, parallel carriageways) is a data-model
-// change in the parser + column + validator, not a display change here.
-function carriagewayLabel (carriageway) {
-  return CARRIAGEWAY_LABEL[carriageway] || null
+// The official reference is carried on the map-matched OSM way. Preserve it
+// verbatim: besides Re/Li, Dutch road data also uses letters for parallel,
+// connecting and distributor carriageways.
+function osmCarriagewayRef (properties) {
+  const value = properties?.carriageway_ref ?? properties?.['carriageway:ref']
+  if (value === null || value === undefined) return null
+  return String(value).trim() || null
 }
 
 function carriagewayKmSign (carriageway) {

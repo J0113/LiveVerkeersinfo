@@ -5,6 +5,18 @@ import re
 OSM_MAXSPEED_RE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*(mph|km/?h|kph)?\s*$", re.I)
 
 
+def osm_carriageway_ref(tags: dict | None) -> str | None:
+    """Return OSM's official carriageway reference without inventing a mapping."""
+    tags = tags or {}
+    value = tags.get("carriageway_ref")
+    if value is None:
+        value = tags.get("carriageway:ref")
+    if value is None:
+        return None
+    label = str(value).strip()
+    return label or None
+
+
 def osm_maxspeed_kmh(tags: dict | None, direction: str | None) -> float | None:
     """Return the applicable numeric OSM maxspeed in km/h.
 

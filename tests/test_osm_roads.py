@@ -209,7 +209,11 @@ def test_osm_lane_api_includes_directional_parent_maxspeed():
     )
     row = SimpleNamespace(
         OsmRoadLane=lane,
-        osm_tags={"maxspeed": "80", "maxspeed:backward": "60"},
+        osm_tags={
+            "maxspeed": "80",
+            "maxspeed:backward": "60",
+            "carriageway_ref": "Li",
+        },
         geom_json='{"type":"LineString","coordinates":[[4.70,52.51],[4.71,52.52]]}',
     )
 
@@ -222,4 +226,5 @@ def test_osm_lane_api_includes_directional_parent_maxspeed():
 
     assert feature["properties"]["ref"] == "N203"
     assert feature["properties"]["name"] == "Provincialeweg"
+    assert feature["properties"]["carriageway_ref"] == "Li"
     assert feature["properties"]["maxspeed_kmh"] == 60

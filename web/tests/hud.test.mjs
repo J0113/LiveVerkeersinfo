@@ -298,18 +298,18 @@ test('a sensor past the tile horizon still fills the sidebar only', () => {
 
 // ─── road label ──────────────────────────────────────────────────────────────
 
-test('the road label carries the carriageway when it is resolved', () => {
+test('the road label uses the carriageway reference from the matched OSM way', () => {
   const web = bootHud()
-  web.run(`updateGpsSpeedBadge(100, { data: { ref: 'A9' } }, { carriageway: 'R' })`)
+  web.run(`updateGpsSpeedBadge(100, { data: { ref: 'A9', carriageway_ref: 'Re' } })`)
   assert.equal(web.textOf('current-road-label'), 'A9 • Re')
 
-  web.run(`updateGpsSpeedBadge(100, { data: { ref: 'A9' } }, { carriageway: 'L' })`)
-  assert.equal(web.textOf('current-road-label'), 'A9 • Li')
+  web.run(`updateGpsSpeedBadge(100, { data: { ref: 'A13', carriageway_ref: 'd' } })`)
+  assert.equal(web.textOf('current-road-label'), 'A13 • d')
 })
 
-test('the road label falls back to the bare road without a carriageway', () => {
+test('the road label ignores NDW context and falls back without an OSM reference', () => {
   const web = bootHud()
-  web.run(`updateGpsSpeedBadge(100, { data: { ref: 'A9' } }, null)`)
+  web.run(`updateGpsSpeedBadge(100, { data: { ref: 'A9' } }, { carriageway: 'R' })`)
   assert.equal(web.textOf('current-road-label'), 'A9')
   assert.equal(web.isHidden('current-road-label'), false)
 })

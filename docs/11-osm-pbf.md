@@ -208,7 +208,9 @@ lanes just as much as merging ones — not specific to the merge model.
 `GET /api/osm/lanes` — plain bbox + deterministic-order + cap/`truncated`,
 no zoom-based class tiering (unlike `/api/osm/roads` — lanes are already a
 detail-zoom-only layer, gated client-side via the `osm_lanes` layer's
-`minZoom: 15`). `osm_road_lane.source_id` has `ON DELETE CASCADE` to
+`minZoom: 15`). Each lane feature includes the parent OSM way's
+`carriageway_ref`; the drive HUD uses that value verbatim for its current-road
+label. `osm_road_lane.source_id` has `ON DELETE CASCADE` to
 `osm_road.osm_id`, so the existing extract-scoped prune on `osm_road`
 cleans up lanes automatically — no separate lane-level extract tracking.
 

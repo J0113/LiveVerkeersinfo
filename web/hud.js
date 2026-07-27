@@ -476,7 +476,7 @@ function renderRoadSignHudSelection (selected) {
   renderMatrixHudTile(selected.matrix)
   renderDripHudTile(selected.drip)
   renderSpeedSidebar(selected.speedList)
-  updateGpsSpeedBadge(selected.gpsKmh, selected.currentRoad, selected.roadContext)
+  updateGpsSpeedBadge(selected.gpsKmh, selected.currentRoad)
   renderTrajectProgressBar(selected.traject)
   // Only shown with an actual reading to show: without a resolved road context
   // there is nothing trustworthy to put in it, and an empty "Meetpunt zoeken"
@@ -656,10 +656,9 @@ function layoutSpeedSidebarMarkers () {
 }
 
 // Circular GPS-speed badge (km/h) bottom-left, with the road we are on in the
-// centre-bottom label — shown only while tracking. The label carries the
-// carriageway too when it is resolved ("A9 • Re"), since which direction of a
-// road you are on is what the rest of the HUD is scoped by.
-function updateGpsSpeedBadge (gpsKmh, currentRoad, context) {
+// centre-bottom label — shown only while tracking. Its carriageway reference
+// comes directly from the map-matched OSM way ("A9 • Re").
+function updateGpsSpeedBadge (gpsKmh, currentRoad) {
   const badge = document.getElementById('gps-speed-badge')
   const value = document.getElementById('gps-speed-value')
   const limitSign = document.getElementById('gps-maxspeed-sign')
@@ -673,7 +672,7 @@ function updateGpsSpeedBadge (gpsKmh, currentRoad, context) {
 
   const data = currentRoad?.data || {}
   const road = data.ref || data.name || null
-  const direction = carriagewayLabel(context?.carriageway)
+  const direction = osmCarriagewayRef(data)
   const label = road && direction ? `${road} • ${direction}` : road
   roadLabel.classList.toggle('hidden', !tracking || !label)
   if (tracking && label) setTextIfChanged(roadLabel, label)

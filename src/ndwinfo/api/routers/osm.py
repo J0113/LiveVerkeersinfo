@@ -11,7 +11,7 @@ from ndwinfo.api.deps import BBoxDep, DbDep
 from ndwinfo.api.geo import make_fc
 from ndwinfo.config import settings
 from ndwinfo.models import OsmRoad, OsmRoadLane
-from ndwinfo.osm_tags import osm_maxspeed_kmh
+from ndwinfo.osm_tags import osm_carriageway_ref, osm_maxspeed_kmh
 
 router = APIRouter(prefix="/osm", tags=["osm"])
 
@@ -107,6 +107,7 @@ def get_osm_lanes(b: BBoxDep, db: DbDep) -> Response:
             "highway": r.OsmRoadLane.highway,
             "name": r.OsmRoadLane.name,
             "ref": r.OsmRoadLane.ref,
+            "carriageway_ref": osm_carriageway_ref(r.osm_tags),
             "width_m": float(r.OsmRoadLane.width_m) if r.OsmRoadLane.width_m is not None else None,
             "maxspeed_kmh": osm_maxspeed_kmh(r.osm_tags, r.OsmRoadLane.direction),
         }

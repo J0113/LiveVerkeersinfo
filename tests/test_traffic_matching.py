@@ -179,7 +179,7 @@ def test_osm_lane_output_omits_missing_speed_and_includes_maxspeed():
             name="Provincialeweg",
             ref="N203",
             width_m=3.5,
-            osm_tags={"maxspeed": "80"},
+            osm_tags={"maxspeed": "80", "carriageway_ref": "d"},
             geom_json='{"type":"LineString","coordinates":[[4.70,52.51],[4.71,52.52]]}',
         )
 
@@ -211,6 +211,7 @@ def test_osm_lane_output_omits_missing_speed_and_includes_maxspeed():
 
     assert [feature["properties"]["lane"] for feature in result["features"]] == [2]
     assert result["features"][0]["properties"]["name"] == "Provincialeweg"
+    assert result["features"][0]["properties"]["carriageway_ref"] == "d"
     assert result["features"][0]["properties"]["maxspeed_kmh"] == 80
 
 
@@ -228,7 +229,7 @@ def test_osm_attachment_exposes_replacement_api_contract():
         name="Provincialeweg",
         direction="fwd",
         highway="primary",
-        osm_tags={"maxspeed": "80"},
+        osm_tags={"maxspeed": "80", "carriageway_ref": "Li"},
         connected_source_ids=[],
         distance_m=3.6,
         bearing=261.3,
@@ -253,5 +254,6 @@ def test_osm_attachment_exposes_replacement_api_contract():
     assert props["osm_bearing"] == 261.3
     assert props["osm_ref"] == "N203"
     assert props["osm_name"] == "Provincialeweg"
+    assert props["osm_carriageway_ref"] == "Li"
     assert props["maxspeed_kmh"] == 80
     assert not any(key.startswith("weggeg_") for key in props)

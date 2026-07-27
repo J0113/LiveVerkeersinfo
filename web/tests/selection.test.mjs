@@ -9,8 +9,8 @@ import { closeTo, featureCollection, ids, loadWeb, offsetCoords, sensor } from '
 const web = loadWeb({ scripts: ['lib.js', 'config.js'] })
 const {
   buildSpeedSidebarList,
-  carriagewayLabel,
   normalizeRoadRef,
+  osmCarriagewayRef,
   pickNextLaneSpeedSensor,
   roadContextAnchorKm,
   selectRoadScopedSensors,
@@ -35,11 +35,13 @@ test('normalizeRoadRef matches the API normalization', () => {
   assert.equal(normalizeRoadRef('Kruisweg'), null)
 })
 
-test('carriagewayLabel covers exactly the codes the pipeline produces', () => {
-  assert.equal(carriagewayLabel('R'), 'Re')
-  assert.equal(carriagewayLabel('L'), 'Li')
-  assert.equal(carriagewayLabel(null), null)
-  assert.equal(carriagewayLabel('Op'), null)
+test('osmCarriagewayRef preserves every non-empty OSM carriageway reference', () => {
+  assert.equal(osmCarriagewayRef({ carriageway_ref: 'Re' }), 'Re')
+  assert.equal(osmCarriagewayRef({ carriageway_ref: 'Li' }), 'Li')
+  assert.equal(osmCarriagewayRef({ carriageway_ref: 'a' }), 'a')
+  assert.equal(osmCarriagewayRef({ 'carriageway:ref': ' d ' }), 'd')
+  assert.equal(osmCarriagewayRef({ carriageway_ref: '' }), null)
+  assert.equal(osmCarriagewayRef(null), null)
 })
 
 // ─── hectometre placement ────────────────────────────────────────────────────

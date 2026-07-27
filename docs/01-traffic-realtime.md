@@ -111,8 +111,10 @@ bar — are scoped by one **road context**, resolved in two halves:
 
 `anchor_distance_m` reports how far away the anchor site was, so the client can
 reject a context too weak to place sensors (>500 m, i.e. a sparsely instrumented
-stretch). The road label under the speed dial shows the carriageway once it is
-resolved: `A9 • Re` (`R`) / `A9 • Li` (`L`).
+stretch). This NDW/VILD context is used only to select speed sensors. The road
+label under the speed dial reads the official `carriageway_ref` directly from
+the map-matched OSM way, so it can show `A9 • Re`, `A9 • Li`, or other published
+letter references without waiting for an NDW measurement-site match.
 
 #### Selecting what is ahead
 
