@@ -252,9 +252,12 @@ function invalidateRoadContext () {
 }
 
 // The current road context, or null when it isn't (yet) resolved well enough to
-// show anything. `road` + `carriageway` are enough to name the road we are on;
-// `usableForSelection` additionally requires a hectometre anchor close enough to
-// place sensors along the road.
+// show anything: `road` + `carriageway` name the road we are on and scope the
+// sensor pool, which is the minimum both speed displays need.
+// `anchorUsable` says whether there is also a hectometre anchor close enough to
+// place sensors *along* the road. Without one, selection falls back to
+// projecting sensors onto our heading — worse round bends, but the provincial
+// network has no hectometrering to offer in the first place.
 function buildRoadContext (road) {
   if (!road || !roadContext || roadContext.road !== road || !roadContext.carriageway) return null
   if (Date.now() - roadContext.at > ROAD_CONTEXT_MAX_AGE_MS) return null
@@ -264,15 +267,25 @@ function buildRoadContext (road) {
   return {
     road,
     carriageway: roadContext.carriageway,
-    anchorKm: roadContext.anchorKm,
+    anchorKm: anchorUsable ? roadContext.anchorKm : null,
     anchorDistanceM: roadContext.anchorDistanceM,
     coords: roadContext.coords,
-    usableForSelection: anchorUsable,
+    anchorUsable,
   }
 }
 
 function roadScopedSpeedKey (context) {
   return `${context.road}|${context.carriageway}`
+}
+
+// Square of `radiusM` around a position, as the API's bbox string.
+function radiusBbox (coords, radiusM) {
+  const [lon, lat] = coords
+  const dLat = radiusM / 110540
+  const dLon = radiusM / (111320 * Math.cos((lat * Math.PI) / 180))
+  return [lon - dLon, lat - dLat, lon + dLon, lat + dLat]
+    .map(value => value.toFixed(6))
+    .join(',')
 }
 
 // Fetch every speed sensor on our carriageway within a hectometre window ahead.
@@ -283,10 +296,6 @@ function roadScopedSpeedKey (context) {
 function fetchRoadScopedSpeedIfDue (context, coords) {
   const anchorKm = roadContextAnchorKm(context, coords)
   const sign = carriagewayKmSign(context.carriageway)
-  // Without a hectometre and a direction for it there is no window to ask for.
-  // buildRoadContext already gates on this; this keeps the fetch honest on its
-  // own terms rather than sending NaN bounds.
-  if (sign === null || !Number.isFinite(anchorKm)) return
 
   const key = roadScopedSpeedKey(context)
   const now = Date.now()
@@ -309,15 +318,22 @@ function fetchRoadScopedSpeedIfDue (context, coords) {
   const ctrl = new AbortController()
   controllers['road-scoped-speed'] = ctrl
 
-  const aheadKm = (SPEED_SIDEBAR_MAX_DISTANCE_M / 1000) * sign
-  const behindKm = (SPEED_SCOPE_BEHIND_M / 1000) * sign
+  // The bbox bounds the sites that carry no hectometre — most of the provincial
+  // network — which the km window can say nothing about. A site within
+  // SPEED_SIDEBAR_MAX_DISTANCE_M *along the road* is never further than that in
+  // a straight line, so squaring that radius cannot cut the km window short.
   const params = new URLSearchParams({
     road: context.road,
     carriageway: context.carriageway,
-    km_min: String(Math.min(anchorKm - behindKm, anchorKm + aheadKm)),
-    km_max: String(Math.max(anchorKm - behindKm, anchorKm + aheadKm)),
+    bbox: radiusBbox(coords, SPEED_SIDEBAR_MAX_DISTANCE_M),
     limit: '1000',
   })
+  if (sign !== null && Number.isFinite(anchorKm)) {
+    const aheadKm = (SPEED_SIDEBAR_MAX_DISTANCE_M / 1000) * sign
+    const behindKm = (SPEED_SCOPE_BEHIND_M / 1000) * sign
+    params.set('km_min', String(Math.min(anchorKm - behindKm, anchorKm + aheadKm)))
+    params.set('km_max', String(Math.max(anchorKm - behindKm, anchorKm + aheadKm)))
+  }
   fetch(`/api/traffic/speed?${params}`, { signal: ctrl.signal })
     .then(response => {
       if (!response.ok) throw new Error(`speed by road: HTTP ${response.status}`)
@@ -408,7 +424,7 @@ function renderRoadSignHud () {
 
   const context = buildRoadContext(currentRoadRef)
   selected.roadContext = context
-  if (context?.usableForSelection) fetchRoadScopedSpeedIfDue(context, userCoords)
+  if (context) fetchRoadScopedSpeedIfDue(context, userCoords)
 
   // Sensors are only ever selected from the pool fetched for this exact
   // road+carriageway. No context (or no matching pool yet) means no candidates
@@ -419,15 +435,24 @@ function renderRoadSignHud () {
     roadSignHudRenderState.contextKey = context ? roadScopedSpeedKey(context) : null
     roadSignHudHold.speed = null
     roadSignHudHold.speedList = null
+    speedSidebarShownKeys = new Set()
   }
 
-  const candidates = (context?.usableForSelection &&
+  // The map-matched lane tells us which roadway of the road we are on — the
+  // mainline, or a slip road alongside it carrying the same road number and
+  // hectometrering. Sensor selection needs it to stay on our own roadway.
+  const currentRoadway = {
+    carriagewayRef: osmCarriagewayRef(selected.currentRoad?.data || {}),
+    isLink: isLinkHighway(selected.currentRoad?.data?.highway),
+  }
+
+  const candidates = (context &&
     roadScopedSpeedFetch.loadedKey === roadScopedSpeedKey(context))
     ? selectRoadScopedSensors(
         roadSignHudCache.speedPointsRoad,
         context,
         { coords: userCoords, heading: userHeading },
-        { maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M }
+        { maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M, roadway: currentRoadway }
       )
     : []
 
@@ -442,11 +467,15 @@ function renderRoadSignHud () {
     ? enrichLaneSpeedSelectionList(
         buildSpeedSidebarList(candidates, {
           maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M,
-          maxCount: SPEED_SIDEBAR_MAX_COUNT
+          bands: SPEED_SIDEBAR_BANDS_M,
+          keep: speedSidebarShownKeys,
         }),
         roadSignHudCache.speedLanes
       )
     : []
+  if (selected.speedList.length) {
+    speedSidebarShownKeys = new Set(selected.speedList.map(speedSidebarKey))
+  }
 
   // Keep a just-passed selection on screen briefly instead of flickering off in
   // the gap before the next one. Disabled channels hold null (cleared instantly),
@@ -536,6 +565,18 @@ function renderSpeedHudTile (upcoming) {
 // proportional distance — same look as the on-road lane-speed-label markers.
 const SPEED_SIDEBAR_MIN_MARKER_GAP_PX = 46
 
+// Height on the strip (0 = here, 100 = the horizon) for a distance ahead.
+// Logarithmic around a knee: a linear scale spent four fifths of the strip on
+// the 2–10km nobody reads and crushed everything near the vehicle into the
+// bottom edge, where the anti-overlap compression then had to move pills
+// around. Position now follows distance alone, so pills drift downward
+// smoothly and each keeps its own place.
+function speedSidebarPct (alongM) {
+  const knee = SPEED_SIDEBAR_SCALE_KNEE_M
+  const scale = Math.log1p(SPEED_SIDEBAR_MAX_DISTANCE_M / knee)
+  return (Math.log1p(Math.max(0, alongM) / knee) / scale) * 100
+}
+
 function renderSpeedSidebar (list) {
   const aside = document.getElementById('speed-sidebar')
   const track = document.getElementById('speed-sidebar-track')
@@ -556,17 +597,13 @@ function renderSpeedSidebar (list) {
   roadSignHudRenderState.speedListKey = key
 
   const sorted = [...list].sort((a, b) => a.cls.along - b.cls.along)
-  // Fixed scale, not the furthest found sensor's distance — otherwise a
-  // sensor at 1000m and one at 10m both land pinned to the top edge (100%)
-  // instead of at their actual 10%/0.1% height on the strip.
-  const maxAlong = SPEED_SIDEBAR_MAX_DISTANCE_M
 
   // pctFromBottom: 0 = here/now, 100 = SPEED_SIDEBAR_MAX_DISTANCE_M out. When
   // the furthest known sensor is short of that, the strip's top portion holds
   // that sensor's colour (CSS gradients extend the last stop's colour past it)
   // rather than showing an artificial cutoff.
   const stops = sorted.map(s => ({
-    pct: (s.cls.along / maxAlong) * 100,
+    pct: speedSidebarPct(s.cls.along),
     color: speedLimitColor(s.fastestKmh, s.data.maxspeed_kmh),
   }))
   track.style.background = `linear-gradient(to top, ${stops.map(s => `${s.color} ${s.pct}%`).join(', ')})`
@@ -575,7 +612,7 @@ function renderSpeedSidebar (list) {
   for (const s of sorted) {
     const p = s.data
     const kmh = s.fastestKmh
-    const pctFromBottom = (s.cls.along / maxAlong) * 100
+    const pctFromBottom = speedSidebarPct(s.cls.along)
 
     const marker = document.createElement('div')
     marker.className = 'speed-sidebar-marker'

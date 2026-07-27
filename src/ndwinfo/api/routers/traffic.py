@@ -11,7 +11,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import ColumnElement, and_, case, func, select, text, tuple_
+from sqlalchemy import ColumnElement, and_, case, func, or_, select, text, tuple_
 
 from ndwinfo.api.deps import BBox, BBoxDep, DbDep, OptionalBBoxDep
 from ndwinfo.api.geo import geo_response, make_fc
@@ -26,6 +26,7 @@ from ndwinfo.models import (
     VildTmc,
 )
 from ndwinfo.osm_tags import osm_carriageway_ref
+from ndwinfo.site_naming import ndw_roadway_ref
 from ndwinfo.osm_tags import osm_maxspeed_kmh as _osm_maxspeed_kmh
 
 router = APIRouter(prefix="/traffic", tags=["traffic"])
@@ -69,7 +70,11 @@ def _normalize_carriageway(value: str | None) -> str | None:
 # anchor hectometre has to come from a site on the *chosen* carriageway.
 ROAD_CONTEXT_CANDIDATES = 25
 ROAD_CONTEXT_HEADING_TOLERANCE_DEG = 55.0
-ROAD_CONTEXT_MAX_DISTANCE_M = 500.0
+# Sites are metres apart on a motorway but kilometres apart on the provincial
+# network, where the nearest carriageway-tagged site can easily be over half a
+# kilometre away. The heading check does the real work of picking a direction;
+# this only bounds how far away the evidence may come from.
+ROAD_CONTEXT_MAX_DISTANCE_M = 1500.0
 
 # Hectometrering runs with the direction of travel on carriageway R and against
 # it on L (see docs/10-carriageway-direction-quality.md), so this is the sign of
@@ -261,6 +266,7 @@ def _build_speed_features(db: DbDep, scope: _SpeedScope, limit: int) -> tuple[li
     rows = db.execute(
         select(
             TrafficMeasurement.site_id,
+            MeasurementSite.name,
             MeasurementSite.num_lanes,
             MeasurementSite.side,
             MeasurementSite.road,
@@ -319,6 +325,7 @@ def _build_speed_features(db: DbDep, scope: _SpeedScope, limit: int) -> tuple[li
         )
         .group_by(
             TrafficMeasurement.site_id,
+            MeasurementSite.name,
             MeasurementSite.num_lanes,
             MeasurementSite.side,
             MeasurementSite.road,
@@ -396,8 +403,12 @@ def _build_speed_features(db: DbDep, scope: _SpeedScope, limit: int) -> tuple[li
                 "vild_hecto_dir": r.vild_hecto_dir,
                 "num_lanes": r.num_lanes or 0,
                 "sources": set(),
+                "roadway_refs": set(),
                 "lanes": defaultdict(list),  # lane -> list of readings
             }
+        roadway_ref = ndw_roadway_ref(r.name)
+        if roadway_ref is not None:
+            loc["roadway_refs"].add(roadway_ref)
         loc["num_lanes"] = max(loc["num_lanes"], r.num_lanes or 0)
         if r.road is not None and (loc["road"] is None or loc["km"] is None):
             loc["road"] = r.road
@@ -449,6 +460,12 @@ def _build_speed_features(db: DbDep, scope: _SpeedScope, limit: int) -> tuple[li
                 "derived_carriageway": loc["derived_carriageway"],
                 "derived_carriageway_source": loc["derived_carriageway_source"],
                 "carriageway_direction_conflict": loc["carriageway_direction_conflict"],
+                # Which roadway (mainline vs a named slip road) the site names
+                # claim. Only when the merged systems agree: co-located sites
+                # naming different roadways cannot settle it between them.
+                "ndw_roadway_ref": (
+                    next(iter(loc["roadway_refs"])) if len(loc["roadway_refs"]) == 1 else None
+                ),
                 "km": loc["km"],
                 "openlr_bearing": loc["openlr_bearing"],
                 "bearing": loc["bearing"],
@@ -514,10 +531,21 @@ def get_speed(
         if cw is not None:
             predicates.append(MeasurementSite.effective_carriageway == cw)
 
-        if km_min is not None:
-            predicates.append(MeasurementSite.km >= km_min)
-        if km_max is not None:
-            predicates.append(MeasurementSite.km <= km_max)
+        km_bounds = [
+            bound
+            for bound in (
+                MeasurementSite.km >= km_min if km_min is not None else None,
+                MeasurementSite.km <= km_max if km_max is not None else None,
+            )
+            if bound is not None
+        ]
+        if km_bounds:
+            # Large parts of the provincial network publish speeds with no
+            # hectometre at all, and a km window can only ever exclude those
+            # sites. With a bbox to bound them geometrically they stay in;
+            # without one, admitting them would mean the whole road's worth.
+            window = and_(*km_bounds)
+            predicates.append(or_(window, MeasurementSite.km.is_(None)) if b is not None else window)
 
     scope = _SpeedScope(predicates=predicates, order_by_km=road is not None)
     features, total_matched = _build_speed_features(db, scope, limit)

@@ -476,6 +476,18 @@ const ROAD_SCOPED_SELECT = {
   maxChordSlackM: 500,
 }
 
+// Placement for sites that carry no hectometre — most of the provincial network
+// (PNH/PZH/… sites publish speeds with no km at all), where the hectometre path
+// has nothing to work with. Projection onto the heading is not curve-proof, so
+// it gets a shorter horizon than the km path and only ever applies per sensor:
+// a road with hectometrering keeps using it.
+const ROAD_SCOPED_GEOMETRIC = {
+  maxDistanceM: 4000,       // beyond this a straight-line projection is guesswork
+  corridorBaseM: 100,       // GPS error + lane offset + the road not being straight
+  corridorRatio: 0.2,       // …widening with distance, as the road bends away
+  maxBearingDiffDeg: 60,    // the site's own travel bearing must still agree
+}
+
 function roadScopedRoadMatches (properties, context) {
   if (!context.road) return true
   const ref = normalizeRoadRef(properties.road) || normalizeRoadRef(properties.osm_ref)
@@ -491,6 +503,43 @@ function roadScopedCarriagewayMatches (properties, context) {
   return cw === null || cw === context.carriageway
 }
 
+function isLinkHighway (highway) {
+  return typeof highway === 'string' && highway.endsWith('_link')
+}
+
+// Which roadway a sensor sits on, in OSM's carriageway_ref vocabulary ("Li"/
+// "Re" for the main carriageways, a letter per slip road). The OSM match is the
+// authority; the NDW site name is the fallback for a site OSM could not match
+// confidently (`0091hrl0337ra` is the hoofdrijbaan links, `009vwa042571`
+// verbindingsweg a — see site_naming.py, which derives it server-side).
+function sensorRoadwayRef (properties) {
+  return osmCarriagewayRef({ carriageway_ref: properties.osm_carriageway_ref }) ||
+    osmCarriagewayRef({ carriageway_ref: properties.ndw_roadway_ref })
+}
+
+// Which *roadway* of the road we are on: an exit or entry slip road is a
+// physically separate carriageway from the mainline, yet carries the same road
+// reference, the same hectometrering and often its own speed sensors. Selecting
+// by road+carriageway alone therefore cannot tell them apart.
+//
+// carriageway_ref does, exactly (an A9 exit is tagged "c" where the mainline is
+// "Li"/"Re"), so once we know our own, only sensors on that same roadway are
+// shown — including, deliberately, dropping a sensor whose roadway cannot be
+// established at all: "unattributable" is not "ours".
+//
+// Without a carriageway_ref for our own lane there is nothing to compare, so
+// fall back to link-ness: from the mainline a motorway_link site measures ramp
+// traffic, and from a slip road the mainline's sites are the ones that are not
+// ours. A site with no OSM match at all is kept in that fallback — there it is
+// the only signal we have.
+function roadScopedRoadwayMatches (properties, roadway) {
+  const ours = roadway?.carriagewayRef
+  const theirs = sensorRoadwayRef(properties)
+  if (ours) return theirs !== null && ours.toLowerCase() === theirs.toLowerCase()
+  if (!properties.osm_highway) return true
+  return isLinkHighway(properties.osm_highway) === Boolean(roadway?.isLink)
+}
+
 function hasLaneSpeed (properties) {
   return (properties.lanes || []).some(l => l && l.speed_kmh !== null && l.speed_kmh !== undefined)
 }
@@ -500,10 +549,12 @@ function hasLaneSpeed (properties) {
 // speed bar (deduplicated list) so the two can never disagree about which road
 // they are describing.
 //
-// Placement is by hectometre (`placement: 'km'`) — curve-proof, and needing no
-// corridor gate at all, since road and carriageway are already pinned by the
-// context. The km-bounded API query cannot return null-km sites, so the selector
-// deliberately fails closed rather than carrying an unreachable geometric path.
+// Placement is by hectometre (`placement: 'km'`) wherever the site carries one
+// — curve-proof, and needing no corridor gate at all, since road and
+// carriageway are already pinned by the context. Sites without a hectometre
+// fall back to projection onto our heading (`placement: 'geo'`, see
+// placeGeometrically): the provincial network largely has no hectometrering, so
+// failing closed there means showing nothing at all on those roads.
 function selectRoadScopedSensors (pointFc, context, device, opts) {
   const maxAhead = opts?.maxDistanceM ?? 2000
   if (!context || !context.carriageway) return []
@@ -523,28 +574,59 @@ function selectRoadScopedSensors (pointFc, context, device, opts) {
     if (!hasLaneSpeed(p)) continue
     if (!roadScopedRoadMatches(p, context)) continue
     if (!roadScopedCarriagewayMatches(p, context)) continue
-    // On/off-ramps carry the road's reference and hectometrering but measure
-    // ramp traffic, not the carriageway we are driving. A site with no
-    // confident OSM match (osm_highway absent) is kept — treating "unknown" as
-    // "ramp" would drop legitimate mainline sensors that failed to match.
-    if (p.osm_highway === 'motorway_link') continue
+    // Only sensors on the same roadway as us: the mainline's while we drive it,
+    // the slip road's once we have taken the exit (see roadScopedRoadwayMatches).
+    if (!roadScopedRoadwayMatches(p, opts?.roadway)) continue
 
     const coords = feature.geometry.coordinates
     const dist = calculateDistance(device.coords, coords)
-    if (!Number.isFinite(p.km) || !Number.isFinite(anchorKm) || sign === null) continue
-    const along = (p.km - anchorKm) * sign * 1000
-    if (along <= 0 || along > maxAhead) continue
-    if (along < dist * ROAD_SCOPED_SELECT.minChordRatio - slack) continue
-    if (along > dist * ROAD_SCOPED_SELECT.maxChordRatio + ROAD_SCOPED_SELECT.maxChordSlackM + slack) continue
+    const placed = Number.isFinite(p.km) && Number.isFinite(anchorKm) && sign !== null
+      ? placeByHectometre(p, anchorKm, sign, dist, slack, maxAhead)
+      : placeGeometrically(p, coords, dist, device)
+    if (!placed) continue
     out.push({
       data: p,
-      placement: 'km',
-      cls: { status: 'ahead', along, cross: 0, dist },
+      placement: placed.placement,
+      cls: { status: 'ahead', along: placed.along, cross: placed.cross, dist },
     })
   }
 
   out.sort((a, b) => a.cls.along - b.cls.along)
   return out
+}
+
+// Hectometre difference, guarded against a site whose km belongs to some other
+// stretch of road (an N-road renumbered at a province boundary, a stray km on a
+// co-located site): the along-road distance has to stay in a plausible band
+// around the straight-line chord.
+function placeByHectometre (p, anchorKm, sign, dist, slack, maxAhead) {
+  const along = (p.km - anchorKm) * sign * 1000
+  if (along <= 0 || along > maxAhead) return null
+  if (along < dist * ROAD_SCOPED_SELECT.minChordRatio - slack) return null
+  if (along > dist * ROAD_SCOPED_SELECT.maxChordRatio + ROAD_SCOPED_SELECT.maxChordSlackM + slack) return null
+  return { placement: 'km', along, cross: 0 }
+}
+
+// Fallback for a site with no hectometre: project it onto the direction of
+// travel. `along` is how far ahead it lies, `cross` how far off the axis — the
+// road bending away from our current heading, so the corridor widens with
+// distance. Everything here is already road- and carriageway-scoped; the
+// corridor is only there to reject what lies behind a bend or on a branch,
+// and without a heading there is no axis to project onto at all.
+function placeGeometrically (p, coords, dist, device) {
+  if (device.heading === null || device.heading === undefined) return null
+  const { along, cross: signedCross } = relativePosition(device, coords)
+  const cross = Math.abs(signedCross)
+  if (along <= 0 || along > ROAD_SCOPED_GEOMETRIC.maxDistanceM) return null
+  const corridor = ROAD_SCOPED_GEOMETRIC.corridorBaseM + along * ROAD_SCOPED_GEOMETRIC.corridorRatio
+  if (cross > corridor) return null
+  // The site's own VILD travel bearing is a second opinion on whether it faces
+  // the way we are driving. Sites without one are judged on geometry alone.
+  if (Number.isFinite(p.bearing) &&
+      Math.abs(angleDiff(p.bearing, device.heading)) > ROAD_SCOPED_GEOMETRIC.maxBearingDiffDeg) {
+    return null
+  }
+  return { placement: 'geo', along, cross }
 }
 
 // The "next sensor" tile takes the nearest candidate as-is (before the sidebar's
@@ -587,11 +669,11 @@ function enrichLaneSpeedSelection (selection, laneFc) {
 //    loop-detector systems per lane group, e.g. "...vwh0656ra" /
 //    "...hrl0656ra"), which share the same road+km — merge those into one
 //    entry (fastest reading wins) instead of showing near-duplicate rows.
-// Returns entries sorted nearest-first, thinned to maxCount by
-// thinSpeedSidebarList.
+// Returns entries sorted nearest-first, one per distance band (see
+// selectSpeedSidebarBands).
 function buildSpeedSidebarList (candidates, opts) {
-  const maxAhead = opts?.maxDistanceM ?? Infinity
-  const maxCount = opts?.maxCount ?? 5
+  const bands = opts?.bands ?? [opts?.maxDistanceM ?? Infinity]
+  const maxAhead = opts?.maxDistanceM ?? bands[bands.length - 1] ?? Infinity
 
   const bySite = new Map()
   for (const candidate of (candidates || [])) {
@@ -610,56 +692,43 @@ function buildSpeedSidebarList (candidates, opts) {
 
   const deduped = [...bySite.values()]
   deduped.sort((a, b) => a.cls.along - b.cls.along)
-  return thinSpeedSidebarList(deduped, maxCount)
+  return selectSpeedSidebarBands(deduped, bands, opts?.keep)
 }
 
-// Reduce a nearest-first sidebar list to maxCount entries by dropping from the
-// middle, never from the ends: slicing off the tail would silently shorten the
-// road ahead, and on a sensor-dense motorway (A9: a gantry roughly every 500m)
-// the bar would only ever describe the first couple of kilometres.
+// One entry per distance band: the nearest sensor inside it, `bands` being the
+// upper bounds in metres (nearest first). A band with no sensor yields nothing
+// rather than borrowing from its neighbours — an empty stretch of road is a
+// fact worth showing, and filling it would put a pill at a distance it does not
+// belong to.
 //
-// Always kept, in this priority order:
-//  1. the nearest sensor — what we are about to reach,
-//  2. the furthest one — the end of the horizon the strip is drawn to,
-//  3. the slowest one — the queue ahead is the whole reason to look at the bar.
-// Remaining slots go to whichever sensor sits in the largest distance gap
-// between two already-kept ones, so the survivors stay spread over the road
-// rather than clustering where the sensors happen to be dense.
-function thinSpeedSidebarList (list, maxCount) {
-  if (!(maxCount > 0)) return []
-  if (list.length <= maxCount) return list
-
-  const slowest = list.reduce(
-    (best, item, i) => (item.fastestKmh < list[best].fastestKmh ? i : best),
-    0
-  )
-  const keep = new Set()
-  for (const index of [0, list.length - 1, slowest]) {
-    if (keep.size < maxCount) keep.add(index)
+// This is what keeps the bar still while driving. The bands are anchored to the
+// vehicle, and a sensor's distance only falls, so between refreshes each sensor
+// either stays in its band or moves into the next one down. The list therefore
+// changes one entry at a time, at predictable moments, instead of being
+// re-derived from whatever happens to be in range.
+//
+// `keep` (site keys already on screen) settles the remaining wobble: when the
+// hectometre anchor is re-resolved a sensor's distance can shift by tens of
+// metres, so near a boundary two sensors can trade places. Preferring the one
+// already displayed makes that a no-op instead of a flicker.
+function selectSpeedSidebarBands (list, bands, keep) {
+  const out = []
+  let lower = 0
+  for (const upper of bands) {
+    const inBand = list.filter(s => s.cls.along > lower && s.cls.along <= upper)
+    lower = upper
+    if (!inBand.length) continue
+    const held = keep && inBand.find(s => keep.has(speedSidebarKey(s)))
+    out.push(held || inBand[0])
   }
+  return out
+}
 
-  while (keep.size < maxCount) {
-    const kept = [...keep].sort((a, b) => a - b)
-    let best = null
-    for (let k = 0; k < kept.length - 1; k++) {
-      const [lo, hi] = [kept[k], kept[k + 1]]
-      if (hi - lo < 2) continue
-      const gap = list[hi].cls.along - list[lo].cls.along
-      if (best && gap <= best.gap) continue
-      // The entry nearest the middle of the gap, by distance rather than by
-      // index, so a cluster on one side does not pull the pick towards it.
-      const middle = (list[lo].cls.along + list[hi].cls.along) / 2
-      let pick = lo + 1
-      for (let i = lo + 1; i < hi; i++) {
-        if (Math.abs(list[i].cls.along - middle) < Math.abs(list[pick].cls.along - middle)) pick = i
-      }
-      best = { gap, pick }
-    }
-    if (!best) break
-    keep.add(best.pick)
-  }
-
-  return [...keep].sort((a, b) => a - b).map(index => list[index])
+// Identity of a sidebar entry across refreshes: the merged site it stands for
+// (buildSpeedSidebarList already collapses co-located gantries onto road|km).
+function speedSidebarKey (item) {
+  const p = item?.data || {}
+  return p.km != null ? `${p.road || ''}|${p.km}` : p.site_id
 }
 
 // enrichLaneSpeedSelection over a list of selections.

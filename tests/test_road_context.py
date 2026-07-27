@@ -106,10 +106,21 @@ def test_perpendicular_bearings_do_not_resolve_either_carriageway():
     assert _resolve_road_context(rows, LON, LAT, 90) is None
 
 
-def test_direction_candidate_beyond_500m_is_not_used():
-    lon, lat = offset(metres_north=501)
+def test_direction_candidate_beyond_the_distance_limit_is_not_used():
+    lon, lat = offset(metres_north=1501)
     rows = [site("R", bearing=0, km=12.0, lon=lon, lat=lat)]
     assert _resolve_road_context(rows, LON, LAT, 0) is None
+
+
+def test_a_sparsely_instrumented_road_still_resolves_its_carriageway():
+    # The N205 case: the nearest carriageway-tagged site is 560m away, which the
+    # old 500m limit rejected outright, leaving the drive HUD with no context at
+    # all on most of the provincial network.
+    lon, lat = offset(metres_north=560)
+    rows = [site("R", bearing=0, km=None, lon=lon, lat=lat)]
+    context = _resolve_road_context(rows, LON, LAT, 0)
+    assert context["carriageway"] == "R"
+    assert context["anchor_km"] is None
 
 
 def test_nearest_wins_without_a_heading():

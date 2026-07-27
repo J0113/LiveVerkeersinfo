@@ -403,10 +403,21 @@ const LEGACY_DEFAULT_HUD_ADDITIONS = new Set(['hud_speed_sidebar'])
 // without a corridor gate to lose sensors round a bend. There is deliberately
 // no geometric fallback pool — without a resolved road context both displays
 // show nothing rather than risk another road's sensors.
-// Over the cap the list is thinned from the middle (thinSpeedSidebarList in
-// lib.js), keeping the nearest, the furthest and the slowest sensor.
-const SPEED_SIDEBAR_MAX_COUNT = 8
-const SPEED_SIDEBAR_MAX_DISTANCE_M = 10000
+// One pill per distance band, showing the nearest sensor inside it. Bands are
+// fixed distances *from the vehicle*, and a sensor's distance only ever falls
+// as we drive, so the list changes one pill at a time as sensors cross a
+// boundary — where picking "the best spread over what happens to be in range"
+// reshuffled several pills at once on every refresh. Widening bands with
+// distance matches how much detail is useful: metres matter just ahead, the
+// far end only needs a trend. Last bound is the horizon.
+const SPEED_SIDEBAR_BANDS_M = [300, 700, 1200, 2000, 3200, 5000, 7500, 10000]
+const SPEED_SIDEBAR_MAX_COUNT = SPEED_SIDEBAR_BANDS_M.length
+const SPEED_SIDEBAR_MAX_DISTANCE_M = SPEED_SIDEBAR_BANDS_M[SPEED_SIDEBAR_BANDS_M.length - 1]
+// The strip is scaled logarithmically around this knee: pill positions then
+// depend on distance alone and drift down smoothly, instead of every pill
+// shifting whenever the nearest one is passed and the anti-overlap compression
+// re-tightens. Near-field detail is what a driver reads, so it gets the room.
+const SPEED_SIDEBAR_SCALE_KNEE_M = 200
 // Horizon for the single "next sensor" tile, which is about what is imminent
 // rather than what is on the road ahead in general.
 const HUD_SPEED_TILE_MAX_DISTANCE_M = 2500
@@ -545,6 +556,10 @@ const roadSignHudRenderState = {
   contextKey: null,
 }
 let roadSignHudCurrentRoad = null
+// Site keys the speed bar currently shows, so a band keeps the sensor already
+// on screen when the anchor shifts (see selectSpeedSidebarBands). Cleared with
+// the rest of the speed state on a road/carriageway change.
+let speedSidebarShownKeys = new Set()
 
 // ─── GPS & Geolocation state ──────────────────────────────────────────────────
 const GPS_STATES = {

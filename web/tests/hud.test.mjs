@@ -70,19 +70,39 @@ test('a resolved context drives a road+carriageway+hectometre scoped fetch', asy
   // 10km ahead, 0.5km behind, counted upward because we are on carriageway R.
   assert.match(speedUrl, /km_min=11\.5/)
   assert.match(speedUrl, /km_max=22/)
-  // No bbox: a straight corridor is exactly what the hectometre window replaces.
-  assert.ok(!speedUrl.includes('bbox'))
+  // The bbox is not a second corridor — the hectometre window still decides
+  // which km-carrying sites come back. It bounds the sites that have no km.
+  assert.match(speedUrl, /bbox=/)
 })
 
-test('a low-confidence anchor is not usable for selection', () => {
+test('a road without a usable anchor is fetched by bbox alone', () => {
+  // The N205 case: carriageway resolved, no hectometre anywhere near. Asking
+  // for a km window would return nothing at all, since those sites have no km.
+  const web = bootHud()
+  web.run(`roadContext = {
+    road: 'N205', carriageway: 'R', anchorKm: null, anchorDistanceM: null,
+    coords: userCoords, at: Date.now(),
+  }`)
+  web.run(`fetchRoadScopedSpeedIfDue(buildRoadContext('N205'), userCoords)`)
+  const speedUrl = web.requests.find(url => url.includes('/api/traffic/speed?'))
+  assert.match(speedUrl, /road=N205/)
+  assert.match(speedUrl, /carriageway=R/)
+  assert.match(speedUrl, /bbox=/)
+  assert.ok(!speedUrl.includes('km_min'))
+  assert.ok(!speedUrl.includes('km_max'))
+})
+
+test('a low-confidence anchor is not usable for hectometre placement', () => {
   const web = bootHud()
   web.run(`roadContext = {
     road: 'A9', carriageway: 'R', anchorKm: 12,
     anchorDistanceM: ROAD_CONTEXT_MAX_ANCHOR_DISTANCE_M + 1,
     coords: userCoords, at: Date.now(),
   }`)
-  assert.equal(web.run(`buildRoadContext('A9').usableForSelection`), false)
-  // The carriageway is still known, so the road label can still show it.
+  assert.equal(web.run(`buildRoadContext('A9').anchorUsable`), false)
+  assert.equal(web.run(`buildRoadContext('A9').anchorKm`), null)
+  // The carriageway is still known, so the road label can still show it — and
+  // selection carries on geometrically rather than showing nothing.
   assert.equal(web.run(`buildRoadContext('A9').carriageway`), 'R')
 })
 
@@ -94,7 +114,7 @@ test('an anchor at the 500m confidence boundary remains usable', () => {
     coords: userCoords, at: Date.now(),
   }`)
   assert.equal(web.run(`ROAD_CONTEXT_MAX_ANCHOR_DISTANCE_M`), 500)
-  assert.equal(web.run(`buildRoadContext('A9').usableForSelection`), true)
+  assert.equal(web.run(`buildRoadContext('A9').anchorUsable`), true)
 })
 
 test('a context for another road is not used', () => {
@@ -237,7 +257,7 @@ function installRenderShim (web) {
       const road = normalizeRoadRef(roadSignHudCurrentRoad?.data?.ref)
       const context = buildRoadContext(road)
       selected.roadContext = context
-      const candidates = (context?.usableForSelection &&
+      const candidates = (context &&
         roadScopedSpeedFetch.loadedKey === roadScopedSpeedKey(context))
         ? selectRoadScopedSensors(roadSignHudCache.speedPointsRoad, context,
             { coords: userCoords, heading: userHeading },
@@ -247,7 +267,7 @@ function installRenderShim (web) {
         ? pickNextLaneSpeedSensor(candidates, HUD_SPEED_TILE_MAX_DISTANCE_M) : null
       selected.speedList = hudEnabled.has('hud_speed_sidebar')
         ? buildSpeedSidebarList(candidates,
-            { maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M, maxCount: SPEED_SIDEBAR_MAX_COUNT })
+            { maxDistanceM: SPEED_SIDEBAR_MAX_DISTANCE_M, bands: SPEED_SIDEBAR_BANDS_M })
         : []
       renderRoadSignHudSelection(selected)
     }

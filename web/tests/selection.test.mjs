@@ -16,12 +16,13 @@ const {
   selectRoadScopedSensors,
 } = web
 
+const BANDS = web.run('SPEED_SIDEBAR_BANDS_M')
 const HERE = [4.7105, 52.5182]
 const NORTHBOUND = { coords: HERE, heading: 0 }
 const CONTEXT = { road: 'A9', carriageway: 'R', anchorKm: 12.0, coords: HERE }
 
-function select (features, { context = CONTEXT, device = NORTHBOUND, maxDistanceM = 10000 } = {}) {
-  return selectRoadScopedSensors(featureCollection(features), context, device, { maxDistanceM })
+function select (features, { context = CONTEXT, device = NORTHBOUND, maxDistanceM = 10000, roadway } = {}) {
+  return selectRoadScopedSensors(featureCollection(features), context, device, { maxDistanceM, roadway })
 }
 
 // ─── road reference normalization ────────────────────────────────────────────
@@ -114,7 +115,7 @@ test('the N470 carriageway-L example yields the two expected sidebar markers', (
     { coords, heading: 258 },
     { maxDistanceM: 10000 }
   )
-  const list = buildSpeedSidebarList(candidates, { maxDistanceM: 10000, maxCount: 5 })
+  const list = buildSpeedSidebarList(candidates, { maxDistanceM: 10000, bands: BANDS })
 
   assert.equal(ids(list), 'km-1.899,km-1.295')
   assert.deepEqual(
@@ -211,15 +212,54 @@ test('a curve stays within the guard band', () => {
   assert.equal(select([sensor({ km: 14.0, coords })]).length, 1)
 })
 
-test('a sensor without a hectometre is excluded', () => {
+// ─── geometric placement (roads without hectometrering) ─────────────────────
+
+test('a sensor without a hectometre is placed by projection instead', () => {
   const coords = offsetCoords(HERE, { north: 800 })
-  assert.equal(select([sensor({ km: null, coords })]).length, 0)
+  const [picked] = select([sensor({ km: null, coords })])
+  assert.equal(picked.placement, 'geo')
+  assert.equal(Math.round(picked.cls.along), 800)
 })
 
-test('no anchor hectometre leaves every sensor unselected', () => {
+test('no anchor hectometre puts every sensor on the geometric path', () => {
   const context = { ...CONTEXT, anchorKm: null }
   const coords = offsetCoords(HERE, { north: 800 })
-  assert.equal(select([sensor({ km: 13.0, coords })], { context }).length, 0)
+  const [picked] = select([sensor({ km: 13.0, coords })], { context })
+  assert.equal(picked.placement, 'geo')
+})
+
+test('geometric placement rejects what is behind, off to the side, or too far', () => {
+  const geo = north => select([sensor({ km: null, coords: offsetCoords(HERE, { north }) })])
+  assert.equal(geo(-800).length, 0, 'behind us')
+  assert.equal(geo(5000).length, 0, 'past the geometric horizon')
+  // 800m ahead allows a corridor of 100 + 20% = 260m; 400m to the side is a
+  // parallel road, not ours.
+  const aside = offsetCoords(HERE, { north: 800, east: 400 })
+  assert.equal(select([sensor({ km: null, coords: aside })]).length, 0)
+})
+
+test('geometric placement needs a heading, and honours the site bearing', () => {
+  const coords = offsetCoords(HERE, { north: 800 })
+  const device = { coords: HERE, heading: null }
+  assert.equal(select([sensor({ km: null, coords })], { device }).length, 0)
+  // A site facing back down the road is not one we are driving towards.
+  assert.equal(select([sensor({ km: null, coords, bearing: 180 })]).length, 0)
+  assert.equal(select([sensor({ km: null, coords, bearing: 10 })]).length, 1)
+})
+
+test('hectometre placement still wins wherever a hectometre exists', () => {
+  // Mixed road: the km site is placed by hectometre round the bend, the km-less
+  // one by projection. Both appear, nearest first.
+  const curved = offsetCoords(HERE, { east: 1900, north: 300 })
+  const straight = offsetCoords(HERE, { north: 600 })
+  const picked = select([
+    sensor({ siteId: 'km-site', km: 14.0, coords: curved }),
+    sensor({ siteId: 'no-km', km: null, coords: straight }),
+  ])
+  assert.equal(
+    picked.map(item => `${item.data.site_id}:${item.placement}`).join(','),
+    'no-km:geo,km-site:km'
+  )
 })
 
 // ─── anchor advance between fetches ──────────────────────────────────────────
@@ -250,19 +290,19 @@ test('the tile takes the nearest candidate within its own shorter horizon', () =
   // Only the far one left: past the tile horizon, so the tile shows nothing
   // even though the sidebar still lists it.
   assert.equal(pickNextLaneSpeedSensor(select([far]), 2500), null)
-  assert.equal(buildSpeedSidebarList(select([far]), { maxCount: 5 }).length, 1)
+  assert.equal(buildSpeedSidebarList(select([far]), { bands: BANDS }).length, 1)
 })
 
 test('the sidebar merges co-located gantries and keeps the fastest reading', () => {
   const coords = offsetCoords(HERE, { north: 1000 })
   const a = sensor({ siteId: 'RWS01_MONIBAS_0091hrl0130ra', km: 13.0, coords, speeds: [96] })
   const b = sensor({ siteId: 'RWS01_MONIBAS_0091vwh0130ra', km: 13.0, coords, speeds: [104] })
-  const list = buildSpeedSidebarList(select([a, b]), { maxCount: 5 })
+  const list = buildSpeedSidebarList(select([a, b]), { bands: BANDS })
   assert.equal(list.length, 1)
   assert.equal(list[0].fastestKmh, 104)
 })
 
-test('on/off-ramp sensors are excluded, unmatched ones are kept', () => {
+test('on/off-ramp sensors are excluded from the mainline, unmatched ones are kept', () => {
   const coords = offsetCoords(HERE, { north: 1000 })
   const ramp = sensor({ siteId: 'ramp', km: 13.0, coords, highway: 'motorway_link' })
   const unknown = sensor({ siteId: 'unknown', km: 13.2, coords, highway: null })
@@ -270,50 +310,172 @@ test('on/off-ramp sensors are excluded, unmatched ones are kept', () => {
   // Both displays draw from the same pool, so neither can show ramp traffic as
   // if it were the carriageway we are driving.
   assert.equal(ids(candidates), 'unknown')
-  assert.equal(ids(buildSpeedSidebarList(candidates, { maxCount: 5 })), 'unknown')
+  assert.equal(ids(buildSpeedSidebarList(candidates, { bands: BANDS })), 'unknown')
 })
 
-test('the sidebar caps its list', () => {
-  const features = [1, 2, 3, 4, 5, 6, 7].map(i => sensor({
-    siteId: `s${i}`,
-    km: 12 + i * 0.5,
-    coords: offsetCoords(HERE, { north: i * 500 }),
-  }))
-  assert.equal(buildSpeedSidebarList(select(features), { maxCount: 5 }).length, 5)
+// ─── which roadway of the road we are on ─────────────────────────────────────
+
+const MAINLINE = { carriagewayRef: 'Li', isLink: false }
+const SLIP_ROAD = { carriagewayRef: 'c', isLink: true }
+
+function rampSensor (overrides = {}) {
+  const { carriagewayRef = 'c', ...rest } = overrides
+  return sensor({
+    siteId: 'ramp',
+    km: 13.0,
+    coords: offsetCoords(HERE, { north: 1000 }),
+    highway: 'motorway_link',
+    extra: { osm_carriageway_ref: carriagewayRef },
+    ...rest,
+  })
+}
+
+function mainlineSensor (overrides = {}) {
+  const { carriagewayRef = 'Li', ...rest } = overrides
+  return sensor({
+    siteId: 'mainline',
+    km: 13.2,
+    coords: offsetCoords(HERE, { north: 1200 }),
+    extra: { osm_carriageway_ref: carriagewayRef },
+    ...rest,
+  })
+}
+
+test('driving the slip road selects its sensors, not the mainline it left', () => {
+  const features = [rampSensor(), mainlineSensor()]
+  assert.equal(ids(select(features, { roadway: SLIP_ROAD })), 'ramp')
+  assert.equal(ids(select(features, { roadway: MAINLINE })), 'mainline')
 })
 
-// A9-like density: a gantry every 500m. Over the cap the list must still span
-// the whole road ahead, so the ends and the slow spot survive and the middle
-// thins out.
-function densePool (speedsBySite = {}) {
+test('carriageway_ref decides even when both roadways carry the same highway class', () => {
+  // Parallel carriageways ("parallelbaan") are ordinary motorway, not _link, so
+  // link-ness alone cannot separate them — the reference letter has to.
+  const parallel = rampSensor({ siteId: 'parallel', highway: 'motorway' })
+  const candidates = select([parallel, mainlineSensor()], { roadway: SLIP_ROAD })
+  assert.equal(ids(candidates), 'parallel')
+})
+
+test('an unmatched site falls back to the roadway its NDW name encodes', () => {
+  // What OSM matching misses (bearing_mismatch on a curve, say) the site name
+  // still says: 0091hrl… is the hoofdrijbaan links, 0090vwc… slip road c.
+  const named = (siteId, ref) => sensor({
+    siteId,
+    km: 13.0,
+    coords: offsetCoords(HERE, { north: 1000 }),
+    highway: null,
+    extra: { ndw_roadway_ref: ref },
+  })
+  const features = [named('hrl', 'Li'), named('vwc', 'c')]
+  assert.equal(ids(select(features, { roadway: MAINLINE })), 'hrl')
+  assert.equal(ids(select(features, { roadway: SLIP_ROAD })), 'vwc')
+})
+
+test('the OSM match outranks the name when both are known', () => {
+  const conflicted = rampSensor()
+  conflicted.properties.ndw_roadway_ref = 'Li'
+  assert.equal(ids(select([conflicted], { roadway: SLIP_ROAD })), 'ramp')
+  assert.equal(select([conflicted], { roadway: MAINLINE }).length, 0)
+})
+
+test('a sensor whose roadway cannot be established is dropped, not guessed', () => {
+  const unattributable = sensor({
+    siteId: 'unattributable',
+    km: 13.0,
+    coords: offsetCoords(HERE, { north: 1000 }),
+    highway: null,
+  })
+  assert.equal(select([unattributable], { roadway: SLIP_ROAD }).length, 0)
+  assert.equal(select([unattributable], { roadway: MAINLINE }).length, 0)
+})
+
+test('without a carriageway_ref for our own lane link-ness still decides', () => {
+  // N-roads and untagged ways leave us nothing to compare, so the coarse rule
+  // is all there is — and there an unmatched site is kept rather than lost.
+  const ramp = rampSensor({ carriagewayRef: null })
+  const mainline = mainlineSensor({ carriagewayRef: null })
+  const unmatched = sensor({ siteId: 'unmatched', km: 13.4, coords: offsetCoords(HERE, { north: 1400 }), highway: null })
+  const onLink = { carriagewayRef: null, isLink: true }
+  const onMainline = { carriagewayRef: null, isLink: false }
+  assert.equal(ids(select([ramp, mainline, unmatched], { roadway: onLink })), 'ramp,unmatched')
+  assert.equal(ids(select([ramp, mainline, unmatched], { roadway: onMainline })), 'mainline,unmatched')
+})
+
+// ─── distance bands (what keeps the bar still while driving) ─────────────────
+
+
+// A9-like density: a gantry roughly every 500m, more than the bar can show.
+function densePool () {
   return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(i => sensor({
     siteId: `s${i}`,
     km: 12 + i * 0.5,
     coords: offsetCoords(HERE, { north: i * 500 }),
-    speeds: [speedsBySite[`s${i}`] ?? 100],
   }))
 }
 
-test('thinning keeps the nearest, the furthest and the slowest sensor', () => {
-  const list = buildSpeedSidebarList(select(densePool({ s4: 32 })), { maxCount: 8 })
-  const kept = ids(list).split(',')
-  assert.equal(kept.length, 8)
-  assert.equal(kept[0], 's1')
-  assert.equal(kept.at(-1), 's10')
-  assert.ok(kept.includes('s4'))
-  // Nearest-first order is preserved through the thinning.
-  assert.deepEqual([...list].map(item => item.cls.along), [...list].map(item => item.cls.along).sort((a, b) => a - b))
+/** Candidates straight from distances, for driving the band logic directly. */
+function at (alongBySite) {
+  return Object.entries(alongBySite).map(([siteId, along]) => ({
+    data: { site_id: siteId, road: 'A9', km: 12 + along / 1000, lanes: [{ lane: 1, speed_kmh: 100 }] },
+    cls: { status: 'ahead', along, cross: 0, dist: along },
+  }))
+}
+
+const listIds = list => list.map(item => item.data.site_id).join(',')
+
+test('each band contributes the nearest sensor inside it', () => {
+  const list = buildSpeedSidebarList(select(densePool()), { bands: BANDS })
+  // 500m spacing against bands 300/700/1200/2000/3200/5000/…: one pill per
+  // band, and the far bands cover more road so they skip more sensors.
+  assert.equal(ids(list), 's1,s2,s3,s5,s7')
+  assert.ok(list.length <= BANDS.length)
 })
 
-test('thinning drops from the middle, not off the far end', () => {
-  const list = buildSpeedSidebarList(select(densePool()), { maxCount: 4 })
-  assert.equal(ids(list), 's1,s5,s7,s10')
+test('an empty band yields no pill rather than borrowing from its neighbours', () => {
+  const list = buildSpeedSidebarList(at({ near: 120, far: 4000 }), { bands: BANDS })
+  assert.equal(listIds(list), 'near,far')
 })
 
-test('thinning gives up slots to the pinned three before spreading', () => {
-  const list = buildSpeedSidebarList(select(densePool({ s6: 28 })), { maxCount: 3 })
-  assert.equal(ids(list), 's1,s6,s10')
-  // Below three pinned entries the priority order decides: nearest, furthest.
-  assert.equal(ids(buildSpeedSidebarList(select(densePool({ s6: 28 })), { maxCount: 2 })), 's1,s10')
-  assert.equal(buildSpeedSidebarList(select(densePool()), { maxCount: 0 }).length, 0)
+test('driving forward changes the list one entry at a time', () => {
+  // The same sensors, seen from 100m further along the road each step. A band
+  // selection only changes when a sensor crosses a boundary, so consecutive
+  // lists never differ by more than one entry.
+  const base = { a: 250, b: 520, c: 900, d: 1400, e: 2100, f: 3000, g: 4200, h: 6000, i: 8000 }
+  let previous = null
+  for (let travelled = 0; travelled <= 1500; travelled += 100) {
+    const moved = Object.fromEntries(
+      Object.entries(base).map(([id, along]) => [id, along - travelled]).filter(([, along]) => along > 0)
+    )
+    const current = buildSpeedSidebarList(at(moved), { bands: BANDS }).map(item => item.data.site_id)
+    if (previous) {
+      const added = current.filter(id => !previous.includes(id))
+      const removed = previous.filter(id => !current.includes(id))
+      const where = `at ${travelled}m: ${previous} -> ${current}`
+      // One band changes occupant at a time: the sensor that crossed out of it
+      // leaves, its successor arrives. Nothing else moves.
+      assert.ok(added.length <= 1, where)
+      assert.ok(removed.length <= 1, where)
+    }
+    previous = current
+  }
+})
+
+test('a band keeps the sensor already shown when a nearer one turns up', () => {
+  // Sensors come and go between refreshes (a site whose lanes all read null
+  // drops out of the pool and returns). Without stickiness that would swap the
+  // pill for its band; with it, the displayed sensor stays until it leaves.
+  const shown = buildSpeedSidebarList(at({ b: 900 }), { bands: BANDS })
+  assert.equal(listIds(shown), 'b')
+
+  const keep = new Set(shown.map(item => web.speedSidebarKey(item)))
+  assert.equal(listIds(buildSpeedSidebarList(at({ a: 750, b: 900 }), { bands: BANDS, keep })), 'b')
+  // Without that history the nearest wins, and stickiness never reaches across
+  // a boundary: once b sits in the next band up, both are shown on their own
+  // merits.
+  assert.equal(listIds(buildSpeedSidebarList(at({ a: 750, b: 900 }), { bands: BANDS })), 'a')
+  assert.equal(listIds(buildSpeedSidebarList(at({ a: 750, b: 1300 }), { bands: BANDS, keep })), 'a,b')
+})
+
+test('sensors past the last band are outside the bar', () => {
+  const list = buildSpeedSidebarList(at({ near: 500, beyond: 12000 }), { bands: BANDS })
+  assert.equal(listIds(list), 'near')
 })
