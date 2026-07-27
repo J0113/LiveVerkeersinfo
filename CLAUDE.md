@@ -28,7 +28,9 @@ history, just the latest snapshot overwritten on a schedule. The value we add is
 ## Data sources
 
 Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
-`docs/01`…`docs/07`. Summary of feed families:
+`docs/01`…`docs/07`, plus `docs/09`…`docs/13` for performance, VILD-direction
+data quality, OSM-PBF ingest, and the non-NDW ANWB/flitspalen sources. Summary
+of feed families:
 
 - **Real-time measurement** (DATEX II v2): `trafficspeed`, `traveltime` reference
   a static **MeasurementSiteTable** (`measurement_current.xml.gz`) for geometry.
@@ -45,6 +47,9 @@ Full catalog: **[docs/README.md](docs/README.md)**. Per-category detail in
 - **Static reference**: measurement-location & VILD shapefiles. → [docs/07](docs/07-static-reference.md)
 - **Road network**: major-road OpenStreetMap ways and per-lane geometry from a
   Geofabrik PBF extract. → [docs/11](docs/11-osm-pbf.md)
+- **ANWB incidents** (non-NDW, jams/roadworks/dynamic radars) and **flitspalen.nl
+  speed cameras** (non-NDW, fixed/trajectcontrole cameras) — both enabled by
+  default. → [docs/12](docs/12-anwb-incidents.md), [docs/13](docs/13-flitspalen-speedcameras.md)
 
 ## Key technical facts
 
@@ -125,24 +130,41 @@ src/ndwinfo/
 │       ├── truckparking.py # GET /api/truckparking (TruckParkingArea, TruckParkingStatus)
 │       ├── verkeersborden.py # GET /api/verkeersborden (Verkeersbord — large CSV)
 │       ├── emission.py    # GET /api/emission (EmissionZone)
+│       ├── osm.py         # GET /api/osm/roads, /api/osm/lanes (viewport-bounded OSM geometry)
+│       ├── vild.py        # GET /api/vild/points|lines|areas (VILD reference geometry)
+│       ├── anwb.py        # GET /api/anwb (AnwbIncident — jams/roadworks/dynamic radars)
+│       ├── flitspalen.py  # GET /api/flitspalen, /api/flitspalen/pairs (fixed cameras + trajectcontrole routes)
 │       └── feeds.py       # GET /api/feeds (metadata on ingest cadence, last_run, row counts)
 ├── parsers/               # Feed-format parsers, called by ingesters:
 │   ├── datex_v2.py        # DATEX II v2 (SOAP-wrapped) → list of dicts
 │   ├── datex_v3.py        # DATEX III (mc:messageContainer) → list of dicts
 │   ├── geojson_ocpi.py    # GeoJSON + OCPI JSON (charging)
 │   ├── csv_signs.py       # CSV (Verkeersborden large dataset)
-│   ├── shapefile_ref.py   # Shapefiles (meetlocaties)
-│   └── ndw_vms.py         # NDW XML matrix signs
+│   ├── shapefile_ref.py   # Shapefiles (meetlocaties, VILD, MSI signs)
+│   ├── ndw_vms.py         # NDW XML matrix signs
+│   ├── osm_pbf.py         # Geofabrik PBF → driving-road ways (motorway/trunk/primary/secondary + _link)
+│   ├── osm_lanes.py       # Per-lane offset geometry from an osm_road way + its lanes tag
+│   ├── osm_junctions.py   # Lane-to-lane connector geometry through junctions
+│   ├── anwb.py            # ANWB incidents JSON → jams/roadworks/radars records
+│   └── flitspalen.py      # Flitspalen.nl camera JSON → NL-filtered fixed-camera records
 └── ingest/                # Feed-specific ingesters (called by poller, use parsers):
     ├── base.py            # BaseIngester abstract class (upsert logic)
     ├── measurement.py     # MeasurementSite + TrafficMeasurement (traffic speed/traveltime)
     ├── situations.py      # Situation (all DATEX v3 situation types: roadworks, closures, etc.)
     ├── signs.py           # Sign + SignMessage (matrix + DRIP)
-    ├── charging.py        # ChargingStation + Tariff (GeoJSON + OCPI)
-    ├── truckparking.py    # TruckParkingArea + TruckParkingStatus
+    ├── charging.py        # ChargingStation + Tariff (GeoJSON only — the OCPI-locations feed is
+    │                      #   downloaded but has no ingester, see docs/04-charging.md)
+    ├── parking.py         # TruckParkingArea + TruckParkingStatus
     ├── verkeersborden.py  # Verkeersbord (streaming CSV insert)
     ├── reference.py       # MeetlocatiePunt, MeetlocatieVak, VildPoint (reference geometry)
-    └── emission.py        # EmissionZone
+    ├── emission.py        # EmissionZone
+    ├── vild_direction.py  # resolve_effective_road: VILD-derived travel bearing + effective_road/
+    │                      #   effective_carriageway resolution for MeasurementSite
+    ├── traveltime_geometry.py # Road-following LineString for travel-time segments from the VILD TMC chain
+    ├── osm_roads.py       # Geofabrik OSM PBF driving-road extracts → osm_road/osm_road_lane
+    ├── anwb.py            # AnwbIncident upsert
+    ├── flitspalen.py      # FlitspalenCamera upsert
+    └── flitspalen_route.py # SC/SCE trajectcontrole pairing + Dijkstra road-snapping → FlitspalenCameraRoute
 
 migrations/              # Alembic schema migrations (SQLAlchemy tracked)
 web/                    # Static frontend:
@@ -152,7 +174,7 @@ web/                    # Static frontend:
 │                       # load in this order — concatenation == old app.js):
 ├── config.js           #   layer/group/HUD defs + runtime & GPS state
 ├── map.js              #   basemaps, map init, map.on(load/move/zoom/rotate) handlers
-├── fetch.js            #   fetchAll/fetchLayer/NWB roads, viewportBbox, public config
+├── fetch.js            #   fetchAll/fetchLayer/OSM roads+lanes, viewportBbox, public config
 ├── matrix.js           #   MSI gantry HTML markers (map render)
 ├── hud.js              #   GPS-relative road-sign HUD tiles + current-road context
 │                       #   (road/carriageway/hectometre) and the speed bar
@@ -173,7 +195,14 @@ docs/                   # Feed documentation:
 ├── 04-charging.md
 ├── 05-truckparking.md
 ├── 06-verkeersborden.md
-└── 07-static-reference.md
+├── 07-static-reference.md
+├── 09-performance.md
+├── 10-carriageway-direction-quality.md
+├── 11-osm-pbf.md
+├── 12-anwb-incidents.md
+├── 12-osm-speed-validation.md   # (unrelated report; shares the `12-` prefix by coincidence)
+├── 13-flitspalen-speedcameras.md
+└── plans/              # Superseded pre-implementation planning docs
 ```
 
 ## Core flow

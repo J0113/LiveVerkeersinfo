@@ -59,3 +59,15 @@ Refreshing either VILD or the measurement-site table rebuilds fixed-site
 bearings and derived carriageway diagnostics. The bearing follows a short
 local tangent oriented through same-line `POS_OFF`/`NEG_OFF` neighbours;
 multipart ambiguity and unrelated components remain unresolved.
+
+The same VILD chain also resolves the `effective_road`/`effective_carriageway`
+columns on `measurement_site` — the fields every traffic API query actually
+filters/indexes on (precedence: explicit → VILD-derived → inherited from a
+co-located sibling site). See `ingest.vild_direction.resolve_effective_road`
+and [docs/10](10-carriageway-direction-quality.md).
+
+### API surface
+`GET /api/vild/points`, `/api/vild/lines`, `/api/vild/areas`
+(`src/ndwinfo/api/routers/vild.py`) expose the loaded VILD point/line/area
+tables directly as bbox-filtered GeoJSON, with the raw VILD attributes passed
+through as feature properties.

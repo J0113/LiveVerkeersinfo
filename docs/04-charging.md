@@ -31,9 +31,11 @@ locations dump, and OCPI tariffs. Linked by `tariff_ids`.
 ```
 - `id` e.g. `NL-LMS-91161551`. `availabilities[]` gives live `available`/`total`
   per connector group; `tariff_ids` → tariffs file.
-- **Postgres (PostGIS)**: `charge_point` (id PK, geom POINT, cpo_id, address,
-  operator, last_updated) + `charge_availability` (cp_id FK, total, available,
-  power_max, power_type, connector_type, connector_format, tariff_ids text[]).
+- **Postgres (PostGIS)**: `charge_point` (`id` PK, `cpo_id`, `address`, `city`,
+  `operator_name`, `owner_name`, `open`, `last_updated`, `geom` POINT, `raw`
+  JSONB) + `charge_availability` (`cp_id` FK + `idx` PK, `total`, `available`,
+  `power_max`, `power_type`, `connector_type`, `connector_format`, `tariff_ids`
+  text[]).
 
 ### `GET /api/charging` response fields (derived, not in the raw feed)
 Alongside the raw per-connector `availability[]` array, each feature also
@@ -51,6 +53,17 @@ markers off `available_count`/`connector_total`, not `open`.
 ---
 
 ## charging_point_locations_ocpi.json.gz — OCPI locations (full)
+
+> **Not currently ingested.** The `charging_ocpi` feed is registered in
+> `src/ndwinfo/feeds.py` (60s cadence, so it's downloaded on schedule) but
+> there is no parser or ingester for it — `src/ndwinfo/parsers/geojson_ocpi.py`
+> only has `parse_charging_geojson` and `parse_ocpi_tariffs`, and
+> `src/ndwinfo/ingest/__init__.py`'s `INGESTERS` registry has no
+> `charging_ocpi` entry. The file is fetched and then discarded. The GeoJSON
+> feed above already covers the area-query use case (live availability +
+> geometry), which is presumably why this was never wired up — but treat the
+> rest of this section as a description of the raw feed, not of anything the
+> app stores.
 
 - **Format**: JSON **array** of OCPI `Location` objects, gzip. **Decompressed** large (17M gz). **Refresh** ~60s.
 - **Content**: full OCPI model — locations → EVSEs → connectors, richer than the GeoJSON.
@@ -72,9 +85,10 @@ markers off `available_count`/`connector_total`, not `open`.
 ```
 - Note: top-level `coordinates` can be `null` here (geometry better in the GeoJSON file).
 - Use only if you need full EVSE/connector detail or live `status` per EVSE.
-- **Postgres**: `ocpi_location` / `ocpi_evse` / `ocpi_connector` normalized tables,
-  or store raw JSONB and project columns. For the area-query app the GeoJSON file
-  is usually enough.
+- **Postgres**: none today (see note above). If this is ever wired up, normalized
+  `ocpi_location` / `ocpi_evse` / `ocpi_connector` tables (or raw JSONB with
+  projected columns) would be the natural shape. For the area-query app the
+  GeoJSON file is usually enough.
 
 ---
 
@@ -95,4 +109,5 @@ markers off `available_count`/`connector_total`, not `open`.
 }]
 ```
 - Join: connector/availability `tariff_ids[]` → `tariff.id`.
-- **Postgres**: `tariff` (id PK, currency, party_id, elements JSONB, last_updated).
+- **Postgres**: `tariff` (`id` PK, `currency`, `party_id`, `country_code`,
+  `elements` JSONB, `last_updated`, `raw` JSONB).

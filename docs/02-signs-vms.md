@@ -39,8 +39,10 @@ ndw:NdwVms
   take latest `display` per sign.
 - Geometry (lat/lon) of these signs is in `ndw_msi_shapefiles_latest.zip` (below),
   keyed by sign UUID.
-- **Postgres**: `msi_sign` (uuid PK, road, carriageway, lane, km, geom) +
-  `msi_state` (uuid FK, ts_state, aspect_type, value, flashing, red_ring).
+- **Postgres**: `msi_sign` (uuid PK, road, carriageway, lane, km, `bearing` —
+  road heading at the sign from the shapefile, used to offset the sign
+  perpendicular to the road, geom) + `msi_state` (uuid FK, ts_state,
+  aspect_type, value, flashing, red_ring).
 
 ---
 
@@ -65,20 +67,36 @@ mc:payload (vms:VmsTablePublication)
             └─ vms:vmsLocation xsi:type="loc:PointLocation"
                └─ loc:pointByCoordinates (bearing, lat, lon)
 ```
-- This sample carries panel inventory + location + bearing. Displayed message
-  content (when present) sits in the vms message/display-area elements.
-- **Postgres**: `drip` (controller_id, vms_index, description, type, lat, lon, bearing, message JSONB).
+
+Live display state is **not** nested under the inventory `vms:vms` element —
+it comes from a separate top-level branch, joined back to the same controller:
+```
+vms:vmsControllerTable
+└─ vms:vmsControllerStatus                (MANY, one per controller)
+   └─ vms:vmsStatus (outer) → vms:vmsStatus (inner, per vmsIndex)
+      ├─ vms:workingStatus                (e.g. ok/fault)
+      └─ vms:vmsMessage/vms:vmsMessage
+         └─ …message lines… → joined into display_text
+```
+- **Postgres**: `drip` (`controller_id` + `vms_index` PK, `description`,
+  `vms_type`, `physical_support`, `bearing`, `num_display_areas`,
+  `display_text` — joined text from the `vmsControllerStatus` branch above,
+  `message` JSONB, `geom` POINT, `raw` JSONB).
 
 ---
 
 ## ndw_msi_shapefiles_latest.zip — MSI sign geometry (shapefile)
 
 - **Format**: ESRI **Shapefile** set in `MSI/` (`shapes.shp/.shx/.dbf/.prj`) + a
-  CSV `msi_not_converted_to_shapefile.csv` (signs lacking geometry).
+  CSV `msi_not_converted_to_shapefile.csv` (signs lacking geometry) — **not**
+  currently parsed; `src/ndwinfo/parsers/shapefile_ref.py`'s `parse_msi_shapefile`
+  only reads `shapes.shp` (via `pyogrio`), so signs listed only in that CSV
+  never get an `msi_sign` row.
 - **Refresh**: ~weekly. **CRS**: per `shapes.prj`.
 - **Role**: static geometry/attributes for the matrix signs whose live aspects
   come from `Matrixsignaalinformatie.xml.gz`. Join on sign UUID.
-- **Load**: `shp2pgsql` / `ogr2ogr` → `msi_sign` geometry table; or read the DBF.
+- **Load**: `src/ndwinfo/ingest/signs.py` reads the shapefile records directly
+  into `msi_sign` (no `shp2pgsql`/`ogr2ogr` step).
 
 Zip contents:
 ```

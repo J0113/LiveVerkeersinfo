@@ -25,7 +25,11 @@ sit:situation id="NDW03_166417_PRJ_2"
    ├─ sit:validity/com:validityTimeSpecification (start/end window)
    └─ sit:locationReference                   (point or linear)
 ```
-- **Postgres**: feed into shared `situation` table with `category='roadworks'`.
+- **Postgres**: feed into shared `situation` table (`record_id` PK, `id`,
+  `category='roadworks'`, `record_type`, `severity`, `probability`,
+  `safety_related`, `source`, `valid_from`, `valid_to`, `version_time`,
+  `speed_limit_kmh`, `geom` GEOMETRY, `raw` JSONB — see [docs/01](01-traffic-realtime.md)
+  for the full column list; there is no separate `type`/`lat`/`lon` column).
 
 ---
 
@@ -75,7 +79,11 @@ cz:ControlledZoneTablePublication
       ├─ cz:status                     (active)
       └─ cz:trafficRegulationOrder
          └─ tro:issuingAuthority       (e.g. "Arnhem")
-            (+ zone geometry / vehicle-class conditions further in record)
+            (+ zone geometry further in record)
 ```
-- **Postgres**: `emission_zone` (id, name, type, status, authority, info_url,
-  geom POLYGON, conditions JSONB).
+- **Postgres**: `emission_zone` (`id` PK, `name`, `zone_type`, `status`,
+  `authority`, `info_url`, `geom` POLYGON, `raw` JSONB). Vehicle-class
+  conditions are **not** extracted into their own column — the parser
+  (`parse_emission_zones` in `datex_v3.py`) doesn't currently pull
+  `trafficRegulationOrder` conditions out of the raw record; there is no
+  `conditions` column.

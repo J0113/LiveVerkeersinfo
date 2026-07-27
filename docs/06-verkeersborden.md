@@ -49,6 +49,10 @@ area queries.
 
 ### Ingest tips
 - These are the heaviest feeds — only ingest if signs are in scope.
-- CSV: stream with `COPY` after building `ST_SetSRID(ST_MakePoint(lon,lat),4326)`,
-  or `ogr2ogr` directly from the GeoJSON.
+- Actual implementation (`src/ndwinfo/parsers/csv_signs.py` +
+  `src/ndwinfo/ingest/verkeersborden.py`) reads the CSV row-by-row with
+  `csv.DictReader` over the gzip stream (no DOM/full-file load) and upserts in
+  batches of 1000 via `bulk_upsert`'s `INSERT … ON CONFLICT DO UPDATE`
+  (`ingest/base.py`), committing per batch — **not** `COPY` and **not**
+  `ogr2ogr`.
 - `rd` variant only needed if you want to avoid reprojection from RD source data.

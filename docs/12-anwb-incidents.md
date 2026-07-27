@@ -18,5 +18,6 @@ camera reports that NDW's feeds don't carry.
 - **API**: `GET /api/anwb?bbox=...&category=jams|roadworks|radars`.
 - **Web UI**: `anwb_jams` (Traffic group), `anwb_radars` + `anwb_roadworks`
   (Situations group, top of the section).
-- Disabled by default via `DISABLED_FEEDS` (`docker-compose.yml`) — enable by
-  removing `anwb_incidents` from that list.
+- **Enabled by default** — `docker-compose.yml`'s `DISABLED_FEEDS` only lists
+  `verkeersborden_csv`, and `config.py` defaults `disabled_feeds` to `""`.
+  Disable by adding `anwb_incidents` to `DISABLED_FEEDS` if needed.

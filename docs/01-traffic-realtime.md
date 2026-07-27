@@ -13,8 +13,10 @@ they currently measure (flow, speed, travel time). Plus live incident feeds.
 - **Role**: the **static catalog of every measurement location** on the Dutch
   road network. Real-time value feeds (`trafficspeed`, `traveltime`) do NOT
   carry geometry — they reference a row here by `id`. This file is the geometry
-  + metadata join table. `measurement_current` is the live/current version;
-  `measurement` is effectively the same snapshot.
+  + metadata join table. NDW publishes both `measurement.xml.gz` and
+  `measurement_current.xml.gz` as (near-)identical snapshots, but only
+  `measurement_current.xml.gz` is actually polled — see the `measurement_site`
+  feed in `src/ndwinfo/feeds.py`.
 
 ### Structure
 ```
@@ -43,9 +45,22 @@ d2LogicalModel
 the matching `measurementSiteReference/@id`. The `index` tells you which lane +
 vehicle-length class + value type the live number belongs to.
 
-### Postgres model (suggested)
-- `measurement_site` (id PK, name, equipment_type, num_lanes, side, geom POINT/LINESTRING, version)
-- `measurement_characteristic` (site_id FK, index, lane, period_s, value_type, veh_length_min, veh_length_max)
+### Postgres model
+`measurement_site` (`src/ndwinfo/models.py`): `id` PK, `name`, `equipment_type`,
+`num_lanes`, `side`, `version`, `record_version_time`, `road`, `carriageway`,
+`carriageway_source`, `vild_carriageway(_source)`, `carriageway_direction_conflict`,
+`km`, `openlr_bearing`, `vild_bearing`, `geom` (POINT, WGS84), `line_geom`
+(LINESTRING — road-following travel-time segment, built from the VILD TMC chain
+when resolvable, else the straight start→end chord; see
+`ingest/traveltime_geometry.py`).
+
+Three fields carry the **resolved** road/carriageway that API queries actually
+filter/index on — `effective_road`, `effective_carriageway`, `effective_source`
+— set by `ingest.vild_direction.resolve_effective_road` with precedence
+explicit → VILD-derived → inherited from a co-located sibling site (see
+[docs/10](10-carriageway-direction-quality.md) and CLAUDE.md). The raw
+`road`/`carriageway` columns hold whatever NDW/VILD reported before that
+resolution step; don't query them directly.
 
 ---
 
@@ -147,8 +162,9 @@ carriageway and fenced by a request generation, so a U-turn drops them
 immediately and a late response from the previous direction is discarded.
 
 ### Postgres model
-`traffic_measurement` (site_id, index, measured_at, value_type, value) — append
-per cycle or upsert latest; partition/retain as needed.
+`traffic_measurement` (`site_id` + `index` PK, `measured_at`, `value_type`,
+`flow_veh_h`, `speed_kmh`, `n_inputs`, `std_dev`, `raw` JSONB) — upsert latest
+per site+index, no history retained.
 
 ---
 
@@ -197,8 +213,13 @@ mc:messageContainer
             └─ loc:pointByCoordinates (bearing, lat, lon) + loc:alertCPoint (TMC)
 ```
 - Record types seen: `VehicleObstruction` and other DATEX situation subtypes.
-- **Postgres**: `situation` (id, type, severity, prob, safety, start, end,
-  source, lat, lon, bearing, raw JSONB) — generic table keyed by `xsi:type`.
+- **Postgres**: `situation` (`record_id` PK, `id` — situation grouping id,
+  `category` — incident|srti|roadworks|…, `record_type` — `xsi:type` stripped,
+  `severity`, `probability`, `safety_related`, `source`, `valid_from`,
+  `valid_to`, `version_time`, `speed_limit_kmh`, `geom` GEOMETRY (WGS84,
+  point or line), `raw` JSONB) — one shared table for all DATEX v3 situation
+  feeds, keyed by `category`/`record_type` rather than a plain `type` column.
+  There is no separate `lat`/`lon`/`bearing` column; position lives in `geom`.
 
 ---
 

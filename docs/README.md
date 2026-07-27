@@ -98,6 +98,13 @@ How `alertCDirectionCoded` + the VILD TMC chain establish travel direction,
 how explicit and derived R/L remain separate, and how the implemented local
 tangent enrichment handles unresolved cases.
 
+### OSM speed-lane rollout validation report → [12-osm-speed-validation.md](12-osm-speed-validation.md)
+
+Permanent snapshot report for the 2026-07-20 replacement of WEGGEG/NWB speed
+lanes with VILD-directed sensors + OSM lane geometry. Report-only; not a
+feed doc (shares the `12-` prefix with the ANWB doc below by coincidence —
+the two are unrelated).
+
 ### ANWB incidents (non-NDW source) → [12-anwb-incidents.md](12-anwb-incidents.md)
 
 Jams, roadworks, and dynamic speed camera reports from ANWB's own JSON API.
