@@ -220,14 +220,16 @@ map.on('load', () => {
       setupClickPopup(`${layer.key}-fill`)
     } else if (layer.geomType === 'line') {
       for (const fill of layer.fills || []) {
+        const fillLayerId = `${layer.key}-${fill.suffix}`
         map.addLayer({
-          id: `${layer.key}-${fill.suffix}`,
+          id: fillLayerId,
           type: 'fill',
           source: layer.key,
           filter: fill.filter,
           paint: fill.paint,
           layout: { visibility: vis }
         })
+        setupClickPopup(fillLayerId)
       }
       if (layer.casing) {
         map.addLayer({

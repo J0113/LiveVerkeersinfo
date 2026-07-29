@@ -58,6 +58,21 @@ secondary(+`_link`) — the `_link` classes inherit their parent class's
 width. Computed in the same PBF pass as `osm_road` (`ndwinfo.parsers.osm_lanes.make_lane_rows`,
 called from `OsmRoadIngester._flush`) — no second file read.
 
+For local geometry development, a small database-backed region can be
+regenerated without reparsing the 1.3GB PBF:
+
+```bash
+python -m ndwinfo.refresh_osm_lanes \
+  --bbox 4.615,52.229,4.628,52.233
+```
+
+The command expands the bbox by 0.003° for adjacent junction topology, rebuilds
+lanes/connectors from the existing `osm_road` rows, and replaces lane rows only
+for ways in that expanded region. Other regions deliberately retain their
+previously generated lane rows until they are refreshed too or the national
+PBF is ingested again; when validating a parser change at a new location,
+refresh that location before judging its geometry.
+
 Every driving way gets lanes; the only ways without any are the 33
 `oneway=reversible` motorways deliberately skipped below.
 
@@ -367,11 +382,12 @@ bands. That local overlap closes antialiasing cracks without exposing a line
 cap: on a sub-metre join, a full-width butt cap otherwise reads as a blue
 rectangle whenever the adjoining tangents differ.
 At a mixed-topology handover between one two-way way and separate one-way ways,
-the adjoining normal lane lines are retracted 0.75m (capped at a quarter of a
-short lane's length) and the polygon spans those trimmed cross-sections. Their
-independent flat caps therefore sit underneath the polygon instead of
-protruding at the split. Ordinary one-way continuations and unmatched road ends
-keep their conservative butt caps unchanged.
+the adjoining normal lane lines are retracted far enough for a gradual
+edge-to-edge taper (capped at 12m and a quarter of a short lane's length), and
+the polygon spans those trimmed cross-sections. Their independent flat caps
+therefore sit underneath the polygon instead of protruding at the split.
+Ordinary aligned continuations and unmatched road ends keep their conservative
+butt caps unchanged.
 
 ### Shared-node continuation joins
 
@@ -385,9 +401,44 @@ steps and triangular holes in the rendered surface.
 including `fwd` and `bwd` halves of a two-way way. `make_continuation_rows` then
 bridges only an exact shared source node, only to the straightest continuation
 within 55°, and only when `ref` or `name` agrees. Lane pairs are monotone across
-the cross-section. If the lane counts differ, every lane on the wider side gets
-a join surface and the nearest normalised lane on the narrower side is reused,
-so the road surface fans in or out without connector bands crossing.
+the cross-section. A single surface spans a lane-count change, while an
+explicit lane correspondence controls its internal markings. A source
+`merge_to_left/right` lane maps onto its surviving neighbour instead of
+displacing a surviving lane. Conversely, when a wider target has a distinct
+edge turn lane (`none|none|slight_right`), the through lanes keep their
+one-to-one positions and the exit lane grows from the corresponding outside
+edge. Connector metadata exposes this as `raw.lane_map`.
+
+When several approaches choose the same **directional** exit, they contest one
+target cross-section instead of each receiving a full-width fan. The approaches
+are ordered from the position of their arrival tangents 25m before the shared
+node (their centre lines all coincide at the node itself), then assigned
+contiguous target-lane blocks in that order. A conserved `2+1 -> 3` merge gets
+disjoint `2+1` blocks. If more lanes arrive than the target carries, blocks may
+share only the outer lanes needed for the convergence (`3+1 -> 3` keeps the
+three-lane mainline and lets the ramp share its nearest outer lane). If the
+target is wider, block sizes expand proportionally. The grouping key is the
+target record's `(osm_id, direction)`, so the opposite `fwd`/`bwd` halves of a
+two-way road never compete with one another.
+
+Continuation polygons use the allocated block's centre and width. Trim length
+is based on the physical edge shift between the approach and that block, not
+only on whether their lane counts differ. For disjoint contested blocks, the
+approaches are walked upstream (at most 80m and 60% of the shortest approach)
+until their source cross-sections no longer overlap. Adjacent connector
+polygons then reuse the exact same Bezier boundary, so independently curved
+surfaces cannot form an X-shaped overlap. The trim station is also required to
+sit upstream of the intersection between the incoming bands' adjacent outside
+edge strokes; otherwise those normal lane overlays could retain the same
+visual X after the polygons themselves were fixed. Both ends are sampled from
+the real lane geometry at their trim stations rather than projected from the
+shared node; this also keeps curved and already-merging lanes on their actual
+centrelines. Target trimming remains coordinated: all of its lane rows use the
+greatest requested trim, keeping one clean cross-section under adjacent
+continuation surfaces. The exception is an already-completed merge whose
+distinct survivor count exactly matches the target: `osm_lanes` has already
+re-centred that section, so the handover uses zero trim plus only the tiny seam
+patch. Trimming it again would turn offset-curve cap skew into a visible notch.
 
 This pass also emits a tiny overlapping polygon when corresponding offset
 endpoints touch exactly, covering antialiasing cracks at a way split without
@@ -424,6 +475,31 @@ and the link's lane would all have to occupy the same spot while the real
 carriageways separate gradually. No lane geometry derived from OSM way
 centrelines can render a gore faithfully; renderers that do it well use road
 polygons or dedicated lane data, not way geometry.
+
+Tagged one-to-many diverges are handled as N:M allocations. A trustworthy
+`turn:lanes` cardinality assigns each contiguous approach block to the exit
+whose real angle best matches its token (`none|none|slight_right` becomes
+lanes 1–2 to the straight two-lane exit and lane 3 to the link). Exit
+cross-sections are walked downstream until their bands separate, mirroring the
+merge-side trim. The separation check tests the two adjacent gore-edge curves
+directly; testing only the closed polygon boundaries can miss an X when another
+part of those boundaries also overlaps. Those validated curves are reused for
+the rendered connector markings.
+
+Exact-node continuation surfaces own the lane movements they cover. Matching
+legacy `turn:lanes` centre-line connectors are therefore suppressed when both
+generators describe the same `(source way, source lane, target way)` movement;
+unmatched turn connectors remain available for junction-box movements.
+Untagged forks remain ambiguous and keep the conservative
+single-best-exit behaviour; lane counts alone cannot say which source lane
+belongs to which branch.
+
+Continuation surfaces also emit narrow edge and dashed divider geometries.
+These preserve the road markings across a long trim interval and remain
+separate from the clickable fill polygons. Divider paths follow the explicit
+lane correspondence rather than equal fractions of the two cross-sections:
+merged-away dividers stop, preserved dividers meet their matching target
+boundary, and a newly added exit-lane divider begins at the outside edge.
 
 **Carriageway splits** are the tractable subset of that, and not rare: at
 **817** nodes a two-way way meets exactly two oneway ways with the lane count

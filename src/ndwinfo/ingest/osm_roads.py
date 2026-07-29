@@ -20,6 +20,7 @@ from ndwinfo.download import DownloadResult
 from ndwinfo.ingest.base import BATCH_SIZE, Ingester, bulk_upsert, json_safe, wkt_geom
 from ndwinfo.models import OsmRoad, OsmRoadExtract, OsmRoadLane
 from ndwinfo.parsers.osm_junctions import (
+    combine_connector_rows,
     continuation_records,
     junction_record,
     make_connector_rows,
@@ -165,7 +166,10 @@ class OsmRoadIngester(Ingester):
         for start in range(0, len(trimmed_rows), BATCH_SIZE):
             self._insert_lanes(session, trimmed_rows[start:start + BATCH_SIZE])
             session.flush()
-        rows = make_connector_rows(junctions) + continuation_rows
+        rows = combine_connector_rows(
+            make_connector_rows(junctions),
+            continuation_rows,
+        )
         for start in range(0, len(rows), BATCH_SIZE):
             self._insert_lanes(session, rows[start:start + BATCH_SIZE])
             session.flush()

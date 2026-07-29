@@ -7,18 +7,25 @@ WGS84-vs-metres slip fails here rather than passing a planar sanity check.
 
 from __future__ import annotations
 
+import math
+
 from pyproj import Geod
 from shapely import from_wkt
 from shapely.geometry import LineString
+from shapely.ops import transform
 
 from ndwinfo.parsers.osm_junctions import (
     _RD_TO_WGS84,
+    _WGS84_TO_RD,
+    BEZIER_SAMPLES,
+    CONTINUATION_PATCH_M,
+    combine_connector_rows,
     continuation_records,
     junction_record,
     make_connector_rows,
     make_continuation_rows,
 )
-from ndwinfo.parsers.osm_lanes import make_lane_rows
+from ndwinfo.parsers.osm_lanes import make_all_lane_rows, make_lane_rows
 
 GEOD = Geod(ellps="WGS84")
 
@@ -74,11 +81,91 @@ def _connectors(approach_tags: dict, exits: list[tuple[int, dict, LineString]]) 
 
 def _continuations(ways: list[tuple[int, dict, LineString]]) -> list[dict]:
     records = {}
+    lane_rows = {}
     for osm_id, tags, line in ways:
         rows = make_lane_rows(osm_id, "primary", tags, line)
+        lane_rows.update((row["id"], row) for row in rows)
         for record in continuation_records(osm_id, tags, line, rows):
             records[record["key"]] = record
-    return make_continuation_rows(records)
+    return [
+        row for row in make_continuation_rows(records, lane_rows)
+        if row["role"] == "connector"
+    ]
+
+
+def _continuations_with_highways(
+    ways: list[tuple[int, str, dict, LineString]],
+    *,
+    include_lane_rows: bool = False,
+    include_markings: bool = False,
+    merge_context: bool = False,
+) -> list[dict] | tuple[list[dict], dict[str, dict]]:
+    records = {}
+    lane_rows = {}
+    generated_by_way: dict[int, list[dict]] = {}
+    if merge_context:
+        for row in make_all_lane_rows(ways):
+            generated_by_way.setdefault(row["source_id"], []).append(row)
+    for osm_id, highway, tags, line in ways:
+        rows = (
+            generated_by_way.get(osm_id, [])
+            if merge_context
+            else make_lane_rows(osm_id, highway, tags, line)
+        )
+        lane_rows.update((row["id"], row) for row in rows)
+        for record in continuation_records(osm_id, tags, line, rows):
+            records[record["key"]] = record
+    continuation_rows = make_continuation_rows(records, lane_rows)
+    selected = (
+        continuation_rows
+        if include_markings
+        else [row for row in continuation_rows if row["role"] == "connector"]
+    )
+    return (selected, lane_rows) if include_lane_rows else selected
+
+
+def _surface_centreline(row: dict) -> LineString:
+    """Recover the sampled centreline from a continuation surface's two edges."""
+    surface = from_wkt(row["geom"])
+    coords = list(surface.exterior.coords)
+    samples = BEZIER_SAMPLES + 1
+    left = coords[:samples]
+    right = list(reversed(coords[samples:2 * samples]))
+    return LineString([
+        ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        for a, b in zip(left, right)
+    ])
+
+
+def _allocated_overlap_bound(a: dict, b: dict) -> float:
+    """Area bound implied by allocated widths and sampled centreline spacing."""
+    centre_a = transform(_WGS84_TO_RD.transform, _surface_centreline(a))
+    centre_b = transform(_WGS84_TO_RD.transform, _surface_centreline(b))
+    steps = 64
+    overlap_widths = []
+    for index in range(steps + 1):
+        fraction = index / steps
+        width_a = (
+            (1.0 - fraction) * a["lane_count"]
+            + fraction * len(a["raw"]["to_lanes"])
+        ) * a["width_m"]
+        width_b = (
+            (1.0 - fraction) * b["lane_count"]
+            + fraction * len(b["raw"]["to_lanes"])
+        ) * b["width_m"]
+        pa = centre_a.interpolate(fraction, normalized=True)
+        pb = centre_b.interpolate(fraction, normalized=True)
+        overlap_widths.append(max(0.0, (width_a + width_b) / 2.0 - pa.distance(pb)))
+    spacing = max(centre_a.length, centre_b.length) / steps
+    integrated = sum(
+        (overlap_widths[index] + overlap_widths[index + 1]) * 0.5 * spacing
+        for index in range(steps)
+    )
+    seam = (a["width_m"] + b["width_m"]) * CONTINUATION_PATCH_M * 2.0
+    # Centreline-normal integration slightly underestimates a curved polygon's
+    # diagonal edge projection. Keep a proportional margin rather than a fixed
+    # square-metre allowance.
+    return integrated * 1.2 + seam
 
 
 def test_left_left_through_right_connects_every_lane():
@@ -262,6 +349,331 @@ def test_continuation_fans_across_a_wider_cross_section_without_internal_seams()
     assert surface.is_valid
 
 
+def test_contested_a44_merge_allocates_ramp_and_mainline_to_separate_blocks():
+    # Exact topology from the reported junction:
+    # 551716643 (one-lane on-ramp) + 948690091 (two-lane mainline)
+    # -> 386967467 (three lanes).
+    node = (4.622332, 52.231048)
+    ramp = LineString([(4.627301, 52.231691), node])
+    mainline = LineString([(4.624278, 52.231206), node])
+    target = LineString([node, (4.618934, 52.230765)])
+    common = {"ref": "A44", "oneway": "yes"}
+    rows, lane_rows = _continuations_with_highways([
+        (551716643, "motorway_link", {**common, "lanes": "1"}, ramp),
+        (948690091, "motorway", {**common, "lanes": "2"}, mainline),
+        (
+            386967467,
+            "motorway",
+            {**common, "lanes": "3", "turn:lanes": "none|none|merge_to_left"},
+            target,
+        ),
+    ], include_lane_rows=True)
+
+    by_source = {row["source_id"]: row for row in rows}
+    assert set(by_source) == {551716643, 948690091}
+    assert by_source[948690091]["raw"]["to_lanes"] == [1, 2]
+    assert by_source[551716643]["raw"]["to_lanes"] == [3]
+    assert all(row["raw"]["to_osm_id"] == 386967467 for row in rows)
+
+    ramp_centre = transform(_WGS84_TO_RD.transform, _surface_centreline(by_source[551716643]))
+    main_centre = transform(_WGS84_TO_RD.transform, _surface_centreline(by_source[948690091]))
+    assert not ramp_centre.crosses(main_centre)
+    rd_target = transform(_WGS84_TO_RD.transform, target)
+    target_start, target_end = rd_target.coords[0], rd_target.coords[-1]
+    target_length = math.dist(target_start, target_end)
+    target_unit = (
+        (target_end[0] - target_start[0]) / target_length,
+        (target_end[1] - target_start[1]) / target_length,
+    )
+    end_delta = (
+        ramp_centre.coords[-1][0] - main_centre.coords[-1][0],
+        ramp_centre.coords[-1][1] - main_centre.coords[-1][1],
+    )
+    assert abs(end_delta[0] * target_unit[0] + end_delta[1] * target_unit[1]) < 0.1
+
+    ramp_surface = transform(_WGS84_TO_RD.transform, from_wkt(by_source[551716643]["geom"]))
+    main_surface = transform(_WGS84_TO_RD.transform, from_wkt(by_source[948690091]["geom"]))
+    assert not ramp_surface.boundary.crosses(main_surface.boundary)
+    assert ramp_surface.intersection(main_surface).area <= _allocated_overlap_bound(
+        by_source[551716643], by_source[948690091]
+    )
+
+    # The normal lane bands stop at the connector's new source station. Their
+    # adjacent outside strokes must be cut after their geometric intersection,
+    # otherwise MapLibre still draws an X even though the connector polygons
+    # themselves share a clean seam.
+    ramp_line = transform(
+        _WGS84_TO_RD.transform, from_wkt(lane_rows["551716643:fwd:1"]["geom"])
+    )
+    main_right_line = transform(
+        _WGS84_TO_RD.transform, from_wkt(lane_rows["948690091:fwd:2"]["geom"])
+    )
+    assert not ramp_line.offset_curve(1.75).crosses(
+        main_right_line.offset_curve(-1.75)
+    )
+
+
+def test_non_conserved_merge_shares_only_the_outer_target_lane():
+    node = (4.622332, 52.231048)
+    ramp = LineString([(4.627301, 52.231691), node])
+    mainline = LineString([(4.624278, 52.231206), node])
+    target = LineString([node, (4.618934, 52.230765)])
+    common = {"ref": "A44", "oneway": "yes"}
+    rows = _continuations_with_highways([
+        (10, "motorway_link", {**common, "lanes": "1"}, ramp),
+        (20, "motorway", {**common, "lanes": "3"}, mainline),
+        (30, "motorway", {**common, "lanes": "3"}, target),
+    ])
+
+    by_source = {row["source_id"]: row for row in rows}
+    assert by_source[20]["raw"]["to_lanes"] == [1, 2, 3]
+    assert by_source[10]["raw"]["to_lanes"] == [3]
+    assert sum(len(row["raw"]["to_lanes"]) == 3 for row in rows) == 1
+
+    ramp_surface = transform(_WGS84_TO_RD.transform, from_wkt(by_source[10]["geom"]))
+    main_surface = transform(_WGS84_TO_RD.transform, from_wkt(by_source[20]["geom"]))
+    ramp_centre = transform(_WGS84_TO_RD.transform, _surface_centreline(by_source[10]))
+    main_centre = transform(_WGS84_TO_RD.transform, _surface_centreline(by_source[20]))
+    assert not ramp_centre.crosses(main_centre)
+    assert ramp_surface.intersection(main_surface).area <= _allocated_overlap_bound(
+        by_source[10], by_source[20]
+    )
+
+
+def test_tagged_a44_diverge_splits_source_lane_blocks_across_both_exits():
+    node = (4.621856, 52.230899)
+    approach = LineString([(4.618287, 52.230591), node])
+    mainline = LineString([node, (4.627391, 52.231374)])
+    exit_link = LineString([node, (4.625239, 52.230628)])
+    common = {"ref": "A44", "oneway": "yes"}
+    all_rows = _continuations_with_highways([
+        (
+            386967473,
+            "motorway",
+            {**common, "lanes": "3", "turn:lanes": "none|none|slight_right"},
+            approach,
+        ),
+        (127572892, "motorway", {**common, "lanes": "2"}, mainline),
+        (7399108, "motorway_link", {**common, "lanes": "1"}, exit_link),
+    ], include_markings=True)
+    rows = [row for row in all_rows if row["role"] == "connector"]
+
+    by_target = {row["raw"]["to_osm_id"]: row for row in rows}
+    assert set(by_target) == {127572892, 7399108}
+    assert by_target[127572892]["raw"]["from_lanes"] == [1, 2]
+    assert by_target[127572892]["raw"]["to_lanes"] == [1, 2]
+    assert by_target[7399108]["raw"]["from_lanes"] == [3]
+    assert by_target[7399108]["raw"]["to_lanes"] == [1]
+    edge_rows = [
+        row
+        for row in all_rows
+        if row["role"] == "connector_marking"
+        and row["raw"]["continuation_marking"] == "edge"
+    ]
+    edge_lines = [
+        transform(_WGS84_TO_RD.transform, from_wkt(row["geom"]))
+        for row in edge_rows
+    ]
+    assert not any(
+        edge_lines[left].crosses(edge_lines[right])
+        for left in range(len(edge_lines))
+        for right in range(left + 1, len(edge_lines))
+    )
+    by_edge = {
+        (row["raw"]["to_osm_id"], row["id"].rsplit(":", 1)[-1]): line
+        for row, line in zip(edge_rows, edge_lines)
+    }
+    assert math.dist(
+        by_edge[(127572892, "right")].coords[0],
+        by_edge[(7399108, "left")].coords[0],
+    ) < 1e-6
+
+
+def test_exact_continuation_owns_covered_legacy_lane_movements():
+    turn_rows = [
+        {
+            "id": "10:conn:1:20:1",
+            "source_id": 10,
+            "lane": 1,
+            "role": "connector",
+            "raw": {"to_osm_id": 20, "to_lane": 1},
+        },
+        {
+            "id": "10:conn:2:30:1",
+            "source_id": 10,
+            "lane": 2,
+            "role": "connector",
+            "raw": {"to_osm_id": 30, "to_lane": 1},
+        },
+    ]
+    continuation_rows = [
+        {
+            "id": "10:join:fwd:20:fwd",
+            "source_id": 10,
+            "lane": 1,
+            "role": "connector",
+            "raw": {
+                "continuation": True,
+                "from_lanes": [1],
+                "to_osm_id": 20,
+                "to_lanes": [1],
+            },
+        },
+    ]
+
+    combined = combine_connector_rows(turn_rows, continuation_rows)
+    assert {row["id"] for row in combined} == {
+        "10:conn:2:30:1",
+        "10:join:fwd:20:fwd",
+    }
+
+
+def test_tagged_a44_narrowing_maps_the_merging_lane_to_its_neighbour():
+    node = (4.618934, 52.230765)
+    approach = LineString([(4.622332, 52.231048), node])
+    target = LineString([node, (4.584062, 52.228187)])
+    common = {"ref": "A44", "oneway": "yes"}
+    all_rows, lane_rows = _continuations_with_highways([
+        (
+            386967467,
+            "motorway",
+            {**common, "lanes": "3", "turn:lanes": "none|none|merge_to_left"},
+            approach,
+        ),
+        (127572925, "motorway", {**common, "lanes": "2"}, target),
+    ], include_lane_rows=True, include_markings=True, merge_context=True)
+    rows = [row for row in all_rows if row["role"] == "connector"]
+
+    assert len(rows) == 1
+    assert rows[0]["raw"]["from_lanes"] == [1, 2, 3]
+    assert rows[0]["raw"]["to_lanes"] == [1, 2]
+    assert rows[0]["raw"]["lane_map"] == [
+        {"from": 1, "to": 1},
+        {"from": 2, "to": 2},
+        {"from": 3, "to": 2},
+    ]
+    assert sum(
+        row["role"] == "connector_marking"
+        and row["raw"]["continuation_marking"] == "divider"
+        for row in all_rows
+    ) == 1
+    lane_2_end = transform(
+        _WGS84_TO_RD.transform,
+        from_wkt(lane_rows["386967467:fwd:2"]["geom"]),
+    ).coords[-1]
+    lane_3_end = transform(
+        _WGS84_TO_RD.transform,
+        from_wkt(lane_rows["386967467:fwd:3"]["geom"]),
+    ).coords[-1]
+    assert math.dist(lane_2_end, lane_3_end) < 0.2
+    assert all(
+        not lane_rows[f"{source}:fwd:{lane}"]["raw"].get("continuation_trim")
+        for source, lane_count in ((386967467, 3), (127572925, 2))
+        for lane in range(1, lane_count + 1)
+    )
+
+
+def test_tagged_a44_widening_adds_the_slight_right_target_lane_at_the_edge():
+    node = (4.618287, 52.230591)
+    approach = LineString([(4.584062, 52.228187), node])
+    target = LineString([node, (4.622332, 52.231048)])
+    common = {"ref": "A44", "oneway": "yes"}
+    all_rows = _continuations_with_highways([
+        (127572847, "motorway", {**common, "lanes": "2"}, approach),
+        (
+            386967473,
+            "motorway",
+            {**common, "lanes": "3", "turn:lanes": "none|none|slight_right"},
+            target,
+        ),
+    ], include_markings=True)
+    rows = [row for row in all_rows if row["role"] == "connector"]
+
+    assert len(rows) == 1
+    assert rows[0]["raw"]["from_lanes"] == [1, 2]
+    assert rows[0]["raw"]["to_lanes"] == [1, 2, 3]
+    assert rows[0]["raw"]["lane_map"] == [
+        {"from": 1, "to": 1},
+        {"from": 2, "to": 2},
+    ]
+    assert sum(
+        row["role"] == "connector_marking"
+        and row["raw"]["continuation_marking"] == "divider"
+        for row in all_rows
+    ) == 2
+
+
+def test_second_a44_cluster_allocates_mainline_and_ramp_without_crossing():
+    # Exact shared-node topology around 52.231815, 4.632914. This is the same
+    # generic 2+1→3 shape as the first reported merge, but with longer curved
+    # source ways and the ramp approaching from the opposite screen direction.
+    node = (4.6329136, 52.231815)
+    mainline = LineString([
+        (4.6279692, 52.2314232),
+        (4.6307529, 52.2316525),
+        node,
+    ])
+    ramp = LineString([
+        (4.6292633, 52.2312691),
+        (4.6302939, 52.2314897),
+        (4.6320846, 52.2316698),
+        node,
+    ])
+    target = LineString([node, (4.6373067, 52.232177)])
+    common = {"ref": "A44", "oneway": "yes"}
+    rows = _continuations_with_highways([
+        (127572916, "motorway", {**common, "lanes": "2"}, mainline),
+        (7399114, "motorway_link", {**common, "lanes": "1"}, ramp),
+        (
+            386967459,
+            "motorway",
+            {**common, "lanes": "3", "turn:lanes": "none|none|merge_to_left"},
+            target,
+        ),
+    ])
+
+    by_source = {row["source_id"]: row for row in rows}
+    assert set(by_source) == {127572916, 7399114}
+    assert by_source[127572916]["raw"]["to_lanes"] == [1, 2]
+    assert by_source[7399114]["raw"]["to_lanes"] == [3]
+    main_centre = _surface_centreline(by_source[127572916])
+    ramp_centre = _surface_centreline(by_source[7399114])
+    assert not main_centre.crosses(ramp_centre)
+
+
+def test_second_a44_cluster_splits_slight_right_lane_to_exit():
+    node = (4.6326406, 52.2319142)
+    approach = LineString([
+        (4.6420488, 52.2329186),
+        (4.6375032, 52.2323172),
+        node,
+    ])
+    mainline = LineString([node, (4.6279541, 52.2314922)])
+    exit_link = LineString([
+        node,
+        (4.6315143, 52.2318992),
+        (4.6280765, 52.2317329),
+    ])
+    common = {"ref": "A44", "oneway": "yes"}
+    rows = _continuations_with_highways([
+        (
+            127572943,
+            "motorway",
+            {**common, "lanes": "3", "turn:lanes": "none|none|slight_right"},
+            approach,
+        ),
+        (386967462, "motorway", {**common, "lanes": "2"}, mainline),
+        (7399104, "motorway_link", {**common, "lanes": "1"}, exit_link),
+    ])
+
+    by_target = {row["raw"]["to_osm_id"]: row for row in rows}
+    assert set(by_target) == {386967462, 7399104}
+    assert by_target[386967462]["raw"]["from_lanes"] == [1, 2]
+    assert by_target[386967462]["raw"]["to_lanes"] == [1, 2]
+    assert by_target[7399104]["raw"]["from_lanes"] == [3]
+    assert by_target[7399104]["raw"]["to_lanes"] == [1]
+
+
 def test_separate_oneways_join_both_directions_of_a_two_way_road():
     # The second screenshot's topology: two one-way carriageways meet one
     # shared two-way centreline. Each offset directional half needs its own
@@ -277,6 +689,10 @@ def test_separate_oneways_join_both_directions_of_a_two_way_road():
     ])
     joins = {(r["source_id"], r["direction"], r["raw"]["to_osm_id"]) for r in rows}
     assert joins == {(1, "fwd", 3), (3, "bwd", 2)}
+    # The two-way target is represented by separate directional records, so
+    # neither one-way is treated as contesting the other's one-lane section.
+    assert all(r["raw"]["to_lanes"] == [1] for r in rows)
+    assert all(r["width_m"] == 3.5 for r in rows)
 
 
 def test_touching_continuation_emits_a_lane_width_surface_not_a_line_cap():
@@ -317,7 +733,10 @@ def test_confirmed_continuation_trims_flat_lane_caps_under_the_surface():
         for record in continuation_records(osm_id, tags, line, rows):
             records[record["key"]] = record
 
-    surfaces = make_continuation_rows(records, lane_rows)
+    surfaces = [
+        row for row in make_continuation_rows(records, lane_rows)
+        if row["role"] == "connector"
+    ]
 
     assert len(surfaces) == 1
     trimmed_rows = [

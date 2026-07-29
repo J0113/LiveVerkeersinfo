@@ -8,7 +8,10 @@
 
 // A junction connector is a path across the junction box rather than a lane of
 // a carriageway, so it takes the lane band but none of the lane markings.
-const NOT_CONNECTOR = ['!=', ['get', 'role'], 'connector']
+const NOT_CONNECTOR = ['all',
+  ['!=', ['get', 'role'], 'connector'],
+  ['!=', ['get', 'role'], 'connector_marking']
+]
 
 // Lane rendering: asphalt and the paint on it.
 const LANE_ASPHALT = '#8BA5C1'
@@ -270,6 +273,23 @@ const LAYERS = [
     // Connectors carry no divider_left at all, so they drop out here without
     // needing NOT_CONNECTOR — a junction interior has no lane lines.
     overlays: [
+      {
+        suffix: 'continuation-edge',
+        filter: ['==', ['get', 'continuation_marking'], 'edge'],
+        paint: {
+          'line-color': LANE_MARKING,
+          'line-width': metresWideMin(0.2, 0.9, 15)
+        }
+      },
+      {
+        suffix: 'continuation-divider',
+        filter: ['==', ['get', 'continuation_marking'], 'divider'],
+        paint: {
+          'line-color': LANE_MARKING,
+          'line-width': metresWideMin(0.15, 0.8, 15),
+          'line-dasharray': [20, 60]
+        }
+      },
       {
         // Outside road edges are narrow offset strokes, not a wide casing
         // underneath every independent lane feature. A wide casing has a butt
