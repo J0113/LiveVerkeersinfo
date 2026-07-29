@@ -641,6 +641,44 @@ def test_second_a44_cluster_allocates_mainline_and_ramp_without_crossing():
     assert not main_centre.crosses(ramp_centre)
 
 
+def test_short_a44_ramp_uses_last_safety_step_and_keeps_outer_lane():
+    # At the A44/N208 interchange the one-lane ramp is only ~47m long. Its
+    # bands become safely separated 28.83m before the merge, just beyond the
+    # raw 60%-of-length station (28.39m) but inside the next 0.5m search step.
+    node = (4.5437092, 52.2217193)
+    mainline = LineString([
+        (4.5468148, 52.2223762),
+        (4.5461981, 52.222223),
+        (4.5450475, 52.2219776),
+        node,
+    ])
+    ramp = LineString([
+        (4.5443216, 52.2219179),
+        (4.5443107, 52.2219143),
+        node,
+    ])
+    target = LineString([node, (4.5420904, 52.2214002)])
+    common = {"ref": "A44", "oneway": "yes"}
+    rows = _continuations_with_highways([
+        (37685756, "motorway", {**common, "lanes": "2"}, mainline),
+        (1371157290, "motorway_link", {**common, "lanes": "1"}, ramp),
+        (
+            37685757,
+            "motorway",
+            {**common, "lanes": "3", "turn:lanes": "none|none|merge_to_left"},
+            target,
+        ),
+    ])
+
+    by_source = {row["source_id"]: row for row in rows}
+    assert set(by_source) == {37685756, 1371157290}
+    assert by_source[37685756]["raw"]["to_lanes"] == [1, 2]
+    assert by_source[1371157290]["raw"]["to_lanes"] == [3]
+    assert not _surface_centreline(by_source[37685756]).crosses(
+        _surface_centreline(by_source[1371157290])
+    )
+
+
 def test_second_a44_cluster_splits_slight_right_lane_to_exit():
     node = (4.6326406, 52.2319142)
     approach = LineString([

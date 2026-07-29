@@ -1085,7 +1085,7 @@ def _non_crossing_approach_trim(
         min(
             min(approach["lane_lengths"].values()) * 0.6
             for approach, _target, _lanes in allocations
-        ),
+        ) + CONTINUATION_CONTESTED_TRIM_STEP_M,
     )
     target_u = _unit(allocations[0][1]["leave_bearing"])
     target_left = (-target_u[1], target_u[0])
@@ -1307,7 +1307,7 @@ def _non_crossing_exit_trim(
         min(
             min(target["lane_lengths"].values()) * 0.6
             for _approach, target, _approach_lanes, _target_lanes in flows
-        ),
+        ) + CONTINUATION_CONTESTED_TRIM_STEP_M,
     )
     candidate = start
     while candidate <= limit + 1e-9:
