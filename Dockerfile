@@ -8,8 +8,12 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY pyproject.toml .
+RUN mkdir -p src/ndwinfo && touch src/ndwinfo/__init__.py \
+    && pip install --no-cache-dir . \
+    && rm -rf src
+
 COPY src/ src/
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir --no-deps .
 COPY web/ web/
 COPY migrations/ migrations/
 COPY alembic.ini .
