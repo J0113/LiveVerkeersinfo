@@ -149,6 +149,19 @@ def test_directional_conflict_draws_unknown_physical_total():
     assert {lane.direction for lane in plan.lanes} == {"unknown"}
 
 
+def test_lanes_both_ways_only_is_preserved_as_an_explicit_conflict():
+    plan = plan_lane_cross_section({"lanes:both_ways": "1"})
+
+    assert plan.count_source == "conflict"
+    assert len(plan.lanes) == 1
+    assert plan.lanes[0].direction == "unknown"
+    assert plan.lanes[0].raw["both_ways"] is True
+    assert plan.lanes[0].offset_m == 0.0
+    assert plan.diagnostics["incomplete_directional_tags"] == [
+        "lanes:both_ways"
+    ]
+
+
 def test_odd_untagged_direction_total_is_not_guessed():
     plan = plan_lane_cross_section({"lanes": "3"})
     assert len(plan.lanes) == 3

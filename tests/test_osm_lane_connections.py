@@ -102,6 +102,31 @@ def test_equal_count_straight_maps_lane_i_to_i():
     assert all("to_trim_m" not in row["raw"] for row in connections)
 
 
+def test_legacy_rows_without_original_endpoints_are_excluded_from_adjacency():
+    tags = {"highway": "primary", "oneway": "yes", "lanes": "1", "ref": "N1"}
+    rows = _road(1, [(0, 30), (0, 0)], tags, nodes=[10, 11])
+    rows += _road(2, [(0, 0), (0, -30)], tags, nodes=[11, 12])
+    legacy_rows = []
+    for row in rows:
+        raw = dict(row["raw"])
+        raw.pop("source_start")
+        raw.pop("source_end")
+        legacy_rows.append({**row, "raw": raw})
+
+    connections, diagnostics, counters = build_lane_connections(
+        legacy_rows,
+        _contexts((1, tags), (2, tags)),
+    )
+
+    assert connections == []
+    assert counters["missing_source_geometry"] == 2
+    assert {
+        (item["segment_id"], item["direction"])
+        for item in diagnostics
+        if item.get("reason") == "missing_source_geometry"
+    } == {("1:10:11", "fwd"), ("2:11:12", "fwd")}
+
+
 def test_bidirectional_lane_offsets_taper_into_separate_oneway_roads():
     incoming_tags = {
         "highway": "primary",
@@ -530,6 +555,40 @@ def test_merge_to_right_preserves_surviving_lane_order():
     } == {("1", "1"), ("2", "1"), ("3", "2")}
 
 
+def test_untagged_narrowing_is_unresolved_instead_of_dropping_a_lane():
+    source_tags = {
+        "highway": "motorway",
+        "oneway": "yes",
+        "lanes": "3",
+        "ref": "A1",
+    }
+    target_tags = {
+        "highway": "motorway",
+        "oneway": "yes",
+        "lanes": "2",
+        "ref": "A1",
+    }
+    rows = _road(1, [(0, 50), (0, 0)], source_tags, nodes=[10, 11])
+    rows += _road(2, [(0, 0), (0, -50)], target_tags, nodes=[11, 12])
+
+    connections, diagnostics, counters = build_lane_connections(
+        rows,
+        _contexts((1, source_tags), (2, target_tags)),
+    )
+
+    assert connections == []
+    unresolved = next(
+        item
+        for item in diagnostics
+        if item.get("reason") == "unresolved_narrowing_merge"
+    )
+    assert unresolved["source_lanes"] == [1, 2, 3]
+    assert unresolved["target_lanes"] == [1, 2]
+    assert unresolved["excess_lane_count"] == 1
+    assert unresolved["unresolved_source_lanes"] == [1, 2, 3]
+    assert counters["unresolved_lane_family_mismatch"] == 1
+
+
 def test_one_lane_exit_uses_rightmost_mainline_lane():
     main = {"highway": "motorway", "oneway": "yes", "lanes": "3", "ref": "A9"}
     continuation = dict(main)
@@ -562,6 +621,95 @@ def test_one_lane_entry_targets_rightmost_mainline_lane():
     )
     assert entry["connection_type"] == "continuation"
     assert entry["to_lane_id"].endswith(":fwd:3")
+
+
+def test_roundabout_approach_and_exit_connect_to_the_ring():
+    approach_tags = {"highway": "primary", "oneway": "yes", "lanes": "1"}
+    ring_tags = {
+        "highway": "primary",
+        "junction": "roundabout",
+        "lanes": "1",
+        "placement": "right_of:1",
+    }
+    exit_tags = {"highway": "primary", "oneway": "yes", "lanes": "1"}
+    rows = _road(1, [(0, 30), (0, 0)], approach_tags, nodes=[10, 11])
+    rows += _road(2, [(0, 0), (-30, -30)], ring_tags, nodes=[11, 12])
+    rows += _road(3, [(-30, -30), (0, -60)], exit_tags, nodes=[12, 13])
+
+    connections, _, _ = build_lane_connections(
+        rows,
+        _contexts(
+            (1, approach_tags),
+            (2, ring_tags),
+            (3, exit_tags),
+        ),
+    )
+
+    road_pairs = {
+        (row["from_road_id"], row["to_road_id"]): row
+        for row in connections
+    }
+    assert {(1, 2), (2, 3)} <= set(road_pairs)
+    assert road_pairs[(1, 2)]["raw"]["movement_type"] == "roundabout"
+    assert road_pairs[(2, 3)]["raw"]["movement_type"] == "roundabout"
+    assert road_pairs[(1, 2)]["raw"]["adjacency_evidence"] == "node_exact"
+    assert road_pairs[(2, 3)]["raw"]["adjacency_evidence"] == "node_exact"
+
+
+def test_closed_roundabout_connectors_land_on_attached_logical_segments():
+    approach_tags = {"highway": "primary", "oneway": "yes", "lanes": "1"}
+    ring_tags = {
+        "highway": "primary",
+        "junction": "roundabout",
+        "lanes": "1",
+        "placement": "right_of:1",
+    }
+    exit_tags = {"highway": "primary", "oneway": "yes", "lanes": "1"}
+    rows = _road(
+        1,
+        [(0, 30), (0, 0)],
+        approach_tags,
+        nodes=[10, 100],
+        shared_nodes={100},
+    )
+    rows += _road(
+        2,
+        [(0, 0), (-30, -30), (0, -60), (30, -30), (0, 0)],
+        ring_tags,
+        nodes=[100, 101, 102, 103, 100],
+        shared_nodes={100, 102},
+    )
+    rows += _road(
+        3,
+        [(0, -60), (0, -90)],
+        exit_tags,
+        nodes=[102, 13],
+        shared_nodes={102},
+    )
+
+    connections, _, _ = build_lane_connections(
+        rows,
+        _contexts(
+            (1, approach_tags),
+            (2, ring_tags),
+            (3, exit_tags),
+        ),
+    )
+
+    approach_to_ring = next(
+        row
+        for row in connections
+        if row["from_road_id"] == 1 and row["to_road_id"] == 2
+    )
+    ring_to_exit = next(
+        row
+        for row in connections
+        if row["from_road_id"] == 2 and row["to_road_id"] == 3
+    )
+    assert approach_to_ring["to_segment_id"] == "2:100:102"
+    assert ring_to_exit["from_segment_id"] == "2:100:102"
+    assert approach_to_ring["raw"]["adjacency_evidence"] == "node_exact"
+    assert ring_to_exit["raw"]["adjacency_evidence"] == "node_exact"
 
 
 def test_shared_lane_expands_to_two_traversals_without_duplicate_feature():
@@ -737,7 +885,7 @@ def test_a22_short_transition_suppresses_upstream_shortcuts_and_allocates_famili
     assert (1227426726, 1096129217) not in road_pairs
     assert (
         counters["junction_box_suppressed_intermediate"]
-        + counters["junction_box_suppressed_exact_target"]
+        + counters["junction_box_rejected_existing_link_predecessor"]
         >= 2
     )
     assert any(
@@ -745,10 +893,7 @@ def test_a22_short_transition_suppresses_upstream_shortcuts_and_allocates_famili
             item.get("reason") == "intermediate_segment_dominates"
             and item.get("dominated_via")
         )
-        or (
-            item.get("reason") == "exact_target_predecessor_dominates"
-            and item.get("exact_predecessors")
-        )
+        or item.get("reason") == "existing_link_predecessor_rejects_new_exit"
         for item in diagnostics
     )
 
@@ -1089,7 +1234,7 @@ def test_junction_box_rejects_wide_same_ref_link_transition():
     assert connections == []
 
 
-def test_exact_target_predecessor_dominates_tagged_junction_box_branch():
+def test_unrelated_exact_target_predecessor_does_not_suppress_tagged_branch():
     source_tags = {
         "highway": "primary",
         "oneway": "yes",
@@ -1121,16 +1266,80 @@ def test_exact_target_predecessor_dominates_tagged_junction_box_branch():
         ),
     )
 
-    assert not any(
-        row["from_road_id"] == 1 and row["to_road_id"] == 4
+    branch = next(
+        row
         for row in connections
+        if row["from_road_id"] == 1 and row["to_road_id"] == 4
     )
-    assert counters["junction_box_suppressed_exact_target"] >= 1
-    assert any(
-        item.get("reason") == "exact_target_predecessor_dominates"
-        and item.get("exact_predecessors")
+    assert branch["confidence"] == "junction_box"
+    assert branch["raw"]["movement_type"] == "exit"
+    assert not any(
+        item.get("reason") == "intermediate_segment_dominates"
+        and item.get("from") == branch["from_lane_id"]
+        and item.get("to") == branch["to_lane_id"]
         for item in diagnostics
     )
+    assert "junction_box_suppressed_exact_target" not in counters
+
+
+def test_existing_exact_link_predecessor_rejects_junction_box_exit_shortcut():
+    source_tags = {
+        "highway": "primary",
+        "oneway": "yes",
+        "lanes": "1",
+    }
+    link_tags = {
+        "highway": "primary_link",
+        "oneway": "yes",
+        "lanes": "1",
+    }
+    rows = _road(1, [(0, 30), (0, 0)], source_tags, nodes=[10, 11])
+    rows += _road(2, [(10, 20), (-3, -10)], link_tags, nodes=[20, 21])
+    rows += _road(3, [(-3, -10), (-15, -40)], link_tags, nodes=[21, 22])
+
+    connections, diagnostics, counters = build_lane_connections(
+        rows,
+        _contexts((1, source_tags), (2, link_tags), (3, link_tags)),
+    )
+
+    assert not any(
+        row["from_road_id"] == 1 and row["to_road_id"] == 3
+        for row in connections
+    )
+    assert counters["junction_box_rejected_existing_link_predecessor"] >= 1
+    assert any(
+        item.get("reason") == "existing_link_predecessor_rejects_new_exit"
+        and item.get("exact_predecessors") == ["2:20:21"]
+        for item in diagnostics
+    )
+
+
+def test_junction_box_does_not_connect_ordinary_road_directly_to_motorway():
+    source_tags = {
+        "highway": "primary",
+        "oneway": "yes",
+        "lanes": "1",
+        "turn:lanes": "slight_right",
+    }
+    motorway_tags = {
+        "highway": "motorway",
+        "oneway": "yes",
+        "lanes": "1",
+    }
+    rows = _road(1, [(0, 30), (0, 0)], source_tags, nodes=[10, 11])
+    rows += _road(
+        2,
+        [(-3, -10), (-15, -40)],
+        motorway_tags,
+        nodes=[20, 21],
+    )
+
+    connections, _, _ = build_lane_connections(
+        rows,
+        _contexts((1, source_tags), (2, motorway_tags)),
+    )
+
+    assert connections == []
 
 
 def test_junction_box_rejects_grade_separated_tagged_turn():
@@ -1634,5 +1843,5 @@ def test_same_ref_directional_branch_outranks_continuation_fallback():
         (3, 3, 1),
     }
     branch = next(row for row in connections if row["to_road_id"] == 3)
-    assert branch["raw"]["movement_type"] == "tagged"
+    assert branch["raw"]["movement_type"] == "exit"
     assert branch["raw"]["turn_lane"] == "slight_right"

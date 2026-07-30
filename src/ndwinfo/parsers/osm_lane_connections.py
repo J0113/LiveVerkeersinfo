@@ -574,6 +574,19 @@ def _eligible(
     link_transition = source_context.is_link != target_context.is_link
     if not exact and link_transition and abs(angle) > 45.0:
         return False
+    if (
+        not exact
+        and not source_context.is_link
+        and not target_context.is_link
+        and (
+            source_context.highway == "motorway"
+            or target_context.highway == "motorway"
+        )
+        and source_context.highway != target_context.highway
+    ):
+        # Motorway access is represented through a motorway_link. A nearby
+        # ordinary road with a compatible turn token is not direct topology.
+        return False
     same_ref = bool(
         source_context.tags.get("ref")
         and source_context.tags.get("ref") == target_context.tags.get("ref")
@@ -591,19 +604,16 @@ def discover_movement_candidates(
     groups: Sequence[TraversalGroup],
 ) -> dict[tuple[str, str], list[MovementCandidate]]:
     """Discover node/endpoint-exact and filtered 25 m road movements."""
+    groups = [
+        group for group in groups if _group_source_geometry(group) is not None
+    ]
     geometries = {id(group): _group_geometry(group) for group in groups}
     source_geometries = {
         id(group): _group_source_geometry(group)
         for group in groups
     }
     entry_points = [
-        Point(
-            (
-                source_geometries[id(group)]
-                if source_geometries[id(group)] is not None
-                else geometries[id(group)]
-            ).coords[0]
-        )
+        Point(source_geometries[id(group)].coords[0])
         for group in groups
     ]
     entry_tree = STRtree(entry_points)
@@ -616,9 +626,7 @@ def discover_movement_candidates(
     for source in groups:
         source_line = geometries[id(source)]
         source_original = source_geometries[id(source)]
-        source_exit = Point(
-            (source_original if source_original is not None else source_line).coords[-1]
-        )
+        source_exit = Point(source_original.coords[-1])
         source_bearing_line = source_line
         source_anchor = _placement_anchor(source, outgoing=True)
         if (
@@ -651,9 +659,7 @@ def discover_movement_candidates(
                 continue
             target_line = geometries[id(target)]
             target_original = source_geometries[id(target)]
-            target_entry = Point(
-                (target_original if target_original is not None else target_line).coords[0]
-            )
+            target_entry = Point(target_original.coords[0])
             distance = source_exit.distance(target_entry)
             evidence = _adjacency_evidence(source, target, distance)
             if evidence == "junction_box" and distance > JUNCTION_BOX_RADIUS_M:
@@ -726,7 +732,9 @@ def suppress_dominated_candidates(
         key: [candidate for candidate in candidates if candidate.exact]
         for key, candidates in discovered.items()
     }
-    exact_predecessors: dict[tuple[str, str], list[MovementCandidate]] = defaultdict(list)
+    exact_predecessors: dict[
+        tuple[str, str], list[MovementCandidate]
+    ] = defaultdict(list)
     for candidates in immediate.values():
         for candidate in candidates:
             exact_predecessors[
@@ -740,6 +748,27 @@ def suppress_dominated_candidates(
             if candidate.exact:
                 kept.setdefault(key, []).append(candidate)
                 continue
+            target_key = (
+                candidate.target.segment_id,
+                candidate.target.direction,
+            )
+            if (
+                not candidate.source.representative.context.is_link
+                and candidate.target.representative.context.is_link
+                and exact_predecessors.get(target_key)
+            ):
+                diagnostics.append(
+                    {
+                        "reason": "existing_link_predecessor_rejects_new_exit",
+                        "from": candidate.source.representative.id,
+                        "to": candidate.target.representative.id,
+                        "exact_predecessors": sorted(
+                            predecessor.source.segment_id
+                            for predecessor in exact_predecessors[target_key]
+                        ),
+                    }
+                )
+                continue
             if not source_successors:
                 kept.setdefault(key, []).append(candidate)
                 diagnostics.append(
@@ -751,23 +780,6 @@ def suppress_dominated_candidates(
                 )
                 continue
 
-            target_key = (
-                candidate.target.segment_id,
-                candidate.target.direction,
-            )
-            if exact_predecessors.get(target_key):
-                diagnostics.append(
-                    {
-                        "reason": "exact_target_predecessor_dominates",
-                        "from": candidate.source.representative.id,
-                        "to": candidate.target.representative.id,
-                        "exact_predecessors": sorted(
-                            predecessor.source.segment_id
-                            for predecessor in exact_predecessors[target_key]
-                        ),
-                    }
-                )
-                continue
             queue: deque[tuple[TraversalGroup, tuple[str, ...], float, int]] = deque()
             for successor in source_successors:
                 successor_length = _group_geometry(successor.target).length
@@ -974,8 +986,34 @@ def _map_lane_blocks(
         tagged_merge = _tagged_merge_assignments(source, target)
         if tagged_merge is not None:
             return tagged_merge, diagnostics
-        count = len(target)
-        return list(zip(source[:count], target[:count])), diagnostics
+        anchored = _placement_widening_side(movement)
+        if anchored:
+            retained = list(zip(source[: len(target)], target))
+            dropped = source[len(target) :]
+            diagnostics.append(
+                {
+                    "reason": "unresolved_narrowing_merge",
+                    "from_segment_id": movement.source.segment_id,
+                    "to_segment_id": movement.target.segment_id,
+                    "source_lanes": [lane.lane_nr for lane in source],
+                    "target_lanes": [lane.lane_nr for lane in target],
+                    "dropped_source_lanes": [lane.lane_nr for lane in dropped],
+                    "survivor_evidence": "placement",
+                }
+            )
+            return retained, diagnostics
+        diagnostics.append(
+            {
+                "reason": "unresolved_narrowing_merge",
+                "from_segment_id": movement.source.segment_id,
+                "to_segment_id": movement.target.segment_id,
+                "source_lanes": [lane.lane_nr for lane in source],
+                "target_lanes": [lane.lane_nr for lane in target],
+                "excess_lane_count": len(source) - len(target),
+                "unresolved_source_lanes": [lane.lane_nr for lane in source],
+            }
+        )
+        return [], diagnostics
 
     side = _block_widening_side(source, target, movement)
     if side is None:
@@ -1732,6 +1770,11 @@ def build_lane_connections(
     traversals = lane_traversals(lane_rows, road_contexts)
     by_id = {traversal.id: traversal for traversal in traversals}
     groups = _groups(traversals)
+    missing_source_geometry = [
+        group
+        for group in groups
+        if group.representative.source_line_wgs84 is None
+    ]
     raw_discovered = discover_movement_candidates(groups)
     node_coordinate_conflicts = [
         candidate
@@ -1763,6 +1806,14 @@ def build_lane_connections(
         *dominance_diagnostics,
         *(
             {
+                "reason": "missing_source_geometry",
+                "segment_id": group.segment_id,
+                "direction": group.direction,
+            }
+            for group in missing_source_geometry
+        ),
+        *(
+            {
                 "reason": "node_coordinate_adjacency_conflict",
                 "from": candidate.source.representative.id,
                 "to": candidate.target.representative.id,
@@ -1783,14 +1834,16 @@ def build_lane_connections(
             item.get("reason") == "intermediate_segment_dominates"
             for item in dominance_diagnostics
         ),
-        "junction_box_suppressed_exact_target": sum(
-            item.get("reason") == "exact_target_predecessor_dominates"
+        "junction_box_rejected_existing_link_predecessor": sum(
+            item.get("reason")
+            == "existing_link_predecessor_rejects_new_exit"
             for item in dominance_diagnostics
         ),
         "junction_box_dominance_not_proven_no_successor": sum(
             item.get("reason") == "dominance_not_proven_no_successor"
             for item in dominance_diagnostics
         ),
+        "missing_source_geometry": len(missing_source_geometry),
         "entry_movements": 0,
         "exit_movements": 0,
         "primary_ambiguities": 0,
@@ -1838,14 +1891,15 @@ def build_lane_connections(
     topology_edges: list[TopologyEdge] = []
     for group in groups:
         key = (group.segment_id, group.direction)
-        candidates = [
-            candidate
-            for candidate in discovered.get(key, ())
-            if not all(
+        candidates = []
+        for candidate in discovered.get(key, ()):
+            candidate_pairs = assign_lanes(candidate)
+            if candidate_pairs and all(
                 (source.id, target.id) in blocked
-                for source, target in assign_lanes(candidate)
-            )
-        ]
+                for source, target in candidate_pairs
+            ):
+                continue
+            candidates.append(candidate)
         movements, diagnostic = choose_movement_set(candidates)
         if diagnostic:
             counters["primary_ambiguities"] += 1
@@ -1913,7 +1967,8 @@ def build_lane_connections(
                 counters["exit_movements"] += 1
             diagnostics.extend(assignment_diagnostics)
             counters["unresolved_lane_family_mismatch"] += sum(
-                item.get("reason") == "unresolved_widening_side"
+                item.get("reason")
+                in {"unresolved_widening_side", "unresolved_narrowing_merge"}
                 for item in assignment_diagnostics
             )
             counters["change_lane_conflicts"] += sum(
@@ -2035,7 +2090,9 @@ def build_lane_connections(
                 "angle_deg": round(movement.angle_deg, 2),
                 "distance_m": round(movement.distance_m, 2),
                 "adjacency_evidence": movement.adjacency_evidence,
-                "movement_type": movement.kind,
+                "movement_type": (
+                    "exit" if movement.kind == "tagged" else movement.kind
+                ),
                 "allocation_evidence": edge.allocation_evidence,
                 "turn_lane": ";".join(sorted(turn_tokens)) if turn_tokens else None,
                 "destination_lane": ";".join(

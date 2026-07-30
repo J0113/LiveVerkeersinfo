@@ -370,6 +370,21 @@ def plan_lane_cross_section(tags: dict[str, Any] | None) -> LanePlan:
                     oneway_source,
                     diagnostics,
                 )
+        elif (
+            total is None
+            and forward is None
+            and backward is None
+            and both_ways > 0
+        ):
+            diagnostics["incomplete_directional_tags"] = ["lanes:both_ways"]
+            diagnostics["directional_sum"] = both_ways
+            diagnostics["lanes_total"] = None
+            return LanePlan(
+                _directional_specs(0, both_ways, 0),
+                "conflict",
+                oneway_source,
+                diagnostics,
+            )
 
     if total is None:
         total, count_source = 2, "assumed"

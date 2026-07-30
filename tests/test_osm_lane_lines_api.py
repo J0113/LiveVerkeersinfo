@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from types import SimpleNamespace
 
 from ndwinfo.api.deps import BBox
 from ndwinfo.api.routers.osm import _lane_tag_value, get_osm_lane_lines
 from ndwinfo.config import settings
+from ndwinfo.refresh_osm_lane_lines import rebuild
 
 
 def _lane(lane_id: str, lane_nr: int):
@@ -118,3 +120,8 @@ def test_lane_popup_tag_selection_uses_strict_backward_fallback():
         2,
         2,
     ) == "merge_to_left"
+
+
+def test_independent_lane_endpoint_and_rebuilder_do_not_use_lane_detail():
+    assert "OsmRoadLane" not in inspect.getsource(get_osm_lane_lines)
+    assert "OsmRoadLane" not in inspect.getsource(rebuild)

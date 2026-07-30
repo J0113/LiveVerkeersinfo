@@ -81,11 +81,18 @@ parent OSM tags; it never reads `osm_road_lane`.
 - Connection selection is topology-first. Matching OSM node IDs are preferred;
   original unoffset road endpoints within 0.5 m are the coordinate fallback.
   A 25 m junction-box candidate is suppressed when an immediate-successor path
-  proves that it skips one or two short logical segments, or when the target
-  already has an exact-node predecessor. Proximity-only candidates are also
-  rejected across different `layer` or `bridge`/`tunnel`/`covered` states.
-  A non-exact link handover must have an absolute endpoint angle of at most
-  45 degrees; signed right-turn angles cannot bypass that limit.
+  from that candidate's own source proves that it skips one or two short
+  logical segments. An exact predecessor from an unrelated approach never
+  suppresses a legitimate turn. Proximity-only candidates are also rejected
+  across different `layer` or `bridge`/`tunnel`/`covered` states. A non-exact
+  link handover must have an absolute endpoint angle of at most 45 degrees;
+  signed right-turn angles cannot bypass that limit. A junction-box exit also
+  cannot jump into the middle of a link that already has an exact predecessor,
+  and an ordinary road cannot connect directly to/from a motorway without a
+  motorway-link. Legacy/malformed lane rows without retained original segment
+  endpoints are excluded from automatic adjacency and reported as
+  `missing_source_geometry`; offset lane endpoints are never substituted as
+  topology evidence.
 - `turn:lanes*` is parsed as ordered, cardinality-checked lane fields.
   The source way's fields govern movements at its exit node; a successor's
   fields describe its later junction and are not reused to remap its entry.
@@ -98,7 +105,11 @@ parent OSM tags; it never reads `osm_road_lane`.
   `through;slight_right` remain eligible for both. `placement*` anchors decide
   widening side before inferred lane-family rules;
   `destination:lanes*` and `destination:ref:lanes*` cross-check branch
-  allocation; `change:lanes*` can reject an illegal inferred lateral edge.
+  allocation; `change:lanes*` can reject an illegal inferred lateral edge. A
+  narrowing without cardinality-valid merge tags is reported as
+  `unresolved_narrowing_merge` instead of silently dropping a source lane.
+  Matching concrete placement anchors may preserve the proven one-to-one
+  survivor block, but do not invent the unsupported many-to-one merge.
 - Concrete one-way `placement=left_of:N|middle_of:N|right_of:N` values also
   anchor the metric lane offsets to the tagged OSM reference line instead of
   recentering every cross-section. For an unambiguous, one-way, two-node
@@ -109,8 +120,10 @@ parent OSM tags; it never reads `osm_road_lane`.
   Ambiguous, chained, curved, or extreme-angle transitions remain unchanged and
   emit `unresolved_transition_placement` diagnostics rather than being guessed.
 - `connection_type` describes actual lane-graph multiplicity
-  (`continuation`, `split`, or `join`). Road-level `entry`/`exit` meaning is
-  exposed separately as `movement_type`; a `merge_to_left/right` token alone
+  (`continuation`, `split`, or `join`). Road-level `entry`, `exit`,
+  `roundabout`, or `continuation` meaning is exposed separately as
+  `movement_type`; explicitly turn-tagged branch candidates are persisted as
+  `exit`, not as an extra schema value. A `merge_to_left/right` token alone
   never changes a one-to-one edge into a join.
 - Connector trims are resolved once per physical lane endpoint. Both ends of a
   short transition share one budget that retains at least 2 m or 20% of the
@@ -237,6 +250,10 @@ only a combined `lanes=N` total with no directional breakdown:
   which is the opposite physical side. A backward merge also completes at
   the way's **start**, not its end. (Only 8 ways in this extract merge on a
   backward block, versus 792 on `turn:lanes` — all of which are `oneway=yes`.)
+- A positive `lanes:both_ways` without `lanes`, `lanes:forward`, or
+  `lanes:backward` preserves the explicitly tagged center lane but marks the
+  cross-section `count_source=conflict`; it does not silently fall back to an
+  assumed 1+1 split that discards the tag.
 - Two-way with a `lanes` total but no directional tag: **an even total splits
   down the middle** — NL drives on the right, so the left half of the
   cross-section is oncoming (`bwd`) and the right half `fwd`, roles `normal`.
