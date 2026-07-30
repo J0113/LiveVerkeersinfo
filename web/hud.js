@@ -359,7 +359,7 @@ function fetchRoadScopedSpeedIfDue (context, coords) {
 }
 
 function fetchRoadSignHudCurrentRoadSource (bbox, signal) {
-  return fetch(`/api/osm/lanes?bbox=${bbox}`, { signal })
+  return fetch(`/api/osm/lane-lines?bbox=${bbox}`, { signal })
     .then(response => {
       if (!response.ok) throw new Error(`current road: HTTP ${response.status}`)
       return response.json()

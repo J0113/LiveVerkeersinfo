@@ -27,7 +27,6 @@ class Settings(BaseSettings):
         "https://download.geofabrik.de/europe/netherlands-latest.osm.pbf"
     )
     osm_max_features: int = 5000  # per-viewport row cap for /api/osm/roads
-    osm_lane_max_features: int = 8000  # per-viewport row cap for /api/osm/lanes
     osm_lane_line_max_features: int = 8000
     osm_lane_connection_max_features: int = 8000
 

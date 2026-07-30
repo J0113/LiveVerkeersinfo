@@ -57,9 +57,11 @@ segments and to split closed roundabout rings at their real approaches.
 
 ## Independent lane lines (`osm_lane_centerline` + `osm_lane_connection`)
 
-The **Lanes** map layer is separate from Lane Detail. It derives thin
-centerlines directly from `osm_road.geom`, `osm_road.node_refs`, and the
-parent OSM tags; it never reads `osm_road_lane`.
+The lane graph derives thin centerlines directly from `osm_road.geom`,
+`osm_road.node_refs`, and the parent OSM tags. It is the only lane model:
+the earlier per-way `osm_road_lane` table (physical ordering, per-class widths,
+its own junction connectors) was retired once the map layer, the drive HUD's
+current-road pick, and the speed-sensor match all read this graph instead.
 
 - Every physical lane is one `#111171` line. Adjacent lines have a fixed
   3.5 m centre-to-centre pitch for every supported highway class.
@@ -163,6 +165,35 @@ parent OSM tags; it never reads `osm_road_lane`.
   remains unchanged and emits a diagnostic.
 - `GET /api/osm/lane-lines?bbox=...` queries the two independent tables with
   separate caps and returns per-kind truncation metadata.
+- Every feature carries `edge_left`, `edge_right`, and `divider_left`: which
+  longitudinal markings bound it, in travel order. For a lane these follow from
+  its own cross-section — lane 1 is the leftmost lane of its direction and
+  `lane_count` the rightmost. A connection inherits them only when it keeps the
+  same lane number at both ends, which is the same lane continuing across a way
+  boundary; the right-hand edge additionally requires the lane to be the
+  outermost one at both ends. A split opening a lane or a join closing one moves
+  the boundary across the connector, so all three stay false and the connector
+  reads as junction interior. The connection query reaches both endpoint lanes
+  through indexed primary-key joins, so this costs no extra round trip.
+
+Two map layers read this endpoint. **Lanes** draws the thin `#111171` debug
+hairlines described above. **Lane Detail** (`lane_detail_v2` in
+`web/config.js`) renders the same payload as ground-width asphalt bands with
+edge and divider markings and turn arrows, styling only the properties the
+endpoint already returns:
+
+- band width is the fixed `LANE_SPACING_M` cross-section pitch (there is no
+  per-lane `width_m` here, and none is needed: the geometry is offset by that
+  same constant);
+- markings are a filter on `edge_left`/`edge_right`/`divider_left`, applied to
+  lanes and connections alike, so a lane's markings run on across the connector
+  that continues it instead of breaking for the length of the taper;
+- turn arrows use the endpoint's resolved `turn_lane` token set, and need no
+  counter-rotation for `bwd` lanes because `make_lane_line_rows` already stores
+  their geometry in travel order. Arrows stay on `kind='lane'`: a connector is
+  short, and the approach lane's arrow already announced the movement.
+
+Both layers start switched off; enable them from the layer panel.
 
 For a local rebuild:
 
@@ -186,7 +217,7 @@ python -m ndwinfo.reingest_osm_roads \
 
 This uses the normal extract-membership upsert/prune behavior while leaving
 the independent Lanes tables unchanged, which avoids holding the national
-road, Lane Detail, and Lanes graphs in memory simultaneously. Follow it with
+road and lane graphs in memory simultaneously. Follow it with
 `refresh_osm_lane_lines --all`; that command processes 0.2° spatial tiles in
 separate transactions and reports final national counts. The scheduled
 `osm_netherlands` ingester runs the same tiled Lanes rebuild automatically
@@ -194,475 +225,6 @@ after a successful changed-PBF ingest; it does not run after a 304/not-modified
 check. Both `osm_lane_connection` lane foreign keys are indexed so replacing a
 tile's centerlines can cascade through its connectors without scanning the
 complete national connection table for every deleted lane.
-
-## Per-lane geometry (`osm_road_lane`)
-
-Individual lane centerlines derived from each `osm_road` way's `lanes` tag,
-at **3.5m** width for motorway/trunk/primary(+`_link`) and **2.75m** for
-secondary(+`_link`) — the `_link` classes inherit their parent class's
-width. Computed in the same PBF pass as `osm_road` (`ndwinfo.parsers.osm_lanes.make_lane_rows`,
-called from `OsmRoadIngester._flush`) — no second file read.
-
-For local geometry development, a small database-backed region can be
-regenerated without reparsing the 1.3GB PBF:
-
-```bash
-python -m ndwinfo.refresh_osm_lanes \
-  --bbox 4.615,52.229,4.628,52.233
-```
-
-The command expands the bbox by 0.003° for adjacent junction topology, rebuilds
-lanes/connectors from the existing `osm_road` rows, and replaces lane rows only
-for ways in that expanded region. Other regions deliberately retain their
-previously generated lane rows until they are refreshed too or the national
-PBF is ingested again; when validating a parser change at a new location,
-refresh that location before judging its geometry.
-
-Every driving way gets lanes; the only ways without any are the 33
-`oneway=reversible` motorways deliberately skipped below.
-
-**CRS**: `osm_road.geom` is WGS84 degrees, not metres — offsetting a lane
-there would offset by degrees. The parser transforms WGS84 → RD (EPSG:28992),
-offsets/tapers in RD (metres, via `shapely.offset_curve` and
-`shapely.ops.substring`), then transforms back to WGS84.
-
-**Direction model** — deliberately conservative, built from what's actually
-tagged rather than guessed. Of the 4,952 two-way (`oneway` ≠ `yes`)
-lanes-tagged ways in the Noord-Holland extract, only ~350 have an explicit
-`lanes:forward`/`lanes:backward`/`lanes:both_ways` split; the rest carry
-only a combined `lanes=N` total with no directional breakdown:
-
-- `oneway=yes|true|1`: single directional block, lane 1 = leftmost in
-  travel direction.
-- `oneway=-1`: way's coordinates reversed first, then treated as the case
-  above.
-- `oneway=reversible|alternating` (33 ways in this extract, all `motorway`):
-  **skipped** — physical lane-to-direction mapping changes by time of day;
-  not guessed.
-- Two-way with `lanes:forward`/`lanes:backward`/`lanes:both_ways` present:
-  used directly. Forward lanes on the right half of the centerline (NL
-  drives right), backward on the left, a `both_ways` lane (if tagged)
-  centered. `turn:lanes:forward`/`turn:lanes:backward` drive merging.
-  Backward lanes are doubly reversed relative to the way's coordinates, and
-  the two reversals are independent: tokens are ordered left-to-right from
-  the backward driver's perspective, so they map onto physical lane position
-  in **reverse** order; and `merge_to_left` means *that driver's* left,
-  which is the opposite physical side. A backward merge also completes at
-  the way's **start**, not its end. (Only 8 ways in this extract merge on a
-  backward block, versus 792 on `turn:lanes` — all of which are `oneway=yes`.)
-- A positive `lanes:both_ways` without `lanes`, `lanes:forward`, or
-  `lanes:backward` preserves the explicitly tagged center lane but marks the
-  cross-section `count_source=conflict`; it does not silently fall back to an
-  assumed 1+1 split that discards the tag.
-- Two-way with a `lanes` total but no directional tag: **an even total splits
-  down the middle** — NL drives on the right, so the left half of the
-  cross-section is oncoming (`bwd`) and the right half `fwd`, roles `normal`.
-  No tag is needed to know that, and it's the common case: **1,646 of this
-  extract's 1,696 two-way `lanes=2` ways** carry no `lanes:forward`/`:backward`
-  (plus 30 more at `lanes=4`). It's the same convention `_assumed_two_way_lanes`
-  applies to a road with no `lanes` at all, just with a real count behind it.
-- Two-way, **odd** total, no directional tag: `direction='unknown'`,
-  `role='unknown'`, **not tapered**. An odd count can't be halved and which
-  direction gets the extra lane isn't derivable — `lanes=1` is one lane shared
-  both ways (1,304 ways), and `lanes=3` could be 2+1 either way round (9 ways;
-  the other 267 tag the split). A generic `turn:lanes` on such a cross-section
-  can't be attributed to a physical lane either. (An earlier draft assumed an
-  odd total implied a centre-turn lane — checked against real data and found
-  wrong: only 1 way in the extract tags `lanes:both_ways`.)
-- Cardinality guard: if a `turn:lanes`/`turn:lanes:forward`/`turn:lanes:backward`
-  token count doesn't match the lane count it applies to, the tokens are
-  ignored for that way (`role='unknown'` for all its lanes) rather than
-  risking a token landing on the wrong physical lane.
-
-**No `lanes` tag** (3,205 ways here — motorway is 100% tagged, but 23% of
-secondary and 13% of primary aren't): fall back to what OSM's own defaults
-imply rather than drawing nothing.
-
-- `oneway=yes|true|1|-1` → **1 lane**.
-- anything else → **1 lane each way** (`fwd` + `bwd`, roles `normal`), not
-  two `direction='unknown'` lanes. An untagged two-way road is 1+1; that's a
-  convention, not the inference the `unknown` case above refuses to make
-  (which is *how a tagged N-lane total splits* between directions).
-- Except where `turn:lanes` is present on a oneway (7 ways): its token count
-  **is** the lane count, one token per lane by definition, so it's used
-  instead of defaulting to 1.
-
-Defaulted lanes carry **`lanes_assumed: true`** in their properties, so a
-consumer can tell a drawn lane from a counted one. The defaults don't
-override the direction model's refusals — `oneway=reversible` is still
-skipped.
-
-**Merge scope**: only `turn:lanes` tokens `merge_to_left`/`merge_to_right`
-reshape a lane *along its own way*. Turn-only tokens (`left`/`right`/
-`through`/`slight_right`/`slight_left` alone) leave the lane a plain
-full-length offset — a turn lane at a junction still exists up to the stop
-line, and `slight_right` alone is often just a normal lane on a curving
-road, not necessarily an exit. **Some real motorway exits tagged only
-`slight_right` will not appear to merge** — an intentional scope limit, not
-a bug. A merge tagged on an edge lane with no neighbour on that side (6 ways
-in this extract, e.g. `lanes=1` + `merge_to_right`) is also left as a plain
-offset: there's nothing to converge onto.
-
-Those turn-only tokens do drive junction connectors, though — see
-"Junction connectors" below. The two models don't overlap: merges reshape a
-lane within its way, connectors add new geometry between ways.
-
-## Merge geometry (`parsers/osm_lanes.build_merge_index`)
-
-Over the last `min(MAX_TAPER_M, chain length)` the **whole cross-section
-moves**: the merging lane converges onto its neighbour and the survivors
-re-centre onto what's left. The merging lane is not shortened — an earlier
-draft trimmed it instead, which read on the map as a lane simply missing
-(A200 way 7400291 lost half its left lane).
-
-`MAX_TAPER_M` is **25m**, set against aerial imagery: the paint holds a full
-lane's width until close to the merge point and then pinches over a short
-taper. An earlier 150m spread the drift so far back that lanes read as too
-narrow along most of a ramp.
-
-**Why the survivors move too.** Lane offsets are measured from the way's own
-line, and OSM draws that line down the middle of the carriageway it
-describes. So when a chain ends, the next way's line is the centre of a
-cross-section one lane narrower — and the two lines *meet* at the shared
-node. Holding the survivors at their original offsets therefore left every
-chain end half a lane width (1.75m) short of meeting the next way's lanes.
-That's the common case, not an edge case: of the merge ways with a
-non-merging successor, 273 go 2→1 lanes, 140 go 3→2, 52 go 4→3, 15 go 5→4.
-So `_resolve_merge_transition` re-numbers the surviving lanes into an
-M-lane cross-section and gives each merging lane its target's *final*
-position. On the A200 chain, both lanes now finish dead on the shared node
-where the 1-lane way `317075524` begins (extract-wide: 825 of 831 survivor
-handovers within 0.5m, average 0.05m).
-
-The transition is measured over the **chain**, not the way, because OSM
-routinely splits one physical merge across several consecutive ways —
-A200 `7400291` (63m) → `1014194650` (47m) are both tagged `merge_to_right|`,
-and 230 of the 792 merge ways here have a merge-tagged successor. Converging
-per-way would snap the lane back to full offset at every shared node. So
-before any lane geometry is built, merge-tagged ways are linked into chains
-by shared endpoints, giving each way both its distance to the chain's merge
-point and the chain's total length. Ways only chain to a successor with the
-**same set of merge roles** — two consecutive ways merging *different* lanes
-are two adjacent transitions, not one spread across both.
-
-The chain is keyed per way and per direction (`(osm_id, merge_dir)`), not
-per lane: which end of the way the transition completes at is a property of
-the way, since every lane re-centres toward the same end of it. A way with
-both a forward and a backward merge would have to re-centre toward both ends
-at once, so it's left alone.
-
-Chains are really **trees** — two carriageways can flow into the same way —
-so the taper length is sized by the longest branch feeding a merge point and
-shared by every way in that tree; otherwise the convergence would kink where
-the branches join. A fork (one way whose exit is claimed by two merge ways)
-is not treated as a chain link and simply terminates there.
-
-Ingest stays single-pass: `has_merge_tokens` is a tag-only test, so
-`OsmRoadIngester` streams every non-merging way straight through and buffers
-only the few hundred merge ways until the chain index can be built.
-
-**Known residual**: where a chained way's `lanes` count changes across the
-shared node (22 of 210 handovers here, worst ~5m on a 6→3 drop), the whole
-cross-section shifts and lane lines step sideways. That's inherent to
-offsetting each way independently from its own centerline and affects normal
-lanes just as much as merging ones — not specific to the merge model.
-
-`GET /api/osm/lanes` — plain bbox + deterministic-order + cap/`truncated`,
-no zoom-based class tiering (unlike `/api/osm/roads` — lanes are already a
-detail-zoom-only layer, gated client-side via the `osm_lanes` layer's
-`minZoom: 15`). Each lane feature includes the parent OSM way's
-`carriageway_ref`; the drive HUD uses that value verbatim for its current-road
-label. `osm_road_lane.source_id` has `ON DELETE CASCADE` to
-`osm_road.osm_id`, so the existing extract-scoped prune on `osm_road`
-cleans up lanes automatically — no separate lane-level extract tracking.
-
-## Rendering the lane layer (`web/config.js` `osm_lanes`)
-
-Drawn opaque at **true ground width** rather than as hairlines, so
-neighbouring lanes touch and read as one carriageway. MapLibre's
-`line-width` is screen pixels with no metre unit, so `metresWide()` (in
-`web/lib.js`) converts:
-the Mercator world is 512·2^zoom px wide, so px-per-metre doubles every zoom
-level and an `['exponential', 2]` zoom interpolation reproduces it exactly.
-Two gotchas that are easy to hit again:
-
-- The zoom interpolation must be the **outermost** expression — MapLibre
-  rejects `['zoom']` nested inside anything else (`"zoom" expression may
-  only be used as input to a top-level "step" or "interpolate" expression`),
-  and it does so by firing an error event and *silently not adding the
-  layer*, not by throwing. So the scale factor is folded into each stop's
-  output (`['*', ['get', 'width_m'], pxPerMetre(z)]`), and the divider's
-  minimum pixel width is applied per stop (`metresWideMin`) instead of via
-  an outer `['max']`.
-- Latitude is pinned to NL's midpoint (52.2°): `cos(lat)` varies ~6%
-  country-wide, i.e. under 0.2m on a 3.5m lane.
-
-The band is asphalt grey (`LANE_ASPHALT`), drawn a few centimetres over true
-width (`LANE_SEAM_OVERLAP_M`) so neighbouring bands overlap. Butted exactly,
-their shared edge antialiases against whatever is below and every lane boundary
-shows a pale hairline.
-
-**Outside lines are explicit edge strokes, not a casing under every band.** The
-parser marks exactly one lane `edge_left` and one `edge_right` per physical
-cross-section. The style offsets a narrow `LANE_MARKING` stroke to that lane's
-outer edge. A wide casing under each independent lane feature gets a butt cap
-across the full lane at every OSM way boundary; those transverse caps leak
-through as pale seams or square protrusions when adjacent ways bend or change
-lane count. A longitudinal edge stroke has no paint underneath the asphalt, so
-there is no transverse cap to leak. Connectors carry neither edge flag: a
-junction interior has no edge lines.
-
-**Dividers** are an overlay over the band (`overlays:` in the layer config,
-rendered by `map.js` as `<key>-<suffix>`), so no divider geometry is generated.
-They use **`line-offset`**, not `line-gap-width`: gap-width strokes both edges of
-a lane at once and so can't tell an internal boundary from the outside.
-`line-offset` is relative to the line's own direction, and lane numbering runs
-left-to-right in that same frame, so negative is left in every case. Since
-`line-dasharray` is in units of line width, a 0.15m stroke × `[20, 60]` is NL's
-3m-line/9m-gap lane marking at true scale, which lands on the actual paint in the
-satellite basemap.
-
-Which boundaries get one is **`divider_left`, decided in the parser**
-(`_mark_dividers`), because it's a question about a lane's *neighbour* and a
-per-feature style filter can't see next door. Each internal boundary is drawn
-once, as the left edge of the lane on its right:
-
-- The cross-section's leftmost lane gets none — that edge is the outside, which
-  the `edge_left` overlay already draws. This is per *cross-section*, not per direction block:
-  on a two-way road the forward block's lane 1 is the centreline, not an outside
-  edge, so it does get one.
-- A boundary two lanes are merging across gets none: the merging lane's edge
-  sweeps sideways as it converges, so a line on it would drag a diagonal across
-  the asphalt. The merge arrows carry that meaning instead. Checked both ways
-  round — `merge_to_left` crosses its own left edge, but `merge_to_right`
-  crosses its right-hand neighbour's, an asymmetry a style filter can't express.
-- Connectors carry no `divider_left` at all, so they drop out without needing an
-  explicit exclusion.
-
-## Junction connectors (`parsers/osm_junctions.py`)
-
-`turn:lanes=left|left|through|right` says where each lane goes; connectors
-turn that into curved geometry from each approach lane to the lane it feeds
-on the way it turns onto, so a carriageway reads as continuing through a
-junction instead of stopping at it. Rows land in `osm_road_lane` with
-`role='connector'` and `source_id` = the approach way (so the existing
-extract-scoped prune cleans them up), plus `raw.turn` / `raw.to_osm_id` /
-`raw.to_lane` recording the movement.
-
-**A junction is a box, not a node.** OSM routinely models one intersection
-as several nodes metres apart. At the Provincialeweg junction (way
-1267507394, `left|left|through|right`) only the *through* way starts at the
-approach's end node — its left target starts **18m away** at a different
-node. Measured over this extract's **5,691** turn-tagged ways, requiring an
-exit to start at the approach's end node versus taking any exit starting
-within `JUNCTION_RADIUS_M` (25m):
-
-| resolves…            | shared node | 25m radius |
-| -------------------- | ----------: | ---------: |
-| any movement         |       4,998 |      5,233 |
-| a `left` target      |         437 |        973 |
-| both `left`+`right`  |           4 |        347 |
-
-Shared-node matching already finds most *through* movements — a way's
-continuation does start at its end node — so the radius buys little there
-(+5%). What it unlocks is turns: 2.2× the `left` targets, and left+right
-sets go from negligible to 347.
-
-How a movement resolves:
-
-- Each token has an idealised angle (`left` -90°, `slight_left` -35°,
-  `through`/`none` 0°, `slight_right` +35°, `right` +90°, `sharp_*` ±135°).
-  The exit whose real turn angle is nearest wins, within
-  `ANGLE_TOLERANCE_DEG` (50°). `merge_to_*` is not a junction movement (the
-  merge model owns it), and `reverse` isn't attempted — a U-turn's exit is
-  indistinguishable from the opposite carriageway by angle alone, which is
-  also why anything past `MAX_TURN_DEG` (160°) is rejected outright.
-- Lanes turning the same way feed that exit's lanes in the same left-to-right
-  order. More turning lanes than the exit has (they merge past the junction)
-  all land on its last one.
-- A lane feeds an exit once even if two of its tokens point there
-  (`left;slight_left` onto one way is one movement).
-- Same cardinality guard as the lane model: a token count that doesn't match
-  the lane count is ignored rather than misattributed.
-- Only `oneway` ways take part, as approach or exit. 5,679 of the extract's
-  5,691 `turn:lanes` ways are oneway, so this costs almost nothing on the
-  approach side; a two-way approach would need its exits filtered by which
-  direction is legal to enter — not worth guessing. (A further 309 ways carry
-  `turn:lanes:forward`/`:backward` and are skipped entirely: they'd need a
-  record per direction, and a two-way way's lane geometry runs in the way's
-  own coordinate order, not travel order, for its `bwd` lanes.)
-- If the approach lane and exit lane already touch (under
-  `MIN_CONNECTOR_M`), no connector: the bands meet without help.
-
-Geometry is a cubic Bézier in RD metres, leaving tangent to the approach and
-arriving tangent to the exit, with handles at a third of the span — so it
-draws a corner rather than a chord.
-
-The pass costs no second PBF read and no way buffering: `junction_record`
-keeps two coordinates per lane off rows that were computed anyway, and exits
-are found through a grid hash rather than an O(ways²) scan.
-
-**Coverage limit.** Split by movement, not by one number: **5,233 of 5,691**
-turn-tagged ways (92%) resolve at least one movement, but only **973** find a
-`left` target. Straight-on movements nearly always resolve; genuine turns
-often don't, because this project ingests motorway/trunk/primary/secondary +
-links and junction branches are typically tertiary/unclassified/residential —
-out of scope (see "Out of scope" below). At token level ~**4,000 of ~16,000**
-turn tokens find no exit, overwhelmingly `left` and `right`.
-
-Of the 5,233 ways that resolve, **3,947** actually emit connector rows
-(**8,671** in total); the rest resolve only movements whose exit already
-touches the approach, which need no connector.
-
-The Provincialeweg example is exactly this: its two `left` lanes and its
-`through` connect, its `right` leads to a road we don't carry, so that lane
-gets no connector. Widening the ingested classes is the lever if more
-coverage is ever wanted — **not** the oneway restriction below: allowing
-two-way ways as exits was measured to resolve only **103** more tokens while
-changing 20 existing targets, so it isn't worth the ambiguity it buys.
-
-**Rendering.** Connectors take the lane band but none of the lane markings
-(`NOT_CONNECTOR` in `web/config.js`) — a junction interior carries no lane
-lines in reality, and a connector is a path across the box rather than a lane
-of a carriageway. The band still draws, so the asphalt reads as continuous.
-Continuation joins are lane-width polygons rather than thick line strings.
-Their end cross-sections extend five centimetres into both adjoining lane
-bands. That local overlap closes antialiasing cracks without exposing a line
-cap: on a sub-metre join, a full-width butt cap otherwise reads as a blue
-rectangle whenever the adjoining tangents differ.
-At a mixed-topology handover between one two-way way and separate one-way ways,
-the adjoining normal lane lines are retracted far enough for a gradual
-edge-to-edge taper (capped at 12m and a quarter of a short lane's length), and
-the polygon spans those trimmed cross-sections. Their independent flat caps
-therefore sit underneath the polygon instead of protruding at the split.
-Ordinary aligned continuations and unmatched road ends keep their conservative
-butt caps unchanged.
-
-### Shared-node continuation joins
-
-Not every discontinuity has a `turn:lanes` movement. Consecutive OSM ways can
-change lane count, or two separate one-way carriageways can become the two
-directional halves of one two-way way. Their source centre lines share a node,
-but their offset lane endpoints do not, which otherwise leaves rectangular
-steps and triangular holes in the rendered surface.
-
-`continuation_records` builds one travel-oriented record per known direction,
-including `fwd` and `bwd` halves of a two-way way. `make_continuation_rows` then
-bridges only an exact shared source node, only to the straightest continuation
-within 55°, and only when `ref` or `name` agrees. Lane pairs are monotone across
-the cross-section. A single surface spans a lane-count change, while an
-explicit lane correspondence controls its internal markings. A source
-`merge_to_left/right` lane maps onto its surviving neighbour instead of
-displacing a surviving lane. Conversely, when a wider target has a distinct
-edge turn lane (`none|none|slight_right`), the through lanes keep their
-one-to-one positions and the exit lane grows from the corresponding outside
-edge. Connector metadata exposes this as `raw.lane_map`.
-
-When several approaches choose the same **directional** exit, they contest one
-target cross-section instead of each receiving a full-width fan. The approaches
-are ordered from the position of their arrival tangents 25m before the shared
-node (their centre lines all coincide at the node itself), then assigned
-contiguous target-lane blocks in that order. A conserved `2+1 -> 3` merge gets
-disjoint `2+1` blocks. If more lanes arrive than the target carries, blocks may
-share only the outer lanes needed for the convergence (`3+1 -> 3` keeps the
-three-lane mainline and lets the ramp share its nearest outer lane). If the
-target is wider, block sizes expand proportionally. The grouping key is the
-target record's `(osm_id, direction)`, so the opposite `fwd`/`bwd` halves of a
-two-way road never compete with one another.
-
-Continuation polygons use the allocated block's centre and width. Trim length
-is based on the physical edge shift between the approach and that block, not
-only on whether their lane counts differ. For disjoint contested blocks, the
-approaches are walked upstream (at most 80m and 60% of the shortest approach)
-until their source cross-sections no longer overlap. Adjacent connector
-polygons then reuse the exact same Bezier boundary, so independently curved
-surfaces cannot form an X-shaped overlap. The trim station is also required to
-sit upstream of the intersection between the incoming bands' adjacent outside
-edge strokes; otherwise those normal lane overlays could retain the same
-visual X after the polygons themselves were fixed. Both ends are sampled from
-the real lane geometry at their trim stations rather than projected from the
-shared node; this also keeps curved and already-merging lanes on their actual
-centrelines. Target trimming remains coordinated: all of its lane rows use the
-greatest requested trim, keeping one clean cross-section under adjacent
-continuation surfaces. The exception is an already-completed merge whose
-distinct survivor count exactly matches the target: `osm_lanes` has already
-re-centred that section, so the handover uses zero trim plus only the tiny seam
-patch. Trimming it again would turn offset-curve cap skew into a visible notch.
-
-This pass also emits a tiny overlapping polygon when corresponding offset
-endpoints touch exactly, covering antialiasing cracks at a way split without
-enabling round caps at unrelated road ends.
-
-## Where lanes don't join up (and why)
-
-Each way's lanes are their own features, so MapLibre can't natively join across
-a shared node. The continuation pass above now covers exact, same-road handovers
-with a clear travel direction. Two limitations remain outside that safe match:
-
-**Bend wedges.** Where consecutive ways kink (~22° at the A200 chain's
-shared node), each way's offset lane ends perpendicular to *its own* end
-segment, so the outside of the bend opens a small wedge and the markings
-step across it. Measured over the 9,012 lane handovers between ways with
-matching cross-sections: average 0.10m, but 460 over 30cm and 220 over 1m
-(the worst are near-hairpin link geometry, up to 4.5m). Exact same-road
-handovers within the continuation angle are patched now; unnamed/ref-less
-handovers, ambiguous forks, and sharper bends deliberately retain the
-conservative butt caps.
-
-`line-cap: round` on every band closes these — and was tried and reverted.
-It also pushes a 1.75m semicircle past *every* way end, and wherever the
-next way is narrower or diverges there's nothing to cover it, so ~3.7k
-lane-count drops sprout a visible bulge into the gore. Fixing it properly
-means mitering lane ends against the next way's, which needs every
-lane-carrying way buffered rather than just the merge ways.
-
-**Gores.** 7,539 way pairs change lane count across a shared node with no
-merge tag to say which lane went. This is the shape in a diverge — a 3-lane
-motorway ending at one node where a 2-lane motorway *and* a 1-lane link both
-begin. OSM models the split as a point, so at that node the mainline's lanes
-and the link's lane would all have to occupy the same spot while the real
-carriageways separate gradually. No lane geometry derived from OSM way
-centrelines can render a gore faithfully; renderers that do it well use road
-polygons or dedicated lane data, not way geometry.
-
-Tagged one-to-many diverges are handled as N:M allocations. A trustworthy
-`turn:lanes` cardinality assigns each contiguous approach block to the exit
-whose real angle best matches its token (`none|none|slight_right` becomes
-lanes 1–2 to the straight two-lane exit and lane 3 to the link). Exit
-cross-sections are walked downstream until their bands separate, mirroring the
-merge-side trim. The separation check tests the two adjacent gore-edge curves
-directly; testing only the closed polygon boundaries can miss an X when another
-part of those boundaries also overlaps. Those validated curves are reused for
-the rendered connector markings.
-
-Exact-node continuation surfaces own the lane movements they cover. Matching
-legacy `turn:lanes` centre-line connectors are therefore suppressed when both
-generators describe the same `(source way, source lane, target way)` movement;
-unmatched turn connectors remain available for junction-box movements.
-Untagged forks remain ambiguous and keep the conservative
-single-best-exit behaviour; lane counts alone cannot say which source lane
-belongs to which branch.
-
-Continuation surfaces also emit narrow edge and dashed divider geometries.
-These preserve the road markings across a long trim interval and remain
-separate from the clickable fill polygons. Divider paths follow the explicit
-lane correspondence rather than equal fractions of the two cross-sections:
-merged-away dividers stop, preserved dividers meet their matching target
-boundary, and a newly added exit-lane divider begins at the outside edge.
-
-**Carriageway splits** are the tractable subset of that, and not rare: at
-**817** nodes a two-way way meets exactly two oneway ways with the lane count
-conserved (2 = 1+1) — a two-way road becoming a dual carriageway. Provincialeweg
-way 565536411 → 6627417 + 565536408 is one. Nothing is lost here, so it isn't a
-gore: each branch continues one of the parent's lanes, and the only reason it
-doesn't join up is that OSM starts both branch centrelines *at* the shared node.
-Their bands then cover ~3.5m where the parent covers 7m, leaving a half-lane
-(~1.75m) step at the node. Directional continuation joins now bridge these
-offset endpoints directly. Original endpoint coordinates are bit-identical in
-OSM and provide a stable topology key, so no second PBF pass or stored node id
-is needed. A further 512 such nodes are missing a `lanes` tag on some way
-(OSM's 1+1 default covers most), and only **196** genuinely don't conserve
-their lane count.
 
 ## Scaling to the full Netherlands
 
@@ -676,7 +238,7 @@ still building the nationwide node index, against a 3.8-GiB Docker limit.
 ways and referenced node ids; pass 2 stores coordinates only for those ids.
 The first production country import completed on 2026-07-27 in about 12.5
 minutes, with observed RSS around 1.8 GiB during database upserts. It imported
-167,169 ways and generated 497,582 lane features. The resulting extent
+167,169 ways and generated the national lane-line graph. The resulting extent
 (3.347–7.241 E, 50.748–53.447 N) covers the Netherlands.
 
 `/api/osm/roads` remains zoom-tiered (`_highway_types_for_zoom` in

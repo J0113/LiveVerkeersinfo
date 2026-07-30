@@ -7,7 +7,12 @@ import json
 from types import SimpleNamespace
 
 from ndwinfo.api.deps import BBox
-from ndwinfo.api.routers.osm import _lane_tag_value, get_osm_lane_lines
+from ndwinfo.api.routers.osm import (
+    _connection_markings,
+    _lane_tag_value,
+    get_osm_lane_lines,
+)
+from ndwinfo import models
 from ndwinfo.config import settings
 from ndwinfo.refresh_osm_lane_lines import rebuild
 
@@ -63,6 +68,10 @@ def test_lane_lines_api_keeps_separate_caps_and_parent_properties(monkeypatch):
     connection_rows = [
         SimpleNamespace(
             OsmLaneConnection=connection,
+            from_lane_nr=1,
+            from_lane_count=2,
+            to_lane_nr=1,
+            to_lane_count=2,
             geom_json='{"type":"LineString","coordinates":[[4.71,52.51],[4.72,52.52]]}',
         )
     ]
@@ -96,10 +105,39 @@ def test_lane_lines_api_keeps_separate_caps_and_parent_properties(monkeypatch):
     assert body["features"][0]["properties"]["destination_ref_lane"] == "A1"
     assert body["features"][0]["properties"]["change_lane"] == "yes"
     assert body["features"][0]["geometry"]["coordinates"][-1] != [4.71, 52.51]
+    # Lane 1 of 2: outside of the carriageway on the left, a neighbour on the
+    # right. The connector keeps the lane number, so it inherits both.
+    assert body["features"][0]["properties"]["edge_left"] is True
+    assert body["features"][0]["properties"]["edge_right"] is False
+    assert body["features"][0]["properties"]["divider_left"] is False
+    assert body["features"][1]["properties"]["edge_left"] is True
+    assert body["features"][1]["properties"]["divider_left"] is False
     assert body["metadata"] == {
         "truncated": True,
         "truncated_by_kind": {"lanes": True, "connections": False},
     }
+
+
+def test_connection_markings_only_continue_an_unchanged_lane():
+    # Lane 2 of 3 continuing into lane 2 of 4: the divider on its left carries
+    # on, and neither side is the outside of the carriageway.
+    assert _connection_markings(2, 3, 2, 4) == {
+        "edge_left": False,
+        "edge_right": False,
+        "divider_left": True,
+    }
+    # The outer lane of a widening: rightmost before the taper, not after, so no
+    # road edge is painted along the stretch where lane 4 has already opened.
+    assert _connection_markings(3, 3, 3, 4)["edge_right"] is False
+    assert _connection_markings(3, 3, 3, 3)["edge_right"] is True
+    # A split opening that new lane changes the lane number — the boundary moves
+    # across the connector, so it stays unmarked junction interior.
+    assert _connection_markings(3, 3, 4, 4) == {
+        "edge_left": False,
+        "edge_right": False,
+        "divider_left": False,
+    }
+    assert _connection_markings(1, 1, None, None)["edge_left"] is False
 
 
 def test_lane_popup_tag_selection_uses_strict_backward_fallback():
@@ -122,6 +160,8 @@ def test_lane_popup_tag_selection_uses_strict_backward_fallback():
     ) == "merge_to_left"
 
 
-def test_independent_lane_endpoint_and_rebuilder_do_not_use_lane_detail():
+def test_the_retired_physical_lane_model_is_gone():
+    """The lane-line graph is the only lane model left."""
+    assert not hasattr(models, "OsmRoadLane")
     assert "OsmRoadLane" not in inspect.getsource(get_osm_lane_lines)
     assert "OsmRoadLane" not in inspect.getsource(rebuild)

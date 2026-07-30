@@ -446,8 +446,10 @@ function updateZoomHint () {
   if (bboxTooLarge) {
     hint.textContent = 'Zoom in — area too large to load data'
     hint.classList.remove('hidden')
-  } else if (layerTruncation.has('lanes')) {
-    const detail = layerTruncation.get('lanes')
+  } else if (LANE_LINE_LAYER_KEYS.some(key => layerTruncation.has(key))) {
+    // Both lane-line layers read the same endpoint and report the same per-kind
+    // caps, so either one truncating means the same thing to the user.
+    const detail = layerTruncation.get(LANE_LINE_LAYER_KEYS.find(key => layerTruncation.has(key)))
     const kinds = [
       detail.lanes ? 'lane lines' : '',
       detail.connections ? 'connections' : ''

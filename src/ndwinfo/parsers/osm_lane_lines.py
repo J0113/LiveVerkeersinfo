@@ -2,7 +2,7 @@
 
 This module consumes only an OSM road's source geometry, ordered node IDs and
 raw tags. It intentionally has no dependency on ``osm_lanes`` or
-``osm_junctions`` (the Lane Detail implementation).
+the retired physical-lane implementation.
 """
 
 from __future__ import annotations

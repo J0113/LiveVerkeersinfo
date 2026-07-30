@@ -1,0 +1,19 @@
+# The build context is uploaded to the Docker daemon in full before any COPY
+# runs, so anything the Dockerfile never copies is pure transfer and memory
+# cost inside the VM. `data/` alone holds multi-gigabyte snapshots (the
+# Netherlands PBF, the verkeersborden CSV, the reference gpkg files) and is
+# bind-mounted at runtime rather than baked into the image — shipping it as
+# build context is what exhausts a default-sized Docker Desktop VM.
+data/
+.venv/
+.git/
+.gitignore
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+.DS_Store
+.env

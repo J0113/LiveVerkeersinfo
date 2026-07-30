@@ -778,7 +778,9 @@ function projectCurrentRoadGeometry (geometry, target) {
 }
 
 function currentRoadSourceId (properties) {
-  return properties?.osm_source_id ?? properties?.source_id ?? null
+  // osm_source_id on a speed lane, road_id on a raw lane line — both are the
+  // OSM way id the lane was derived from.
+  return properties?.osm_source_id ?? properties?.road_id ?? null
 }
 
 function currentRoadDirection (properties) {
@@ -792,7 +794,8 @@ function currentRoadIdentity (selection) {
 }
 
 // Select the lane physically under the device. Directed lanes use their local
-// travel bearing (backward lane geometry follows OSM way order, so reverse it).
+// travel bearing — lane geometry is stored in travel order for both directions,
+// so a backward lane's own bearing already is the direction of travel.
 // Undirected/both-ways lanes use the closest road axis instead.
 function selectCurrentOsmLane (laneFc, device, previous) {
   if (!device || !Array.isArray(device.coords)) return null
@@ -802,13 +805,14 @@ function selectCurrentOsmLane (laneFc, device, previous) {
   for (const feature of (laneFc?.features || [])) {
     if (!feature.geometry || !feature.properties) continue
     const p = feature.properties
-    if (p.role === 'connector') continue
+    // A junction connector is a movement through a junction, not a stretch of
+    // road we can call the current one.
+    if (p.kind === 'connection') continue
     const projected = projectCurrentRoadGeometry(feature.geometry, device.coords)
     if (!projected || projected.distance > CURRENT_ROAD_MAX_DISTANCE_M) continue
 
     const direction = currentRoadDirection(p)
-    let travelBearing = projected.bearing
-    if (direction === 'bwd') travelBearing = (travelBearing + 180) % 360
+    const travelBearing = projected.bearing
     if (headingKnown) {
       const directed = direction === 'fwd' || direction === 'bwd'
       const headingError = directed

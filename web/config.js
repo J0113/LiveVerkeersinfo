@@ -6,12 +6,22 @@
 // geomType 'polygon' → MapLibre fill + line layers (paint must have .fill / .line sub-keys)
 // minZoom            → only fetch + render when map zoom >= this value
 
-// A junction connector is a path across the junction box rather than a lane of
-// a carriageway, so it takes the lane band but none of the lane markings.
-const NOT_CONNECTOR = ['all',
-  ['!=', ['get', 'role'], 'connector'],
-  ['!=', ['get', 'role'], 'connector_marking']
-]
+// /osm/lane-lines returns lanes and the connectors between them in one
+// FeatureCollection, tagged by `kind`. Markings apply to both (the endpoint
+// says which sides a connector inherits), but arrows are for lanes only: a
+// connector is short, and the approach lane's arrow already announced the
+// movement its curve makes.
+const IS_LANE_LINE = ['==', ['get', 'kind'], 'lane']
+
+// Cross-section spacing the independent lane lines are offset by, mirroring
+// LANE_SPACING_M in parsers/osm_lane_lines.py. That endpoint carries no
+// per-lane width, and its geometry is built on this constant, so it is also the
+// band width that makes neighbouring lanes meet exactly.
+const LANE_LINE_SPACING_M = 3.5
+
+// The layers fed by /osm/lane-lines, in draw order. Shared with the truncation
+// hint in ui.js, which reports the endpoint's per-kind caps once for both.
+const LANE_LINE_LAYER_KEYS = ['lane_detail_v2', 'lanes']
 
 // Lane rendering: asphalt and the paint on it.
 const LANE_ASPHALT = '#8BA5C1'
@@ -228,147 +238,99 @@ const LAYERS = [
     }
   },
   {
-    // Individual lane centerlines derived from osm_roads' `lanes` tag — see
-    // docs/11-osm-pbf.md for the direction model and how a merging lane
-    // converges into its neighbour. Drawn at true ground width (metresWide, in
-    // lib.js) so neighbouring lanes touch and read as one carriageway instead
-    // of as separate hairlines with gaps between them.
-    key: 'osm_lanes', label: 'Lane Detail', group: 'osm',
-    endpoint: '/osm/lanes', geomType: 'line', minZoom: 15, legendColor: LANE_ASPHALT,
-    // Butt caps. A round cap would fill the small wedge that opens on the
-    // outside of a bend where two ways meet (each band is its own feature, so
-    // MapLibre can't join across them) — but it also pushes a 1.75m semicircle
-    // past every way end, and wherever the next way is narrower or diverges
-    // there's nothing to cover it. Measured on this extract that's a bad trade:
-    // ~460 bend wedges over 30cm, against ~3.7k lane-count drops that would
-    // sprout a visible bulge. See docs/11-osm-pbf.md.
+    // Ground-width asphalt bands, edge/divider markings and turn arrows over
+    // the lane-line graph. Every value it paints with comes straight off the
+    // endpoint's properties: no widths, neighbours, or marking sides are worked
+    // out in the browser. Lane lines are offset by a fixed cross-section pitch
+    // rather than carrying a per-lane width, so LANE_LINE_SPACING_M is the band
+    // width; edge_left/edge_right/divider_left come from the endpoint for both
+    // kinds of feature.
+    //
+    // Connections are asphalt too, and the marking flags are what tell the two
+    // cases apart: a connector that continues the same lane across a way
+    // boundary carries the markings straight through, while a junction movement
+    // that opens or closes a lane has none and reads as junction interior.
+    key: 'lane_detail_v2', label: 'Lane Detail', group: 'osm',
+    endpoint: '/osm/lane-lines', geomType: 'line', minZoom: 15,
+    promoteId: 'id', legendColor: LANE_ASPHALT,
+    // Butt caps: a round cap would push half a lane width past every segment
+    // end, and lane lines are split per logical segment so those ends are
+    // frequent.
     lineCap: 'butt', lineJoin: 'round',
-    // Shared-node continuation patches are lane-width polygons. Rendering the
-    // same tiny joins as thick line strings produces a full-width butt cap
-    // that sticks out as a blue rectangle whenever the two tangents differ.
-    fills: [{
-      suffix: 'continuation',
-      filter: ['==', ['get', 'continuation'], true],
-      paint: { 'fill-color': LANE_ASPHALT, 'fill-opacity': 1 }
-    }],
-    filter: ['!=', ['get', 'continuation'], true],
     paint: {
       'line-color': LANE_ASPHALT,
-      // Slightly over true width so neighbouring bands overlap by a few cm.
-      // Butted exactly, their shared edge antialiases against whatever is below
-      // and every lane boundary shows a pale hairline from the basemap.
-      'line-width': metresWide(['+', ['get', 'width_m'], LANE_SEAM_OVERLAP_M], 15),
+      'line-width': metresWide(LANE_LINE_SPACING_M + LANE_SEAM_OVERLAP_M, 15),
       'line-opacity': 1
     },
-    // Dividers between lanes, drawn over the bands. Offset to one side rather
-    // than stroked on both (line-gap-width strokes both edges at once, which
-    // can't tell an inner boundary from the outside of the carriageway).
-    // line-offset is relative to the line's own direction, and lane numbering
-    // runs left-to-right in that same frame, so negative = left for every case.
-    //
-    // Which boundaries get one is `divider_left`, decided in the parser: it's a
-    // question about a lane's *neighbour* (is the carriageway's outside on my
-    // left? is one of us merging across this edge?) and a per-feature filter
-    // can't see next door. See _mark_dividers in parsers/osm_lanes.py.
-    // Connectors carry no divider_left at all, so they drop out here without
-    // needing NOT_CONNECTOR — a junction interior has no lane lines.
+    // Lane-line geometry is stored in travel order for both fwd and bwd
+    // (make_lane_line_rows reverses bwd) and connectors are built in travel
+    // order too, so a negative line-offset is the driver's left in every case.
     overlays: [
       {
-        suffix: 'continuation-edge',
-        filter: ['==', ['get', 'continuation_marking'], 'edge'],
+        suffix: 'edge-left',
+        filter: ['==', ['get', 'edge_left'], true],
         paint: {
           'line-color': LANE_MARKING,
+          'line-offset': metresWide(-LANE_LINE_SPACING_M / 2, 15),
           'line-width': metresWideMin(0.2, 0.9, 15)
         }
       },
       {
-        suffix: 'continuation-divider',
-        filter: ['==', ['get', 'continuation_marking'], 'divider'],
+        suffix: 'edge-right',
+        filter: ['==', ['get', 'edge_right'], true],
         paint: {
           'line-color': LANE_MARKING,
-          'line-width': metresWideMin(0.15, 0.8, 15),
-          'line-dasharray': [20, 60]
-        }
-      },
-      {
-        // Outside road edges are narrow offset strokes, not a wide casing
-        // underneath every independent lane feature. A wide casing has a butt
-        // cap across the full lane at every OSM way boundary; those caps leak
-        // through as transverse seams. Edge strokes only end along the road's
-        // perimeter, so there is nothing underneath the asphalt to leak.
-        suffix: 'edge-left', filter: ['==', ['get', 'edge_left'], true],
-        paint: {
-          'line-color': LANE_MARKING,
-          'line-offset': metresWide(['*', ['get', 'width_m'], -0.5], 15),
+          'line-offset': metresWide(LANE_LINE_SPACING_M / 2, 15),
           'line-width': metresWideMin(0.2, 0.9, 15)
         }
       },
       {
-        suffix: 'edge-right', filter: ['==', ['get', 'edge_right'], true],
+        // Inner boundary: a same-direction neighbour on the left, so a dashed
+        // divider rather than a road edge. 0.15m × [20, 60] is NL's
+        // 3m-line/9m-gap marking at true scale.
+        suffix: 'divider',
+        filter: ['==', ['get', 'divider_left'], true],
         paint: {
           'line-color': LANE_MARKING,
-          'line-offset': metresWide(['*', ['get', 'width_m'], 0.5], 15),
-          'line-width': metresWideMin(0.2, 0.9, 15)
-        }
-      },
-      {
-        // 0.15m stroke × dasharray [20, 60] (units are line widths) is NL's
-        // 3m-line/9m-gap lane marking at true scale, so it lands on the real
-        // paint in the satellite basemap. Floor keeps it visible once 0.15m
-        // drops under a pixel.
-        suffix: 'divider', filter: ['==', ['get', 'divider_left'], true],
-        paint: {
-          'line-color': LANE_MARKING,
-          'line-offset': metresWide(['*', ['get', 'width_m'], -0.5], 15),
+          'line-offset': metresWide(-LANE_LINE_SPACING_M / 2, 15),
           'line-width': metresWideMin(0.15, 0.8, 15),
           'line-dasharray': [20, 60]
         }
       }
     ],
-    // Painted arrows: which way the lane runs, and where it's allowed to go.
-    // `turn` is the lane's turn:lanes token set, absent when the way doesn't
-    // tag one (or tags a count that doesn't match its lanes) — those lanes fall
-    // back to a plain through arrow, which still answers "which way does this
-    // lane run". Only from zoom 17: below that 4.2m of paint is a few pixels.
-    //
-    // Connectors are excluded like the markings are — they're short (7.7m
-    // average, under two arrow lengths) and their curve already shows the
-    // movement the approach lane's arrow announced.
     laneArrows: {
       minZoom: 17,
-      filter: ['all', NOT_CONNECTOR,
-        // both_ways and undirected lanes have no travel direction to point in.
+      filter: ['all', IS_LANE_LINE,
+        // 'unknown' lanes (both_ways, or an unresolved oneway) have no travel
+        // direction to point in.
         ['match', ['get', 'direction'], ['fwd', 'bwd'], true, false]
       ],
       layout: {
         'symbol-placement': 'line',
         'symbol-spacing': metresWide(35, 15),
-        'icon-image': ['concat', LANE_ARROW_PREFIX, ['coalesce', ['get', 'turn'], 'through']],
-        // Scaled off the lane's own width so a turn arrow always fits between
-        // its edge lines; icon-size multiplies the icon's natural size, hence
-        // the divide by it.
+        // turn_lane is the endpoint's already-resolved turn:lanes token set for
+        // this lane ('left;through', …); the icon generator splits it on ';'.
+        // Absent, or an empty field in the tag, means no restriction — a plain
+        // through arrow, which still answers "which way does this lane run".
+        'icon-image': ['concat', LANE_ARROW_PREFIX,
+          ['match', ['coalesce', ['get', 'turn_lane'], ''], '', 'through', ['get', 'turn_lane']]
+        ],
         'icon-size': metresWide(
-          ['*', ['get', 'width_m'], ARROW_SPAN_PER_LANE_WIDTH / (ARROW_ICON_PX / ARROW_ICON_RATIO)],
+          LANE_LINE_SPACING_M * ARROW_SPAN_PER_LANE_WIDTH / (ARROW_ICON_PX / ARROW_ICON_RATIO),
           15
         ),
         'icon-rotation-alignment': 'map',
-        // Lane geometry runs in travel order for fwd lanes, but a two-way way's
-        // bwd lanes come back in the way's own coordinate order — so their
-        // arrows would point at oncoming traffic without this.
-        'icon-rotate': ['case', ['==', ['get', 'direction'], 'bwd'], 180, 0],
-        // Every lane keeps its own arrow. The collision box is the glyph's
-        // square bounding box, which is wider than the gap between two lanes'
-        // centrelines (a 2.75m secondary lane against a ~3.3m box), so leaving
-        // placement on drops all but one arrow across the whole carriageway.
-        // The glyphs themselves are sized to stay inside their lane, so what
-        // the collider is avoiding here isn't real overlap.
+        // No counter-rotation for bwd lanes: their geometry is already stored
+        // in travel order.
         'icon-allow-overlap': true,
         'icon-ignore-placement': true
       }
     }
   },
   {
-    // Thin physical lane centerlines independently derived from Driving Roads.
+    // Thin physical lane centerlines, the development view of the same graph.
+    // Listed after Lane Detail so the debug hairlines stay visible on top of its
+    // opaque bands when both are switched on.
     key: 'lanes', label: 'Lanes', group: 'osm',
     endpoint: '/osm/lane-lines', geomType: 'line', minZoom: 15,
     promoteId: 'id', legendColor: '#111171',

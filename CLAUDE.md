@@ -130,7 +130,7 @@ src/ndwinfo/
 │       ├── truckparking.py # GET /api/truckparking (TruckParkingArea, TruckParkingStatus)
 │       ├── verkeersborden.py # GET /api/verkeersborden (Verkeersbord — large CSV)
 │       ├── emission.py    # GET /api/emission (EmissionZone)
-│       ├── osm.py         # GET /api/osm/roads, /api/osm/lanes (viewport-bounded OSM geometry)
+│       ├── osm.py         # GET /api/osm/roads, /api/osm/lane-lines (viewport-bounded OSM geometry)
 │       ├── vild.py        # GET /api/vild/points|lines|areas (VILD reference geometry)
 │       ├── anwb.py        # GET /api/anwb (AnwbIncident — jams/roadworks/dynamic radars)
 │       ├── flitspalen.py  # GET /api/flitspalen, /api/flitspalen/pairs (fixed cameras + trajectcontrole routes)
@@ -143,8 +143,6 @@ src/ndwinfo/
 │   ├── shapefile_ref.py   # Shapefiles (meetlocaties, VILD, MSI signs)
 │   ├── ndw_vms.py         # NDW XML matrix signs
 │   ├── osm_pbf.py         # Geofabrik PBF → driving-road ways (motorway/trunk/primary/secondary + _link)
-│   ├── osm_lanes.py       # Per-lane offset geometry from an osm_road way + its lanes tag
-│   ├── osm_junctions.py   # Lane-to-lane connector geometry through junctions
 │   ├── anwb.py            # ANWB incidents JSON → jams/roadworks/radars records
 │   └── flitspalen.py      # Flitspalen.nl camera JSON → NL-filtered fixed-camera records
 └── ingest/                # Feed-specific ingesters (called by poller, use parsers):
@@ -161,7 +159,7 @@ src/ndwinfo/
     ├── vild_direction.py  # resolve_effective_road: VILD-derived travel bearing + effective_road/
     │                      #   effective_carriageway resolution for MeasurementSite
     ├── traveltime_geometry.py # Road-following LineString for travel-time segments from the VILD TMC chain
-    ├── osm_roads.py       # Geofabrik OSM PBF driving-road extracts → osm_road/osm_road_lane
+    ├── osm_roads.py       # Geofabrik OSM PBF driving-road extracts → osm_road/osm_lane_centerline
     ├── anwb.py            # AnwbIncident upsert
     ├── flitspalen.py      # FlitspalenCamera upsert
     └── flitspalen_route.py # SC/SCE trajectcontrole pairing + Dijkstra road-snapping → FlitspalenCameraRoute

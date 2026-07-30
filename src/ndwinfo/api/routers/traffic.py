@@ -19,12 +19,13 @@ from ndwinfo.config import settings
 from ndwinfo.models import (
     MeasurementCharacteristic,
     MeasurementSite,
+    OsmLaneCenterline,
     OsmRoad,
-    OsmRoadLane,
     TrafficMeasurement,
     TravelTime,
     VildTmc,
 )
+from ndwinfo.parsers.osm_lane_lines import LANE_SPACING_M
 from ndwinfo.osm_tags import osm_carriageway_ref
 from ndwinfo.site_naming import ndw_roadway_ref
 from ndwinfo.osm_tags import osm_maxspeed_kmh as _osm_maxspeed_kmh
@@ -727,7 +728,14 @@ def _osm_failure_reason(site: dict, candidates: list) -> str:
 
 
 def _attach_osm_matches(db, features: list[dict]) -> None:
-    """Match directed speed sites to nearby OSM directional lane geometry."""
+    """Match directed speed sites to nearby OSM directional lane geometry.
+
+    Lane 1 of each direction stands in for the carriageway. A way is stored as
+    several logical lane-line segments, so one way can offer more than one
+    candidate here; the nearest wins, and `_pick_osm_candidate` already treats
+    two candidates sharing a `source_id` as the same road rather than as an
+    ambiguity.
+    """
     payload = []
     for index, feature in enumerate(features):
         props = feature["properties"]
@@ -761,18 +769,18 @@ def _attach_osm_matches(db, features: list[dict]) -> None:
                 )
             )
             SELECT s.i,
-                   o.source_id,
+                   o.road_id AS source_id,
                    o.lane_count,
-                   o.ref,
-                   o.name,
+                   r.raw->>'ref' AS ref,
+                   r.raw->>'name' AS name,
                    o.direction,
-                   o.highway,
+                   r.highway,
                    r.raw AS osm_tags,
                    ARRAY(
-                       SELECT o2.source_id
-                       FROM osm_road_lane o2
-                       WHERE o2.lane = 1
-                         AND o2.source_id <> o.source_id
+                       SELECT DISTINCT o2.road_id
+                       FROM osm_lane_centerline o2
+                       WHERE o2.lane_nr = 1
+                         AND o2.road_id <> o.road_id
                          AND ST_DWithin(
                              o2.geom::geography,
                              o.geom::geography,
@@ -780,6 +788,10 @@ def _attach_osm_matches(db, features: list[dict]) -> None:
                          )
                    ) AS connected_source_ids,
                    ST_Distance(s.point::geography, o.geom::geography) AS distance_m,
+                   -- No backward correction: lane centerlines are stored in
+                   -- travel order for both directions (make_lane_line_rows
+                   -- reverses the backward ones), so the line's own azimuth is
+                   -- already the direction of travel.
                    mod((
                        degrees(ST_Azimuth(
                            ST_LineInterpolatePoint(
@@ -790,19 +802,18 @@ def _attach_osm_matches(db, features: list[dict]) -> None:
                                merged.line,
                                least(ST_LineLocatePoint(merged.line, s.point) + 0.0001, 1)
                            )
-                       )) + CASE WHEN o.direction = 'bwd' THEN 180 ELSE 0 END
+                       ))
                    )::numeric, 360)::double precision AS bearing
             FROM sites s
-            JOIN osm_road_lane o
-              ON o.lane = 1
+            JOIN osm_lane_centerline o
+              ON o.lane_nr = 1
              AND o.direction IN ('fwd', 'bwd')
-             AND coalesce(o.role, '') <> 'connector'
              AND ST_DWithin(
                  o.geom::geography,
                  s.point::geography,
                  :max_distance_m
              )
-            JOIN osm_road r ON r.osm_id = o.source_id
+            JOIN osm_road r ON r.osm_id = o.road_id
             CROSS JOIN LATERAL (SELECT ST_LineMerge(o.geom) AS line) merged
             WHERE GeometryType(merged.line) = 'LINESTRING'
             ORDER BY s.i, distance_m
@@ -909,25 +920,27 @@ def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDe
     bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
     rows = db.execute(
         select(
-            OsmRoadLane.id,
-            OsmRoadLane.source_id,
-            OsmRoadLane.lane,
-            OsmRoadLane.lane_count,
-            OsmRoadLane.direction,
-            OsmRoadLane.highway,
-            OsmRoadLane.name,
-            OsmRoadLane.ref,
-            OsmRoadLane.width_m,
+            OsmLaneCenterline.id,
+            OsmLaneCenterline.road_id.label("source_id"),
+            OsmLaneCenterline.lane_nr,
+            OsmLaneCenterline.lane_count,
+            OsmLaneCenterline.direction,
+            OsmRoad.highway,
             OsmRoad.raw.label("osm_tags"),
-            func.ST_AsGeoJSON(OsmRoadLane.geom, 6).label("geom_json"),
+            func.ST_AsGeoJSON(OsmLaneCenterline.geom, 6).label("geom_json"),
         )
-        .join(OsmRoad, OsmRoad.osm_id == OsmRoadLane.source_id)
+        .join(OsmRoad, OsmRoad.osm_id == OsmLaneCenterline.road_id)
         .where(
-            tuple_(OsmRoadLane.source_id, OsmRoadLane.direction).in_(list(matched)),
-            OsmRoadLane.role != "connector",
-            func.ST_Intersects(OsmRoadLane.geom, bbox_geom),
+            tuple_(OsmLaneCenterline.road_id, OsmLaneCenterline.direction).in_(
+                list(matched)
+            ),
+            func.ST_Intersects(OsmLaneCenterline.geom, bbox_geom),
         )
-        .order_by(OsmRoadLane.source_id, OsmRoadLane.direction, OsmRoadLane.lane)
+        .order_by(
+            OsmLaneCenterline.road_id,
+            OsmLaneCenterline.direction,
+            OsmLaneCenterline.lane_nr,
+        )
         .limit(settings.api_max_limit)
     ).all()
 
@@ -935,7 +948,10 @@ def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDe
     for row in rows:
         pair = (row.source_id, row.direction)
         points = matched[pair]
-        effective_lane = _effective_osm_lane(row.lane, row.lane_count, row.direction)
+        # Lane-line numbering is already driver-relative — lane 1 is the
+        # leftmost lane of its own direction — which is the numbering the NDW
+        # per-lane readings use, so no translation step is needed.
+        effective_lane = row.lane_nr
         candidates: list[tuple[dict, dict]] = []
         for point in points:
             lane = next(
@@ -985,10 +1001,13 @@ def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDe
                 "lane": effective_lane,
                 "lane_count": row.lane_count,
                 "highway": row.highway,
-                "name": row.name,
-                "ref": row.ref,
+                "name": (row.osm_tags or {}).get("name"),
+                "ref": (row.osm_tags or {}).get("ref"),
                 "carriageway_ref": osm_carriageway_ref(row.osm_tags),
-                "width_m": float(row.width_m) if row.width_m is not None else None,
+                # Lane lines are offset by a fixed cross-section pitch rather
+                # than a per-lane width, so the band that covers one is that
+                # same pitch wide.
+                "width_m": LANE_SPACING_M,
                 "maxspeed_kmh": _osm_maxspeed_kmh(row.osm_tags, row.direction),
                 "road": point_props.get("road"),
                 "carriageway": point_props.get("carriageway"),
@@ -1007,11 +1026,6 @@ def _osm_lane_speed_feature_collection(db, point_features: list[dict], b: BBoxDe
             },
         })
     return {"type": "FeatureCollection", "features": lane_features}
-
-
-def _effective_osm_lane(lane: int, lane_count: int, direction: str) -> int:
-    """Translate physical OSM ordering to driver-left NDW lane numbering."""
-    return lane_count + 1 - lane if direction == "bwd" else lane
 
 
 @router.get("/speed/map")

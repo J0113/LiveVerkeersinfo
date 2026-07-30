@@ -26,9 +26,12 @@ There is no `/lane-speeds` route and no PDOK dependency anywhere in `src/`.
 
 Speed-sensor-to-lane matching (`_attach_osm_matches` in
 `src/ndwinfo/api/routers/traffic.py`) is a single raw-SQL query per request:
-it geography-casts candidate `osm_road_lane` rows and the sensor points and
-uses `ST_DWithin`/`ST_Distance` against the `osm_road_lane` GiST index, with a
-25m candidate radius (`OSM_MATCH_MAX_DISTANCE_M`). `_pick_osm_candidate` then
+it geography-casts lane 1 of each direction in `osm_lane_centerline` and the
+sensor points and uses `ST_DWithin`/`ST_Distance` against that table's
+geography GiST index (`ix_osm_lane_centerline_geog` — the plain geometry index
+cannot serve the cast, and without it every site falls back to a sequential
+scan of the national lane table), with a 25m candidate radius
+(`OSM_MATCH_MAX_DISTANCE_M`). `_pick_osm_candidate` then
 ranks candidates by road-reference/lane-count agreement ahead of angle and
 distance (see [docs/01](01-traffic-realtime.md#map-driving-hud)). There is no
 Python-side Shapely/STRtree step — the whole distance query runs in Postgres.
@@ -66,6 +69,6 @@ docker stats --no-stream
 docker images 'liveverkeersinfo-*'
 ```
 
-The matching query uses the `osm_road_lane` geography GiST index for its 25m
-candidate search. Optimize using representative bounded viewports and query
+The matching query uses the `osm_lane_centerline` geography GiST index for its
+25m candidate search. Optimize using representative bounded viewports and query
 plans, not nationwide unbounded requests or synthetic frontend-only timings.

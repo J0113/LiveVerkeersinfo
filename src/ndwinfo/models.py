@@ -17,6 +17,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -228,53 +229,19 @@ class OsmRoadExtract(Base):
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
 
-class OsmRoadLane(Base):
-    """One offset lane centerline derived from an osm_road way + its lanes tag.
-
-    id = f"{source_id}:{direction}:{lane}". source_id has ON DELETE CASCADE
-    to osm_road so pruning a stale way (OsmRoadIngester's extract-scoped
-    prune) automatically drops its lanes -- no separate lane-level prune.
-    """
-
-    __tablename__ = "osm_road_lane"
-    __table_args__ = (
-        Index("ix_osm_road_lane_geom", "geom", postgresql_using="gist"),
-        Index("ix_osm_road_lane_source_id", "source_id"),
-    )
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    source_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("osm_road.osm_id", ondelete="CASCADE")
-    )
-    lane: Mapped[int] = mapped_column(Integer)  # 1-indexed physical position, left to right
-    lane_count: Mapped[int] = mapped_column(
-        Integer
-    )  # total lanes this row's direction contributes to
-    direction: Mapped[Optional[str]] = mapped_column(String)  # fwd|bwd|unknown
-    role: Mapped[Optional[str]] = mapped_column(
-        String
-    )  # normal|merge_left|merge_right|both_ways|unknown
-    highway: Mapped[Optional[str]] = mapped_column(String)
-    name: Mapped[Optional[str]] = mapped_column(
-        String
-    )  # denormalized from parent way, like highway
-    ref: Mapped[Optional[str]] = mapped_column(String)
-    width_m: Mapped[Optional[Any]] = mapped_column(Numeric)  # 3.5 or 2.75
-    # offset_curve() can return MultiLineString, so this is GEOMETRY rather
-    # than LINESTRING.
-    geom: Mapped[Optional[Any]] = mapped_column(
-        Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True
-    )
-    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
-    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
-
-
 class OsmLaneCenterline(Base):
     """Independent thin centerline for one physical OSM driving lane."""
 
     __tablename__ = "osm_lane_centerline"
     __table_args__ = (
         Index("ix_osm_lane_centerline_geom", "geom", postgresql_using="gist"),
+        # Metric-radius lookups (the speed-sensor match) cast to geography,
+        # which the plain geometry index above cannot serve.
+        Index(
+            "ix_osm_lane_centerline_geog",
+            text("(geom::geography)"),
+            postgresql_using="gist",
+        ),
         Index("ix_osm_lane_centerline_road_id", "road_id"),
         Index(
             "uq_osm_lane_centerline_segment_direction_lane",

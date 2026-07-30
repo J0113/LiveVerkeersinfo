@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from ndwinfo.api.deps import BBox
-from ndwinfo.api.routers.osm import _highway_types_for_zoom, get_osm_lanes
+from ndwinfo.api.routers.osm import _highway_types_for_zoom
 from ndwinfo.ingest import osm_roads
 from ndwinfo.parsers.osm_pbf import _way_row
 
@@ -132,11 +132,11 @@ def test_ingest_upserts_road_and_extract_membership_per_batch(monkeypatch):
     assert total == 3
     assert ("OsmRoad", 3, ["osm_id"]) in upsert_calls
     assert ("OsmRoadExtract", 3, ["extract_key", "osm_id"]) in upsert_calls
-    # Five deletes: stale Lane Detail + independent Lanes rows, the rebuilt
-    # independent connector set, then the two end-of-run extract/road prunes.
-    assert len(session.executions) == 5
+    # Four deletes: this batch's stale lane rows, the rebuilt connector set,
+    # then the two end-of-run extract/road prunes.
+    assert len(session.executions) == 4
     stmt_texts = [str(stmt) for stmt, _ in session.executions]
-    assert any("osm_road_lane" in t for t in stmt_texts)
+    assert not any("osm_road_lane" in t for t in stmt_texts)
     assert any("osm_lane_centerline" in t for t in stmt_texts)
     assert any("osm_lane_connection" in t for t in stmt_texts)
     assert any("osm_road_extract" in t for t in stmt_texts)
@@ -224,39 +224,3 @@ def test_highway_types_regional_adds_trunk_and_primary():
 def test_highway_types_detailed_returns_all_classes():
     assert _highway_types_for_zoom(11) is None
     assert _highway_types_for_zoom(18) is None
-
-
-def test_osm_lane_api_includes_directional_parent_maxspeed():
-    lane = SimpleNamespace(
-        source_id=42,
-        lane=1,
-        lane_count=2,
-        direction="bwd",
-        role="normal",
-        highway="primary",
-        name="Provincialeweg",
-        ref="N203",
-        width_m=3.5,
-        raw={"turn": "through"},
-    )
-    row = SimpleNamespace(
-        OsmRoadLane=lane,
-        osm_tags={
-            "maxspeed": "80",
-            "maxspeed:backward": "60",
-            "carriageway_ref": "Li",
-        },
-        geom_json='{"type":"LineString","coordinates":[[4.70,52.51],[4.71,52.52]]}',
-    )
-
-    class Db:
-        def execute(self, *_args, **_kwargs):
-            return SimpleNamespace(all=lambda: [row])
-
-    response = get_osm_lanes(BBox(4.70, 52.51, 4.72, 52.53), Db())
-    feature = json.loads(response.body)["features"][0]
-
-    assert feature["properties"]["ref"] == "N203"
-    assert feature["properties"]["name"] == "Provincialeweg"
-    assert feature["properties"]["carriageway_ref"] == "Li"
-    assert feature["properties"]["maxspeed_kmh"] == 60

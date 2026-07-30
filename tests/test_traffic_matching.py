@@ -3,7 +3,6 @@ from types import SimpleNamespace
 from ndwinfo.api.deps import BBox
 from ndwinfo.api.routers.traffic import (
     _attach_osm_matches,
-    _effective_osm_lane,
     _normalized_road_ref,
     _osm_lane_speed_feature_collection,
     _osm_maxspeed_kmh,
@@ -144,10 +143,20 @@ def test_n203_opposite_pair_selects_distinct_directed_osm_ways():
     assert (neg_match.source_id, neg_match.direction) == (101, "bwd")
 
 
-def test_backward_osm_lane_numbers_are_reversed_for_ndw():
-    assert _effective_osm_lane(1, 3, "bwd") == 3
-    assert _effective_osm_lane(3, 3, "bwd") == 1
-    assert _effective_osm_lane(1, 3, "fwd") == 1
+def test_lane_line_numbering_is_used_as_the_ndw_lane_number():
+    """Both count 1 as the leftmost lane of the direction of travel.
+
+    The lane-line graph numbers per direction and in travel order, so a
+    backward lane needs no mirroring the way physical OSM ordering did.
+    """
+    result = _lane_feature_collection_for(
+        lane_rows=[_lane_line_row(1, direction="bwd"), _lane_line_row(2, direction="bwd")],
+        direction="bwd",
+        lanes=[{"lane": 1, "speed_kmh": 88.0}, {"lane": 2, "speed_kmh": None}],
+    )
+
+    assert [feature["properties"]["lane"] for feature in result["features"]] == [1]
+    assert result["features"][0]["properties"]["speed_kmh"] == 88.0
 
 
 def test_osm_maxspeed_uses_directional_value_and_converts_mph():
@@ -167,25 +176,29 @@ def test_osm_maxspeed_oneway_minus_one_uses_backward_value():
     assert _osm_maxspeed_kmh(tags, "fwd") == 60
 
 
-def test_osm_lane_output_omits_missing_speed_and_includes_maxspeed():
-    def lane_row(lane):
-        return SimpleNamespace(
-            id=f"42:fwd:{lane}",
-            source_id=42,
-            lane=lane,
-            lane_count=2,
-            direction="fwd",
-            highway="primary",
-            name="Provincialeweg",
-            ref="N203",
-            width_m=3.5,
-            osm_tags={"maxspeed": "80", "carriageway_ref": "d"},
-            geom_json='{"type":"LineString","coordinates":[[4.70,52.51],[4.71,52.52]]}',
-        )
+def _lane_line_row(lane_nr, *, direction="fwd"):
+    """One osm_lane_centerline row as the speed query selects it."""
+    return SimpleNamespace(
+        id=f"ll:42:10:11:{direction}:{lane_nr}",
+        source_id=42,
+        lane_nr=lane_nr,
+        lane_count=2,
+        direction=direction,
+        highway="primary",
+        osm_tags={
+            "maxspeed": "80",
+            "carriageway_ref": "d",
+            "name": "Provincialeweg",
+            "ref": "N203",
+        },
+        geom_json='{"type":"LineString","coordinates":[[4.70,52.51],[4.71,52.52]]}',
+    )
 
+
+def _lane_feature_collection_for(*, lane_rows, direction, lanes):
     class Result:
         def all(self):
-            return [lane_row(1), lane_row(2)]
+            return lane_rows
 
     class Db:
         def execute(self, *_args, **_kwargs):
@@ -197,19 +210,24 @@ def test_osm_lane_output_omits_missing_speed_and_includes_maxspeed():
         "properties": {
             "site_id": "sensor-1",
             "osm_source_id": 42,
-            "osm_direction": "fwd",
-            "lanes": [
-                {"lane": 1, "speed_kmh": None},
-                {"lane": 2, "speed_kmh": 72.0},
-            ],
+            "osm_direction": direction,
+            "lanes": lanes,
         },
     }]
-
-    result = _osm_lane_speed_feature_collection(
+    return _osm_lane_speed_feature_collection(
         Db(), points, BBox(4.70, 52.51, 4.72, 52.53)
     )
 
+
+def test_osm_lane_output_omits_missing_speed_and_includes_maxspeed():
+    result = _lane_feature_collection_for(
+        lane_rows=[_lane_line_row(1), _lane_line_row(2)],
+        direction="fwd",
+        lanes=[{"lane": 1, "speed_kmh": None}, {"lane": 2, "speed_kmh": 72.0}],
+    )
+
     assert [feature["properties"]["lane"] for feature in result["features"]] == [2]
+    assert result["features"][0]["properties"]["width_m"] == 3.5
     assert result["features"][0]["properties"]["name"] == "Provincialeweg"
     assert result["features"][0]["properties"]["carriageway_ref"] == "d"
     assert result["features"][0]["properties"]["maxspeed_kmh"] == 80
