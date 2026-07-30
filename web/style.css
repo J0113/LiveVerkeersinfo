@@ -708,6 +708,17 @@ input[type="radio"] {
   padding-right: 10px;
 }
 
+.popup-copy {
+  margin-left: 5px;
+  padding: 1px 5px;
+  border: 1px solid #5d5d78;
+  border-radius: 3px;
+  background: #34344d;
+  color: #d8d8e8;
+  cursor: pointer;
+  font: inherit;
+}
+
 /* ── MSI matrix sign gantry markers (RWS rijstrooksignalering style) ────── */
 
 .msi-gantry {

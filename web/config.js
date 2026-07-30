@@ -366,6 +366,18 @@ const LAYERS = [
         'icon-ignore-placement': true
       }
     }
+  },
+  {
+    // Thin physical lane centerlines independently derived from Driving Roads.
+    key: 'lanes', label: 'Lanes', group: 'osm',
+    endpoint: '/osm/lane-lines', geomType: 'line', minZoom: 15,
+    promoteId: 'id', legendColor: '#111171',
+    lineCap: 'butt', lineJoin: 'round',
+    paint: {
+      'line-color': '#111171',
+      'line-width': 2,
+      'line-opacity': 1
+    }
   }
 ]
 
@@ -398,6 +410,7 @@ const GROUPS = [
 const DEFAULT_ENABLED = new Set(['matrix', 'drips'])
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
+const layerTruncation = new Map()
 
 // GPS-relative top HUD tiles. Toggled independently of the map layers via the
 // "HUD" section at the top of the layer panel. Only shown while GPS tracks.

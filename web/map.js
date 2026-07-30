@@ -25,6 +25,15 @@ const BASEMAPS = {
     // including this one, which otherwise carries no OSM attribution at all.
     attribution: '© <a href="https://www.esri.com/">Esri</a>, Maxar, Earthstar Geographics — ' + OSM_ATTR
   },
+  pdok: {
+    label: 'Luchtfoto PDOK',
+    tiles: ['https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg'],
+    tileSize: 256, maxzoom: 19,
+    // PDOK imagery itself needs only "Beeldmateriaal.nl" credit; the OSM Driving
+    // Roads layer (config.js) draws OSM/ODbL-licensed data on top of every
+    // basemap including this one, which otherwise carries no OSM attribution.
+    attribution: '© <a href="https://www.beeldmateriaal.nl/">Beeldmateriaal.nl</a> — ' + OSM_ATTR
+  },
   light: {
     label: 'Licht',
     tiles: [

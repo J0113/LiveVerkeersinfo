@@ -11,6 +11,7 @@ function setupClickPopup (mapLayerId) {
       .setLngLat(e.lngLat)
       .setHTML(buildPopupHtml(props))
       .addTo(map)
+    wirePopupCopyButtons(activePopup)
   })
   map.on('mouseenter', mapLayerId, () => { map.getCanvas().style.cursor = 'pointer' })
   map.on('mouseleave', mapLayerId, () => { map.getCanvas().style.cursor = '' })
@@ -52,10 +53,24 @@ function buildPopupHtml (props) {
     .map(([k, v]) => {
       let display = typeof v === 'object' ? JSON.stringify(v) : String(v)
       if (display.length > 130) display = display.slice(0, 130) + '…'
-      return `<tr><td class="pk">${esc(k)}</td><td>${esc(display)}</td></tr>`
+      const copy = ['id', 'from', 'to'].includes(k) && String(v).startsWith('ll:')
+        ? ` <button type="button" class="popup-copy" data-copy="${esc(String(v))}">Copy</button>`
+        : ''
+      const label = k === 'id' && String(v).startsWith('ll:') ? 'Lanes ID' : k
+      return `<tr><td class="pk">${esc(label)}</td><td>${esc(display)}${copy}</td></tr>`
     })
   if (!rows.length && !imageHtml) return '<em style="color:#667">No properties</em>'
   return imageHtml + (rows.length ? `<table class="popup-table"><tbody>${rows.join('')}</tbody></table>` : '')
+}
+
+function wirePopupCopyButtons (popup) {
+  const root = popup?.getElement?.()
+  for (const button of root?.querySelectorAll?.('.popup-copy') || []) {
+    button.addEventListener('click', () => {
+      navigator.clipboard?.writeText(button.dataset.copy)
+      button.textContent = 'Copied'
+    })
+  }
 }
 
 // esc moved to lib.js.
@@ -430,6 +445,14 @@ function updateZoomHint () {
   const hint = document.getElementById('zoom-hint')
   if (bboxTooLarge) {
     hint.textContent = 'Zoom in — area too large to load data'
+    hint.classList.remove('hidden')
+  } else if (layerTruncation.has('lanes')) {
+    const detail = layerTruncation.get('lanes')
+    const kinds = [
+      detail.lanes ? 'lane lines' : '',
+      detail.connections ? 'connections' : ''
+    ].filter(Boolean).join(' and ')
+    hint.textContent = `Zoom in — Lanes ${kinds || 'features'} were truncated`
     hint.classList.remove('hidden')
   } else if (enabled.has('verkeersborden') && map.getZoom() < 13) {
     hint.textContent = 'Zoom in further to see traffic signs (zoom 13+)'

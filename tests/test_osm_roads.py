@@ -72,6 +72,16 @@ def test_way_row_retains_full_tag_dict_verbatim():
     assert row["raw"]["operator"] == "Rijkswaterstaat"
 
 
+def test_way_row_retains_ordered_node_references():
+    row = _way_row(
+        6569948,
+        {"highway": "primary"},
+        WKT,
+        (1001, 1002, 1003, 1001),
+    )
+    assert row["node_refs"] == [1001, 1002, 1003, 1001]
+
+
 # ─── ingester: extract-scoped upsert/prune ──────────────────────────────────
 
 
@@ -122,12 +132,13 @@ def test_ingest_upserts_road_and_extract_membership_per_batch(monkeypatch):
     assert total == 3
     assert ("OsmRoad", 3, ["osm_id"]) in upsert_calls
     assert ("OsmRoadExtract", 3, ["extract_key", "osm_id"]) in upsert_calls
-    # Three deletes: this batch's stale osm_road_lane rows (per-batch, inside
-    # _flush), then the two end-of-run prunes (stale extract memberships,
-    # then orphaned roads).
-    assert len(session.executions) == 3
+    # Five deletes: stale Lane Detail + independent Lanes rows, the rebuilt
+    # independent connector set, then the two end-of-run extract/road prunes.
+    assert len(session.executions) == 5
     stmt_texts = [str(stmt) for stmt, _ in session.executions]
     assert any("osm_road_lane" in t for t in stmt_texts)
+    assert any("osm_lane_centerline" in t for t in stmt_texts)
+    assert any("osm_lane_connection" in t for t in stmt_texts)
     assert any("osm_road_extract" in t for t in stmt_texts)
     # The orphaned-roads prune targets osm_road specifically, not just any
     # statement that happens to mention a table whose name contains it.
@@ -147,6 +158,27 @@ def test_ingest_prune_is_scoped_to_this_extract_key(monkeypatch):
     stmt_texts = [str(stmt) for stmt, _ in session.executions]
     extract_prune_stmt = next(t for t in stmt_texts if "osm_road_extract" in t)
     assert "extract_key" in extract_prune_stmt
+
+
+def test_source_topology_reingest_can_skip_independent_lane_materialization(
+    monkeypatch,
+):
+    monkeypatch.setattr(osm_roads, "parse_roads", lambda _path: iter(_rows(1)))
+    monkeypatch.setattr(osm_roads, "bulk_upsert", lambda *a, **k: 1)
+    monkeypatch.setattr(osm_roads, "wkt_geom", lambda value: value)
+    monkeypatch.setattr(osm_roads, "json_safe", lambda value: value)
+
+    ingester = osm_roads.OsmRoadIngester(
+        feed_name="osm_netherlands",
+        extract_key="netherlands",
+        build_independent_lanes=False,
+    )
+    session = FakeSession()
+    ingester._ingest(SimpleNamespace(path="ignored"), session)
+
+    statements = [str(statement) for statement, _ in session.executions]
+    assert not any("osm_lane_centerline" in statement for statement in statements)
+    assert not any("osm_lane_connection" in statement for statement in statements)
 
 
 def test_ingest_raises_without_pruning_on_zero_rows(monkeypatch):

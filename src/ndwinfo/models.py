@@ -200,6 +200,9 @@ class OsmRoad(Base):
     )  # motorway|trunk|primary|secondary(+_link)
     name: Mapped[Optional[str]] = mapped_column(String)
     ref: Mapped[Optional[str]] = mapped_column(String)  # route number, e.g. A7, N99
+    # Complete ordered OSM way-node list. Lane-line topology derives internal
+    # junctions and closed-ring split points from this intrinsic source data.
+    node_refs: Mapped[Optional[list[int]]] = mapped_column(ARRAY(BigInteger), nullable=True)
     geom: Mapped[Optional[Any]] = mapped_column(
         Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=True
     )
@@ -261,6 +264,77 @@ class OsmRoadLane(Base):
     # than LINESTRING.
     geom: Mapped[Optional[Any]] = mapped_column(
         Geometry("GEOMETRY", srid=4326, spatial_index=False), nullable=True
+    )
+    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
+class OsmLaneCenterline(Base):
+    """Independent thin centerline for one physical OSM driving lane."""
+
+    __tablename__ = "osm_lane_centerline"
+    __table_args__ = (
+        Index("ix_osm_lane_centerline_geom", "geom", postgresql_using="gist"),
+        Index("ix_osm_lane_centerline_road_id", "road_id"),
+        Index(
+            "uq_osm_lane_centerline_segment_direction_lane",
+            "segment_id",
+            "direction",
+            "lane_nr",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    road_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("osm_road.osm_id", ondelete="CASCADE")
+    )
+    segment_id: Mapped[str] = mapped_column(String)
+    lane_nr: Mapped[int] = mapped_column(Integer)
+    lane_count: Mapped[int] = mapped_column(Integer)
+    physical_lane_index: Mapped[int] = mapped_column(Integer)
+    direction: Mapped[str] = mapped_column(String)  # fwd|bwd|both|unknown
+    offset_m: Mapped[Any] = mapped_column(Numeric)
+    count_source: Mapped[str] = mapped_column(String)
+    oneway_source: Mapped[Optional[str]] = mapped_column(String)
+    geom: Mapped[Any] = mapped_column(
+        Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=False
+    )
+    raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+
+
+class OsmLaneConnection(Base):
+    """Directed connection between two independent lane-centerline traversals."""
+
+    __tablename__ = "osm_lane_connection"
+    __table_args__ = (
+        Index("ix_osm_lane_connection_geom", "geom", postgresql_using="gist"),
+        Index("ix_osm_lane_connection_from_lane_id", "from_lane_id"),
+        Index("ix_osm_lane_connection_to_lane_id", "to_lane_id"),
+        Index("ix_osm_lane_connection_from_road_id", "from_road_id"),
+        Index("ix_osm_lane_connection_to_road_id", "to_road_id"),
+        Index("ix_osm_lane_connection_from_segment_id", "from_segment_id"),
+        Index("ix_osm_lane_connection_to_segment_id", "to_segment_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    from_lane_id: Mapped[str] = mapped_column(
+        String, ForeignKey("osm_lane_centerline.id", ondelete="CASCADE")
+    )
+    from_direction: Mapped[str] = mapped_column(String)
+    to_lane_id: Mapped[str] = mapped_column(
+        String, ForeignKey("osm_lane_centerline.id", ondelete="CASCADE")
+    )
+    to_direction: Mapped[str] = mapped_column(String)
+    from_road_id: Mapped[int] = mapped_column(BigInteger)
+    to_road_id: Mapped[int] = mapped_column(BigInteger)
+    from_segment_id: Mapped[str] = mapped_column(String)
+    to_segment_id: Mapped[str] = mapped_column(String)
+    connection_type: Mapped[str] = mapped_column(String)
+    confidence: Mapped[str] = mapped_column(String)
+    geom: Mapped[Any] = mapped_column(
+        Geometry("LINESTRING", srid=4326, spatial_index=False), nullable=False
     )
     raw: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())

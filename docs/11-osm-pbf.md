@@ -50,6 +50,138 @@ bad/truncated download cannot silently erase the layer.
 Adding another province is just another `feeds.py` entry + `INGESTERS`
 registration with a different `extract_key` — no schema change.
 
+`osm_road.node_refs` retains the complete ordered OSM node-ID list for each
+way. It is source topology, not derived lane data: the independent Lanes
+builder uses shared/internal nodes to split a long way into stable logical
+segments and to split closed roundabout rings at their real approaches.
+
+## Independent lane lines (`osm_lane_centerline` + `osm_lane_connection`)
+
+The **Lanes** map layer is separate from Lane Detail. It derives thin
+centerlines directly from `osm_road.geom`, `osm_road.node_refs`, and the
+parent OSM tags; it never reads `osm_road_lane`.
+
+- Every physical lane is one `#111171` line. Adjacent lines have a fixed
+  3.5 m centre-to-centre pitch for every supported highway class.
+- Ways tagged `access=no` remain available in the source `osm_road`/Driving
+  Roads layer, but produce no independent lane centerlines or connections.
+  This keeps emergency crossovers and other legally inaccessible
+  infrastructure out of the normal-driving lane graph.
+- Metric offsets are built in EPSG:28992, validated for endpoint displacement
+  and length degeneration, then transformed back to WGS84.
+- A tagged single-track two-way road (`lanes=1`) is one stored
+  `direction=both` feature. The connector graph traverses that same geometry
+  in both directions without duplicating the map line.
+- `junction=roundabout` implies one-way unless an explicit `oneway=no`
+  contradicts it; `junction=circular` does not.
+- Stable lane IDs use
+  `ll:<osm_id>:<start_node_id>:<end_node_id>:<direction>:<lane_nr>`.
+  Connections separately reference directed traversal IDs with `@fwd` or
+  `@bwd`.
+- Connection selection is topology-first. Matching OSM node IDs are preferred;
+  original unoffset road endpoints within 0.5 m are the coordinate fallback.
+  A 25 m junction-box candidate is suppressed when an immediate-successor path
+  proves that it skips one or two short logical segments, or when the target
+  already has an exact-node predecessor. Proximity-only candidates are also
+  rejected across different `layer` or `bridge`/`tunnel`/`covered` states.
+  A non-exact link handover must have an absolute endpoint angle of at most
+  45 degrees; signed right-turn angles cannot bypass that limit.
+- `turn:lanes*` is parsed as ordered, cardinality-checked lane fields.
+  The source way's fields govern movements at its exit node; a successor's
+  fields describe its later junction and are not reused to remap its entry.
+  When the angular ranges for `through` and a directional token overlap, an
+  actual branch prefers the directional token. A matching explicit directional
+  token also outranks a shared route `ref`, so a same-ref slip road cannot be
+  mistaken for the primary continuation. A lane carrying only that turn is
+  reserved for the branch before remaining lanes are mapped monotonically onto
+  the primary continuation; combined tokens such as
+  `through;slight_right` remain eligible for both. `placement*` anchors decide
+  widening side before inferred lane-family rules;
+  `destination:lanes*` and `destination:ref:lanes*` cross-check branch
+  allocation; `change:lanes*` can reject an illegal inferred lateral edge.
+- Concrete one-way `placement=left_of:N|middle_of:N|right_of:N` values also
+  anchor the metric lane offsets to the tagged OSM reference line instead of
+  recentering every cross-section. For an unambiguous, one-way, two-node
+  `placement=transition` section, a preliminary topology pass inherits each
+  lane's start/end anchor from its connected predecessor/successor (with
+  explicit `placement:start`/`placement:end` taking precedence), then generates
+  tangent-preserving transition curves before connectors are rebuilt.
+  Ambiguous, chained, curved, or extreme-angle transitions remain unchanged and
+  emit `unresolved_transition_placement` diagnostics rather than being guessed.
+- `connection_type` describes actual lane-graph multiplicity
+  (`continuation`, `split`, or `join`). Road-level `entry`/`exit` meaning is
+  exposed separately as `movement_type`; a `merge_to_left/right` token alone
+  never changes a one-to-one edge into a join.
+- Connector trims are resolved once per physical lane endpoint. Both ends of a
+  short transition share one budget that retains at least 2 m or 20% of the
+  lane, whichever is stricter. Connectors that meet the same physical endpoint
+  also share its Bézier handle station. A `_link`/non-link handover may request
+  up to 25 m of taper and use up to 80% of the link-side lane as transition
+  runway (subject to the same visible-length budget); this distributes a
+  one-lane-link/four-lane-mainline offset instead of concentrating it at the
+  OSM node. An exact link handover whose endpoint tangents differ by at most
+  15 degrees may use twice the normal gap-based runway (up to 50 m), so a
+  nearly straight merge is not forced through a visible bend close to the OSM
+  node. Exact node/endpoint link handovers up to 45 degrees may be trimmed;
+  uncertain junction-box movements retain the 30-degree limit. Only transitions
+  at or below 30 degrees qualify for a literal straight connector, while wider
+  exact transitions retain a tangent-preserving Bézier. Other near-straight
+  count changes retain the 15 m and 40% per-line limits. The same bounded taper
+  is used for any equal-count continuation with at least 0.75 m of lateral
+  endpoint displacement, including both bidirectional roads whose forward/
+  backward lane distribution changes and bidirectional roads that split into
+  separately mapped one-way roads. A purely longitudinal gap does not trigger
+  this rule. When the lateral transition is near-straight (at most 30 degrees
+  and 8 m total endpoint displacement), the trimmed stations are joined by a
+  straight segment instead of a Bézier; this avoids an artificial bow between
+  the two carriageway reference positions.
+- When a real link entry already supplies an added target lane, a redundant
+  inferred split from the continuing mainline into that target lane is
+  suppressed.
+- When two or more exact, near-straight predecessors jointly provide exactly
+  the target lane count, they are allocated as one cross-section instead of as
+  independent widenings. This includes mixed motorway/link approaches up to
+  45 degrees; ordinary road blocks retain the 30-degree limit. Source blocks
+  are ordered by their signed lateral position up to 30 m before the node and
+  assigned contiguous target blocks from driver-left to driver-right. A
+  `placement=transition` source inherits the endpoints of its allocated target
+  slice, while other blocks receive a minimum shared transition runway that
+  prevents the two inner connectors from crossing. Ambiguous lateral ordering
+  remains unchanged and emits a diagnostic.
+- `GET /api/osm/lane-lines?bbox=...` queries the two independent tables with
+  separate caps and returns per-kind truncation metadata.
+
+For a local rebuild:
+
+```bash
+python -m ndwinfo.refresh_osm_lane_lines \
+  --bbox 4.649950,52.466240,4.655949,52.469521
+```
+
+The command also accepts `--all`, `--roads`, `--segments`, and
+`--unresolved-only`. Reviewed manual connect/block decisions live in
+`src/ndwinfo/osm_lane_connection_overrides.json`. The complete design and
+validation rules are recorded in `docs/plans/osm-lane-lines-plan.md`.
+
+To force a transactional source-topology backfill from an already-downloaded
+PBF without relying on conditional HTTP metadata:
+
+```bash
+python -m ndwinfo.reingest_osm_roads \
+  data/netherlands-latest.osm.pbf
+```
+
+This uses the normal extract-membership upsert/prune behavior while leaving
+the independent Lanes tables unchanged, which avoids holding the national
+road, Lane Detail, and Lanes graphs in memory simultaneously. Follow it with
+`refresh_osm_lane_lines --all`; that command processes 0.2° spatial tiles in
+separate transactions and reports final national counts. The scheduled
+`osm_netherlands` ingester runs the same tiled Lanes rebuild automatically
+after a successful changed-PBF ingest; it does not run after a 304/not-modified
+check. Both `osm_lane_connection` lane foreign keys are indexed so replacing a
+tile's centerlines can cascade through its connectors without scanning the
+complete national connection table for every deleted lane.
+
 ## Per-lane geometry (`osm_road_lane`)
 
 Individual lane centerlines derived from each `osm_road` way's `lanes` tag,

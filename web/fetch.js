@@ -19,6 +19,7 @@ function fetchLayer (layer) {
   if (layer.geomType === 'speed-points') { fetchSpeedPoints(); return }
 
   if (layer.minZoom && map.getZoom() < layer.minZoom) {
+    setLayerTruncation(layer.key, null)
     map.getSource(layer.key)?.setData(EMPTY_FC)
     return
   }
@@ -43,6 +44,13 @@ function fetchLayer (layer) {
     })
     .then(data => {
       setBboxTooLargeHint(false)
+      setLayerTruncation(
+        layer.key,
+        data.metadata?.truncated ? (data.metadata.truncated_by_kind || {}) : null
+      )
+      if (data.metadata?.truncated) {
+        console.warn(`[${layer.key}] truncated`, data.metadata.truncated_by_kind || {})
+      }
       map.getSource(layer.key)?.setData(data)
       if (layer.promoteId) reapplySelection(layer.key)
     })
@@ -51,6 +59,12 @@ function fetchLayer (layer) {
       if (e.isBboxError) { setBboxTooLargeHint(true); return }
       console.warn(`[${layer.key}]`, e.message)
     })
+}
+
+function setLayerTruncation (layerKey, detail) {
+  if (detail) layerTruncation.set(layerKey, detail)
+  else layerTruncation.delete(layerKey)
+  updateZoomHint()
 }
 
 // Measurement sources are points, while the matched OSM way they drive can

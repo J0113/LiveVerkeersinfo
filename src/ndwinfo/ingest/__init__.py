@@ -31,7 +31,15 @@ INGESTERS: dict[str, object] = {
     "measurement_site": MeasurementSiteIngester(),
     "meetlocaties_shapefile": MeetlocatiesIngester(),
     "vild_shapefile": VildIngester(),
-    "osm_netherlands": OsmRoadIngester(feed_name="osm_netherlands", extract_key="netherlands"),
+    # Independent Lanes are rebuilt spatially by refresh_osm_lane_lines --all;
+    # materializing both national lane graphs in this ingest exceeds Docker's
+    # memory budget.
+    "osm_netherlands": OsmRoadIngester(
+        feed_name="osm_netherlands",
+        extract_key="netherlands",
+        build_independent_lanes=False,
+        rebuild_independent_lanes_after_ingest=True,
+    ),
     "trafficspeed": TrafficspeedIngester(),
     "traveltime": TraveltimeIngester(),
     "actueel_beeld": ActueleBeeldIngester,

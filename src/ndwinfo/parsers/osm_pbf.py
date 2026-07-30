@@ -10,6 +10,7 @@ memory limit.
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -22,7 +23,12 @@ ROAD_HIGHWAY_TYPES = {
 }
 
 
-def _way_row(osm_id: int, tags: dict[str, str], wkt: str | None) -> dict[str, Any] | None:
+def _way_row(
+    osm_id: int,
+    tags: dict[str, str],
+    wkt: str | None,
+    node_refs: tuple[int, ...] | None = None,
+) -> dict[str, Any] | None:
     """Pure transform: filter to driving-road ways, shape tags/geometry into a row dict.
 
     tags is stored verbatim (unfiltered) in raw -- the full OSM tag set is
@@ -36,6 +42,7 @@ def _way_row(osm_id: int, tags: dict[str, str], wkt: str | None) -> dict[str, An
         "highway": highway,
         "name": tags.get("name"),
         "ref": tags.get("ref"),
+        "node_refs": list(node_refs) if node_refs is not None else None,
         "geom": wkt,
         "raw": dict(tags),
     }
@@ -60,6 +67,13 @@ def parse_roads(path: Path) -> Iterator[dict[str, Any]]:
         pending_ways.append((obj.id, tags, node_refs))
         unresolved_node_ids.update(node_refs)
 
+    node_use_count: Counter[int] = Counter()
+    for _osm_id, _tags, node_refs in pending_ways:
+        node_use_count.update(set(node_refs))
+    shared_node_ids = {
+        node_id for node_id, use_count in node_use_count.items() if use_count > 1
+    }
+
     # Pass 2: resolve only nodes used by retained ways.  Discarding ids as
     # they are found prevents keeping both a full id set and coordinate map
     # alive for the entire node section.
@@ -81,6 +95,9 @@ def parse_roads(path: Path) -> Iterator[dict[str, Any]]:
             # Truncated/corrupt extracts or ways with unresolved coordinates
             # are skipped, matching the old WKTFactory behaviour.
             wkt = None
-        row = _way_row(osm_id, tags, wkt)
+        row = _way_row(osm_id, tags, wkt, node_refs)
         if row:
+            # Transient build context, removed by the ingester before the
+            # osm_road upsert. Keeping it per way lets lane topology stream.
+            row["_shared_node_ids"] = set(node_refs) & shared_node_ids
             yield row
