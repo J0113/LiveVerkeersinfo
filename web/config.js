@@ -366,10 +366,10 @@ const GROUPS = [
   { key: 'osm',          label: 'OpenStreetMap' }
 ]
 
-// The detailed map overlays remain available in the layer panel, but the clean
-// driving view now starts with them off. Their data is fetched separately for
-// the HUD, so this is a reversible presentation default rather than a removal.
-const DEFAULT_ENABLED = new Set(['matrix', 'drips'])
+// Map overlays remain available in the layer panel, but a new user starts with
+// a clean map. Matrix signs, DRIPs and speed data are fetched separately for
+// the enabled-by-default HUD, so this does not remove them from the driving UI.
+const DEFAULT_ENABLED = new Set()
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 let bboxTooLarge = false
 const layerTruncation = new Map()

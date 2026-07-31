@@ -3,6 +3,18 @@ import { test } from 'node:test'
 
 import { loadWeb } from './harness.mjs'
 
+test('new users start with only the HUD layers enabled', () => {
+  const web = loadWeb({ scripts: ['lib.js', 'config.js'] })
+
+  assert.deepEqual(JSON.parse(web.run(`JSON.stringify([...enabled])`)), [])
+  assert.deepEqual(JSON.parse(web.run(`JSON.stringify([...hudEnabled])`)), [
+    'hud_speed',
+    'hud_speed_sidebar',
+    'hud_matrix',
+    'hud_drips',
+  ])
+})
+
 test('legacy HUD preferences enable the later-added speed sidebar once', () => {
   const web = loadWeb({
     scripts: ['lib.js', 'config.js'],
