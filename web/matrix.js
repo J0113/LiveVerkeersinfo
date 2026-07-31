@@ -2,6 +2,10 @@
 
 // ─── Matrix sign HTML markers (map render) ───────────────────────────────────
 
+// The matched OSM road is described per marker (matched_road_ref/name/highway,
+// segment, direction) and shown in the popup. It is deliberately not drawn as a
+// second line over the basemap, which already renders the road itself.
+
 function fetchMatrixSigns () {
   if (map.getZoom() < MATRIX_MIN_ZOOM) {
     for (const m of msiMarkers) m.marker.remove()
@@ -116,4 +120,3 @@ function updateMatrixLayout () {
     m.marker.setOffset([dx, dy])
   }
 }
-

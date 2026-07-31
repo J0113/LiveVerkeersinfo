@@ -145,6 +145,13 @@ src/ndwinfo/
 │   ├── osm_pbf.py         # Geofabrik PBF → driving-road ways (motorway/trunk/primary/secondary + _link)
 │   ├── anwb.py            # ANWB incidents JSON → jams/roadworks/radars records
 │   └── flitspalen.py      # Flitspalen.nl camera JSON → NL-filtered fixed-camera records
+├── road_matching/         # ORM-free directed OSM matching primitives (Matrix-first slice)
+│   ├── evidence.py        # road/carriageway-reference and bearing evidence (case-sensitive)
+│   ├── points.py          # Matrix gantry grouping, consensus, and confidence
+│   ├── candidates.py      # bounded PostGIS candidate retrieval
+│   ├── persistence.py     # RoadPointAssignment/RoadPointLink replacement
+│   └── types.py           # source/candidate/match dataclasses
+├── match_matrix.py        # bounded Matrix-to-OSM report CLI; --persist writes assignments
 └── ingest/                # Feed-specific ingesters (called by poller, use parsers):
     ├── base.py            # BaseIngester abstract class (upsert logic)
     ├── measurement.py     # MeasurementSite + TrafficMeasurement (traffic speed/traveltime)

@@ -44,6 +44,69 @@ ndw:NdwVms
   perpendicular to the road, geom) + `msi_state` (uuid FK, ts_state,
   aspect_type, value, flashing, red_ring).
 
+### Matrix-first road-link profile (2026-07-31 local snapshot)
+
+The first road-linked slice uses a bounded, DB-free-after-load Matrix matcher
+(`python -m ndwinfo.match_matrix`).  The local PostGIS snapshot used to verify
+the implementation contained 18,458 Matrix rows, of which 18,315 had geometry
+and bearing (the same rows — none has one without the other), and 18,448 joined
+a current state row.  Grouping by normalized road + carriageway + kilometre
+bucket (`round(km, 2)`) produced 6,439 physical gantries over all rows, 6,366
+over the rows with geometry.  148 rows are the losing member of a duplicate
+ghost slot.  Ghost ranking is now performed before the API result limit, and
+every response carries a stable `gantry_id` and `gantry_lane`.
+
+Carriageway codes are compared **case-sensitively** on both sides.  NDW writes
+the main carriageways as `R`/`L` and its connectors as single lowercase letters,
+and OSM's `carriageway_ref` follows the same convention (`Re`/`Li` for main
+carriageways, `a`…`d` for connectors).  Folding the case merges the connector
+`r` into the main carriageway `R` at the same road and kilometre — a different
+physical roadway.  91 signs sit on a lowercase `r` in the current snapshot.
+
+Nearest *directed* lane centerline (`direction in ('fwd','bwd')`, the population
+the matcher actually searches) over all 18,315 signs with geometry: p05 0.06 m,
+p50 1.07 m, p95 1.72 m, p99 3.29 m, maximum 21.70 m.  Exactly 4 signs sit
+farther than 20 m from any directed lane.  The matcher therefore keeps 20 m as
+the Matrix search radius and reports those 4 as `no_major_road` rather than
+silently widening the search.
+
+The sample check compared the shapefile `bearing` with the local travel
+bearing of directed OSM lanes.  Same-carriageway candidates were generally
+within about 15 degrees, while the opposite carriageway was approximately 180
+degrees away.  This is the current Matrix-snapshot evidence for the
+`matrix-gantry-v6` dry-run assumption; it is not reused as an unverified DRIP
+interpretation.  A candidate with a conflicting normalized road reference is
+rejected, and close candidates on different traversals become `ambiguous`
+rather than entering the HUD.
+
+Run a small area first, for example:
+
+```text
+python -m ndwinfo.match_matrix --bbox 4.6,52.3,4.9,52.6 --limit 250
+```
+
+The command only reads Matrix and OSM rows and emits aggregate status,
+confidence, failure-reason, and distance statistics.  Use
+`--include-results` for sanitized fixture/report review; it does not persist
+road assignments or alter source geometry.
+
+To make a bounded sample visible in the browser, add `--persist`:
+
+```text
+docker compose run --rm -T app python -m ndwinfo.match_matrix \
+  --bbox 4.6,52.3,4.9,52.6 --limit 250 --persist
+```
+
+This writes explainable outcomes to `road_point_assignment` and successful
+point links to `road_point_link`, and drops any assignment left behind by a
+different `algorithm_version`. The Matrix API keeps the source sign point by
+default and adds `matched_road_*` identity/metadata properties (ref, name,
+highway class, segment, direction, lane, residuals), which the marker popup
+shows. The linked way's own geometry is deliberately not repeated on every sign
+feature — the basemap already draws the road. `geometry=matched` returns the
+projected anchor instead of the source point, and `geometry=best` falls back to
+the source point where no confident match exists.
+
 ---
 
 ## dynamische_route_informatie_paneel.xml.gz — DRIPs

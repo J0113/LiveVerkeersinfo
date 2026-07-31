@@ -1,0 +1,82 @@
+[
+  {
+    "name": "opposite_motorway_carriageways",
+    "sign": {
+      "uuid": "fixture-opposite",
+      "road": "A9",
+      "carriageway": "R",
+      "lane": 1,
+      "km": 12.34,
+      "bearing": 90
+    },
+    "candidates": [
+      {
+        "lane_id": "ll:100:1:2:fwd:1",
+        "road_id": 100,
+        "segment_id": "100:1:2",
+        "direction": "fwd",
+        "lane_nr": 1,
+        "lane_count": 2,
+        "ref": "A9",
+        "highway": "motorway",
+        "distance_m": 1.0,
+        "bearing_deg": 90,
+        "position_fraction": 0.5,
+        "projected": [4.7, 52.5]
+      },
+      {
+        "lane_id": "ll:100:1:2:bwd:1",
+        "road_id": 100,
+        "segment_id": "100:1:2",
+        "direction": "bwd",
+        "lane_nr": 1,
+        "lane_count": 2,
+        "ref": "A9",
+        "highway": "motorway",
+        "distance_m": 1.1,
+        "bearing_deg": 270,
+        "position_fraction": 0.5,
+        "projected": [4.7, 52.5]
+      }
+    ],
+    "expected": {"status": "matched", "direction": "fwd", "confidence": "high"}
+  },
+  {
+    "name": "ambiguous_parallel_roads",
+    "sign": {
+      "uuid": "fixture-ambiguous",
+      "road": "N203",
+      "carriageway": "R",
+      "lane": 1,
+      "km": 3.21,
+      "bearing": 0
+    },
+    "candidates": [
+      {
+        "lane_id": "ll:200:1:2:fwd:1",
+        "road_id": 200,
+        "segment_id": "200:1:2",
+        "direction": "fwd",
+        "lane_nr": 1,
+        "lane_count": 1,
+        "ref": "N203",
+        "highway": "primary",
+        "distance_m": 5.0,
+        "bearing_deg": 0
+      },
+      {
+        "lane_id": "ll:201:3:4:fwd:1",
+        "road_id": 201,
+        "segment_id": "201:3:4",
+        "direction": "fwd",
+        "lane_nr": 1,
+        "lane_count": 1,
+        "ref": "N203",
+        "highway": "primary",
+        "distance_m": 5.5,
+        "bearing_deg": 0
+      }
+    ],
+    "expected": {"status": "ambiguous", "direction": null, "confidence": null}
+  }
+]

@@ -10,6 +10,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -507,6 +508,91 @@ class MsiState(Base):
     ingested_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
 
     sign: Mapped["MsiSign"] = relationship(back_populates="state")
+
+
+class RoadPointAssignment(Base):
+    """Current explainable road-link decision for one source point.
+
+    Source keys are intentionally polymorphic: Matrix signs are the first
+    producer, while future point feeds can reuse this assignment ledger
+    without adding a table per feed.  The linked road/lane identifiers are
+    soft references because an OSM refresh can replace derived lane rows.
+    """
+
+    __tablename__ = "road_point_assignment"
+    __table_args__ = (
+        PrimaryKeyConstraint("source_kind", "source_key"),
+        Index("ix_road_point_assignment_status", "status"),
+    )
+
+    source_kind: Mapped[str] = mapped_column(String, primary_key=True)
+    source_key: Mapped[str] = mapped_column(String, primary_key=True)
+    status: Mapped[str] = mapped_column(String)
+    confidence: Mapped[Optional[str]] = mapped_column(String)
+    method: Mapped[Optional[str]] = mapped_column(String)
+    failure_reason: Mapped[Optional[str]] = mapped_column(String)
+    candidate_count: Mapped[int] = mapped_column(Integer, default=0)
+    source_fingerprint: Mapped[str] = mapped_column(String(64))
+    algorithm_version: Mapped[str] = mapped_column(String)
+    matched_at: Mapped[datetime] = mapped_column(_tz, server_default=func.now())
+    diagnostics: Mapped[Optional[Any]] = mapped_column(JSONB, nullable=True)
+
+    links: Mapped[list["RoadPointLink"]] = relationship(
+        back_populates="assignment",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class RoadPointLink(Base):
+    """One ordered road/lane link belonging to a point assignment."""
+
+    __tablename__ = "road_point_link"
+    __table_args__ = (
+        PrimaryKeyConstraint("source_kind", "source_key", "link_index"),
+        ForeignKeyConstraint(
+            ["source_kind", "source_key"],
+            ["road_point_assignment.source_kind", "road_point_assignment.source_key"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_road_point_link_segment_direction", "segment_id", "direction", "source_kind"),
+        Index(
+            "ix_road_point_link_road_revision_direction",
+            "road_id",
+            "road_revision",
+            "direction",
+            "source_kind",
+        ),
+        Index("ix_road_point_link_matched_geom", "matched_geom", postgresql_using="gist"),
+        Index("ix_road_point_link_source", "source_kind", "source_key"),
+        Index("ix_road_point_link_anchor_lane", "anchor_lane_id"),
+        Index(
+            "ix_road_point_link_applies_lane",
+            "applies_to_lane_id",
+            postgresql_where=text("applies_to_lane_id IS NOT NULL"),
+        ),
+    )
+
+    source_kind: Mapped[str] = mapped_column(String, primary_key=True)
+    source_key: Mapped[str] = mapped_column(String, primary_key=True)
+    link_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    road_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    # Nullable until the OSM topology ingest has a published revision id.
+    road_revision: Mapped[Optional[int]] = mapped_column(Integer)
+    segment_id: Mapped[Optional[str]] = mapped_column(String)
+    direction: Mapped[Optional[str]] = mapped_column(String)
+    anchor_lane_id: Mapped[Optional[str]] = mapped_column(String)
+    applies_to_lane_id: Mapped[Optional[str]] = mapped_column(String)
+    position_fraction: Mapped[Optional[Any]] = mapped_column(Numeric)
+    matched_geom: Mapped[Optional[Any]] = mapped_column(
+        Geometry("POINT", srid=4326, spatial_index=False), nullable=True
+    )
+    source_distance_m: Mapped[Optional[Any]] = mapped_column(Numeric)
+    bearing_error_deg: Mapped[Optional[Any]] = mapped_column(Numeric)
+    road_ref_quality: Mapped[Optional[str]] = mapped_column(String)
+    confidence: Mapped[Optional[str]] = mapped_column(String)
+
+    assignment: Mapped["RoadPointAssignment"] = relationship(back_populates="links")
 
 
 class Drip(Base):
