@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -45,6 +46,7 @@ class LaneCandidate:
     position_fraction: float | None = None
     projected: tuple[float, float] | None = None
     carriageway_ref: str | None = None
+    name: str | None = None
 
     @property
     def traversal_id(self) -> str:
@@ -90,6 +92,79 @@ class MatrixSignMatch:
             "direction": self.direction,
             "anchor_lane_id": self.anchor_lane_id,
             "applies_to_lane_id": self.applies_to_lane_id,
+            "position_fraction": self.position_fraction,
+            "matched_point": list(self.matched_point) if self.matched_point else None,
+            "source_distance_m": self.source_distance_m,
+            "bearing_error_deg": self.bearing_error_deg,
+            "road_ref_quality": self.road_ref_quality,
+            "diagnostics": self.diagnostics,
+        }
+
+
+@dataclass(frozen=True)
+class DripSign:
+    """The source evidence needed to match one DRIP/VMS panel."""
+
+    controller_id: str
+    vms_index: int
+    description: str | None
+    physical_support: str | None
+    bearing: float | None
+    working_status: str | None = None
+    display_text: str | None = None
+    updated_at: datetime | str | None = None
+    lon: float | None = None
+    lat: float | None = None
+
+    @property
+    def source_key(self) -> str:
+        # The shared point schema uses a canonical JSON composite key for
+        # DRIPs.  `api/routers/signs.py` rebuilds this exact string in SQL to
+        # join assignments back onto `drip`, so the separators are a contract.
+        return json.dumps(
+            [self.controller_id, self.vms_index],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+
+@dataclass(frozen=True)
+class DripSignMatch:
+    """Explainable result for one DRIP after directed point matching."""
+
+    source_key: str
+    controller_id: str
+    vms_index: int
+    status: str
+    confidence: str | None
+    method: str
+    failure_reason: str | None
+    candidate_count: int
+    road_id: int | None = None
+    segment_id: str | None = None
+    direction: str | None = None
+    anchor_lane_id: str | None = None
+    position_fraction: float | None = None
+    matched_point: tuple[float, float] | None = None
+    source_distance_m: float | None = None
+    bearing_error_deg: float | None = None
+    road_ref_quality: str | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_key": self.source_key,
+            "controller_id": self.controller_id,
+            "vms_index": self.vms_index,
+            "status": self.status,
+            "confidence": self.confidence,
+            "method": self.method,
+            "failure_reason": self.failure_reason,
+            "candidate_count": self.candidate_count,
+            "road_id": self.road_id,
+            "segment_id": self.segment_id,
+            "direction": self.direction,
+            "anchor_lane_id": self.anchor_lane_id,
             "position_fraction": self.position_fraction,
             "matched_point": list(self.matched_point) if self.matched_point else None,
             "source_distance_m": self.source_distance_m,

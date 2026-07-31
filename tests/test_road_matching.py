@@ -6,10 +6,19 @@ import json
 from pathlib import Path
 
 from ndwinfo.match_matrix import ALGORITHM_VERSION, build_report
+from ndwinfo.road_matching.drips import description_road_hint, match_drip
 from ndwinfo.road_matching.evidence import (
     angular_difference_deg,
     expected_osm_carriageway_refs,
     normalize_road_ref,
+    normalize_road_refs,
+    road_ref_quality,
+)
+from ndwinfo.road_matching.persistence import (
+    drip_source_fingerprint,
+    matrix_source_fingerprint,
+    persist_drip_matches,
+    persist_matrix_matches,
 )
 from ndwinfo.road_matching.points import (
     dedupe_matrix_signs,
@@ -18,11 +27,7 @@ from ndwinfo.road_matching.points import (
     matrix_gantry_key,
     traversals_are_continuous,
 )
-from ndwinfo.road_matching.persistence import (
-    matrix_source_fingerprint,
-    persist_matrix_matches,
-)
-from ndwinfo.road_matching.types import LaneCandidate, MatrixSign
+from ndwinfo.road_matching.types import DripSign, LaneCandidate, MatrixSign
 
 FIXTURES = Path(__file__).parent / "fixtures" / "road_matching"
 
@@ -84,12 +89,152 @@ def _fixture_case(case):
     return sign, candidates
 
 
+def _drip(*, description="A22 d 13,22 BBR", bearing=30, controller="ctrl", index=0):
+    return DripSign(controller, index, description, "roadsideMounted", bearing)
+
+
 def test_reference_and_angle_normalization():
     assert normalize_road_ref("A 009") == "A9"
     assert normalize_road_ref("N-203") == "N203"
+    assert normalize_road_refs("A7;A8") == {"A7", "A8"}
+    assert normalize_road_refs(None) == set()
     assert normalize_road_ref("001") == "1"
     assert angular_difference_deg(359, 1) == 2
     assert angular_difference_deg(90, 270) == 180
+
+
+def test_drip_description_route_hint_is_only_normalized_when_present():
+    assert description_road_hint("A22 d 13,22 BBR") == "A22"
+    assert description_road_hint("Parallelweg (dBD171)") is None
+
+
+def test_a_concurrent_osm_ref_carries_both_routes_instead_of_conflicting():
+    assert road_ref_quality(_sign("multi", road="A7"), _candidate("l", ref="A7;A8")) == "exact"
+    assert road_ref_quality(_sign("multi", road="A9"), _candidate("l", ref="A7;A8")) == "conflict"
+
+    drip = _drip(description="A8 richting Zaandam", bearing=30)
+    match = match_drip(drip, [_candidate("ll:1:fwd:1", ref="A7;A8", bearing=40)])
+    assert match.road_ref_quality == "exact"
+
+
+def test_a_panel_route_that_contradicts_the_matched_road_stays_visible():
+    drip = _drip(description="N218 ri Rozenburg", bearing=30)
+    match = match_drip(drip, [_candidate("ll:1:fwd:1", ref="A15", bearing=40)])
+    assert match.status == "matched"
+    assert match.road_ref_quality == "conflict"
+
+
+def test_bearing_breaks_a_junction_distance_tie_instead_of_centimetres():
+    drip = _drip(description="N35", bearing=30)
+    nearer = _candidate(
+        "ll:100:1:2:bwd:1", segment_id="100:1:2", direction="bwd", distance=0.34, bearing=50
+    )
+    aligned = _candidate(
+        "ll:200:2:3:fwd:1", road_id=200, segment_id="200:2:3", distance=0.50, bearing=37
+    )
+
+    match = match_drip(drip, [nearer, aligned])
+    assert match.status == "matched"
+    assert match.segment_id == "200:2:3"
+    assert match.direction == "fwd"
+    assert match.bearing_error_deg == 7
+
+    # Equally aligned inside that band is a real tie and must fail closed.
+    tied = match_drip(
+        drip,
+        [nearer, _candidate("ll:200:2:3:fwd:1", road_id=200, segment_id="200:2:3", distance=0.50,
+                            bearing=48)],
+    )
+    assert tied.status == "ambiguous"
+    assert tied.failure_reason == "bearing_ambiguous"
+
+
+def test_drip_bearing_selects_the_travel_direction_not_the_nearest_opposite_lane():
+    drip = _drip(bearing=30)
+    candidates = [
+        _candidate("ll:100:1:2:fwd:1", direction="fwd", distance=1.6, bearing=43),
+        _candidate("ll:100:1:2:bwd:1", direction="bwd", distance=1.5, bearing=223),
+    ]
+    match = match_drip(drip, candidates)
+    assert match.status == "matched"
+    assert match.direction == "fwd"
+    assert match.confidence == "high"
+    assert match.diagnostics["bearing_interpretation"] == "travel"
+
+
+def test_drip_without_directional_evidence_fails_closed_between_directions():
+    drip = _drip(bearing=None)
+    candidates = [
+        _candidate("ll:100:1:2:fwd:1", direction="fwd", distance=1.0, bearing=43),
+        _candidate("ll:100:1:2:bwd:1", direction="bwd", distance=1.1, bearing=223),
+    ]
+    match = match_drip(drip, candidates)
+    assert match.status == "ambiguous"
+    assert match.failure_reason == "direction_ambiguous"
+
+
+def test_drip_extended_tail_requires_bearing_and_is_medium_confidence():
+    drip = _drip(description="Parallelweg", bearing=90)
+    candidate = _candidate(
+        "ll:100:1:2:fwd:1",
+        distance=120.0,
+        bearing=92,
+        ref=None,
+    )
+    match = match_drip(drip, [candidate])
+    assert match.status == "matched"
+    assert match.confidence == "medium"
+    assert match.diagnostics["search_tier"] == "extended"
+
+    no_bearing = match_drip(DripSign("ctrl", 1, "Parallelweg", None, None), [candidate])
+    assert no_bearing.status == "unsupported"
+    assert no_bearing.failure_reason == "extended_requires_bearing"
+
+
+def test_drip_extended_tail_rejects_a_bearing_that_only_just_passes_the_gate():
+    # Inside 60 m the panel is over its own gantry, so a loose bearing is
+    # still credible; 120 m away it is the only remaining evidence.
+    drip = _drip(description="Parallelweg", bearing=90)
+    loose = _candidate("ll:100:1:2:fwd:1", distance=120.0, bearing=125, ref=None)
+
+    far = match_drip(drip, [loose])
+    assert far.status == "unsupported"
+    assert far.failure_reason == "extended_bearing_too_weak"
+
+    near = match_drip(drip, [_candidate("ll:100:1:2:fwd:1", distance=12.0, bearing=125, ref=None)])
+    assert near.status == "matched"
+    assert near.confidence == "high"
+
+
+def test_drip_source_key_is_the_composite_the_api_rebuilds_in_sql():
+    assert DripSign("NDW02_abc", 0, None, None, None).source_key == '["NDW02_abc",0]'
+    # The API join must survive a controller id that is not identifier-shaped.
+    assert DripSign("NDW 02", 3, None, None, None).source_key == '["NDW 02",3]'
+
+
+def test_drip_source_fingerprint_ignores_live_display_state():
+    base = _drip()
+    live_changed = DripSign(
+        base.controller_id,
+        base.vms_index,
+        base.description,
+        base.physical_support,
+        base.bearing,
+        working_status="ok",
+        display_text="A new message",
+        updated_at="2026-07-31T12:00:00Z",
+    )
+    moved = DripSign(
+        base.controller_id,
+        base.vms_index,
+        base.description,
+        base.physical_support,
+        base.bearing,
+        lon=4.8,
+        lat=52.5,
+    )
+    assert drip_source_fingerprint(base) == drip_source_fingerprint(live_changed)
+    assert drip_source_fingerprint(base) != drip_source_fingerprint(moved)
 
 
 def test_manual_fixture_cases_fail_closed_for_opposite_and_ambiguous_roads():
@@ -467,6 +612,23 @@ def test_persisting_drops_assignments_from_a_superseded_matcher_version():
     stale = [sql for sql in deletes if "road_point_assignment" in sql]
     assert len(stale) == 1
     assert "algorithm_version != 'matrix-test-v9'" in stale[0]
+
+
+def test_persisting_drips_replaces_the_snapshot_and_drops_superseded_versions():
+    drip = _drip(controller="persist-drip")
+    match = match_drip(drip, [_candidate("ll:100:1:2:fwd:1", bearing=40)])
+    assert match.status == "matched"
+    session = _RecordingSession()
+
+    persist_drip_matches(session, [drip], [match], algorithm_version="drip-test-v9")
+
+    deletes = [sql for sql in session.statements if sql.startswith("DELETE")]
+    links = [sql for sql in deletes if "road_point_link" in sql]
+    assert len(links) == 1
+    assert "persist-drip" in links[0]
+    stale = [sql for sql in deletes if "road_point_assignment" in sql]
+    assert len(stale) == 1
+    assert "algorithm_version != 'drip-test-v9'" in stale[0]
 
 
 def test_source_fingerprint_ignores_live_display_state():

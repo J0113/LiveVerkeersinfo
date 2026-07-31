@@ -79,6 +79,12 @@ interpretation.  A candidate with a conflicting normalized road reference is
 rejected, and close candidates on different traversals become `ambiguous`
 rather than entering the HUD.
 
+OSM writes a shared carriageway as a concurrency (`A7;A8`), so the reference
+comparison splits the OSM `ref` into a set and accepts a source road that is
+any member of it.  Comparing the compacted whole string instead made `A7;A8`
+conflict with both routes it carries: nationally that cost 402 gantry-lane
+matches and inflated `road_ref_conflict` from 162 to 505.
+
 Run a small area first, for example:
 
 ```text
@@ -145,6 +151,54 @@ vms:vmsControllerTable
   `vms_type`, `physical_support`, `bearing`, `num_display_areas`,
   `display_text` — joined text from the `vmsControllerStatus` branch above,
   `message` JSONB, `geom` POINT, `raw` JSONB).
+
+### DRIP road-link profile (2026-07-31 local snapshot)
+
+The local snapshot contains 870 DRIPs; 790 have a bearing. Nearest directed
+OSM-lane distances are p50 1.42 m, p90 59.54 m, and p99 809.63 m. 86 panels
+are beyond 60 m and 14 are beyond the controlled 500 m extension. The matcher
+therefore uses 60 m as its primary search and accepts the 60–500 m tail only
+when the DRIP bearing leaves one compatible directed traversal **and** agrees
+with it to within 20 degrees — past its own gantry the panel's proximity stops
+being evidence, so a bearing that merely scrapes the 45-degree candidate gate
+is not enough (`unsupported/extended_bearing_too_weak`). Records beyond 500 m
+remain `unsupported/no_major_road` and keep their source geometry.
+
+Traversals are ranked by residual distance, except inside a 2 m band around the
+nearest one, which is ranked by bearing error instead. At a junction both
+adjoining traversals pass under the panel, so their residual distances differ by
+centimetres — noise, not evidence — and proximity alone would silently take the
+worse-aligned one. This is the same evidence the ambiguity check then applies,
+so ranking and fail-closed agree.
+
+A real local sample confirms that the DATEX `bearing` follows travel direction:
+same-direction OSM lanes were generally within about 15 degrees, while the
+opposite direction was approximately 180 degrees away. This interpretation is
+stored in assignment diagnostics as `bearing_interpretation=travel`. A route
+number extracted from the panel description (for example `A22`) is scored as a
+hint only; it is never treated as an unverified hard parser contract — DRIP text
+often names the road the panel *informs about* rather than the one it stands
+beside, so a hint that contradicts the matched road is recorded as
+`road_ref_quality=conflict` rather than rejecting the match or being flattened
+into the neutral `corridor`. Missing bearing data cannot choose between opposite
+directions.
+
+On this snapshot: 763 matched (706 high, 22 medium, 35 low), 44 ambiguous,
+5 unmatched, 58 unsupported.
+
+Run a bounded DRIP report first:
+
+```text
+python -m ndwinfo.match_drips --bbox 4.6,52.3,4.9,52.6 --limit 1000 --include-results
+```
+
+After review, `--persist` writes one assignment per `[controller_id, vms_index]`
+source key to the shared point-link tables. The `/api/signs/drips` endpoint
+keeps source geometry by default and exposes `geometry=matched|best` plus
+`matched_road_*`, direction, residual distance, confidence, and failure fields.
+The DRIP HUD still uses the legacy bbox selector until the shared
+`/api/road/context` and `/api/road/ahead` slice is enabled; these persisted links
+are the validated input for that next cutover.
 
 ---
 

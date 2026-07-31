@@ -13,9 +13,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from ndwinfo.models import RoadPointAssignment, RoadPointLink
-from ndwinfo.road_matching.types import MatrixSign, MatrixSignMatch
+from ndwinfo.road_matching.types import DripSign, DripSignMatch, MatrixSign, MatrixSignMatch
 
 MATRIX_SOURCE_KIND = "matrix"
+DRIP_SOURCE_KIND = "drip"
 
 
 def matrix_source_fingerprint(sign: MatrixSign) -> str:
@@ -30,6 +31,22 @@ def matrix_source_fingerprint(sign: MatrixSign) -> str:
         "bearing": sign.bearing,
         "lon": sign.lon,
         "lat": sign.lat,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def drip_source_fingerprint(drip: DripSign) -> str:
+    """Fingerprint DRIP location/direction evidence, not live display state."""
+
+    payload = {
+        "controller_id": drip.controller_id,
+        "vms_index": drip.vms_index,
+        "description": drip.description,
+        "physical_support": drip.physical_support,
+        "bearing": drip.bearing,
+        "lon": drip.lon,
+        "lat": drip.lat,
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -117,6 +134,109 @@ def persist_matrix_matches(
                 "direction": match.direction,
                 "anchor_lane_id": match.anchor_lane_id,
                 "applies_to_lane_id": match.applies_to_lane_id,
+                "position_fraction": match.position_fraction,
+                "matched_geom": point,
+                "source_distance_m": match.source_distance_m,
+                "bearing_error_deg": match.bearing_error_deg,
+                "road_ref_quality": match.road_ref_quality,
+                "confidence": match.confidence,
+            }
+        )
+
+    assignment_insert = insert(RoadPointAssignment).values(assignments)
+    session.execute(
+        assignment_insert.on_conflict_do_update(
+            index_elements=["source_kind", "source_key"],
+            set_={
+                column: getattr(assignment_insert.excluded, column)
+                for column in (
+                    "status",
+                    "confidence",
+                    "method",
+                    "failure_reason",
+                    "candidate_count",
+                    "source_fingerprint",
+                    "algorithm_version",
+                    "matched_at",
+                    "diagnostics",
+                )
+            },
+        )
+    )
+    if links:
+        session.execute(insert(RoadPointLink).values(links))
+    return len(assignments)
+
+
+def persist_drip_matches(
+    session: Session,
+    drips: Iterable[DripSign],
+    matches: Iterable[DripSignMatch],
+    *,
+    algorithm_version: str,
+) -> int:
+    """Replace the selected DRIP assignment snapshot transactionally."""
+
+    drips_by_key = {drip.source_key: drip for drip in drips}
+    match_rows = list(matches)
+    source_keys = [match.source_key for match in match_rows]
+    if not source_keys:
+        return 0
+
+    session.execute(
+        delete(RoadPointLink).where(
+            RoadPointLink.source_kind == DRIP_SOURCE_KIND,
+            RoadPointLink.source_key.in_(source_keys),
+        )
+    )
+    session.execute(
+        delete(RoadPointAssignment).where(
+            RoadPointAssignment.source_kind == DRIP_SOURCE_KIND,
+            RoadPointAssignment.algorithm_version != algorithm_version,
+        )
+    )
+
+    now = datetime.now(UTC)
+    assignments = []
+    links = []
+    for match in match_rows:
+        drip = drips_by_key.get(match.source_key)
+        if drip is None:
+            raise ValueError(f"match has no source DRIP: {match.source_key}")
+        assignments.append(
+            {
+                "source_kind": DRIP_SOURCE_KIND,
+                "source_key": match.source_key,
+                "status": match.status,
+                "confidence": match.confidence,
+                "method": match.method,
+                "failure_reason": match.failure_reason,
+                "candidate_count": match.candidate_count,
+                "source_fingerprint": drip_source_fingerprint(drip),
+                "algorithm_version": algorithm_version,
+                "matched_at": now,
+                "diagnostics": match.diagnostics,
+            }
+        )
+        if match.status != "matched" or match.road_id is None:
+            continue
+        point = None
+        if match.matched_point is not None:
+            point = WKTElement(
+                f"POINT({match.matched_point[0]} {match.matched_point[1]})",
+                srid=4326,
+            )
+        links.append(
+            {
+                "source_kind": DRIP_SOURCE_KIND,
+                "source_key": match.source_key,
+                "link_index": 0,
+                "road_id": match.road_id,
+                "road_revision": None,
+                "segment_id": match.segment_id,
+                "direction": match.direction,
+                "anchor_lane_id": match.anchor_lane_id,
+                "applies_to_lane_id": None,
                 "position_fraction": match.position_fraction,
                 "matched_geom": point,
                 "source_distance_m": match.source_distance_m,

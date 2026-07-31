@@ -150,8 +150,10 @@ src/ndwinfo/
 │   ├── points.py          # Matrix gantry grouping, consensus, and confidence
 │   ├── candidates.py      # bounded PostGIS candidate retrieval
 │   ├── persistence.py     # RoadPointAssignment/RoadPointLink replacement
+│   ├── drips.py           # directed DRIP/VMS point matching
 │   └── types.py           # source/candidate/match dataclasses
 ├── match_matrix.py        # bounded Matrix-to-OSM report CLI; --persist writes assignments
+├── match_drips.py         # bounded DRIP/VMS-to-OSM report CLI; --persist writes assignments
 └── ingest/                # Feed-specific ingesters (called by poller, use parsers):
     ├── base.py            # BaseIngester abstract class (upsert logic)
     ├── measurement.py     # MeasurementSite + TrafficMeasurement (traffic speed/traveltime)

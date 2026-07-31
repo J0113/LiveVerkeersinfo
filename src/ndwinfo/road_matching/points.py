@@ -207,7 +207,8 @@ def _rank_traversals(
     traversals = list(traversals)
     if not traversals:
         return []
-    quality_key = lambda item: (-item.coverage, -item.exact_ref_count)
+    def quality_key(item):
+        return (-item.coverage, -item.exact_ref_count)
     best_quality = min(quality_key(item) for item in traversals)
     best_quality_items = [item for item in traversals if quality_key(item) == best_quality]
     remaining = [item for item in traversals if quality_key(item) != best_quality]

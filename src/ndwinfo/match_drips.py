@@ -1,13 +1,8 @@
-"""Run a bounded Matrix-to-OSM match, optionally persisting assignments.
+"""Run a bounded DRIP/VMS-to-OSM point match.
 
-Example (small local area):
-
-    python -m ndwinfo.match_matrix --bbox 4.6,52.3,4.9,52.6 --limit 250
-    python -m ndwinfo.match_matrix --bbox 4.6,52.3,4.9,52.6 --limit 250 --persist
-
-The command emits a compact report.  ``--include-results`` adds the individual
-UUID diagnostics for fixture review; no report is written to the repository by
-default.
+The matcher keeps the original DRIP point and writes only explainable point
+assignments/links.  A 60 m primary search is extended to 500 m only when the
+panel bearing leaves one directed traversal.
 """
 
 from __future__ import annotations
@@ -20,14 +15,18 @@ from collections import Counter
 from typing import Any
 
 from ndwinfo.db import SessionLocal
-from ndwinfo.road_matching.candidates import load_matrix_candidates
-from ndwinfo.road_matching.persistence import persist_matrix_matches
-from ndwinfo.road_matching.points import group_matrix_signs, match_matrix_gantry
-from ndwinfo.road_matching.types import MatrixSignMatch
+from ndwinfo.road_matching.candidates import load_drip_candidates
+from ndwinfo.road_matching.drips import (
+    DRIP_EXTENDED_RADIUS_M,
+    DRIP_PRIMARY_RADIUS_M,
+    match_drip_results,
+)
+from ndwinfo.road_matching.persistence import persist_drip_matches
 
-# v8: OSM ref concurrencies (A7;A8) compare as a set, so a shared carriageway
-# no longer conflicts with both routes it carries.
-ALGORITHM_VERSION = "matrix-gantry-v8"
+# v2: bearing decides inside the 2 m distance tie band, the 60-500 m tail also
+# requires the bearing to agree within 20 degrees, and a contradicted panel
+# route is recorded as a conflict instead of neutral corridor evidence.
+ALGORITHM_VERSION = "drip-point-v2"
 
 
 def _bbox(value: str) -> tuple[float, float, float, float]:
@@ -53,18 +52,14 @@ def _percentile(values: list[float], fraction: float) -> float | None:
 
 
 def build_report(
-    signs,
-    candidates_by_uuid,
+    drips,
+    matches,
     *,
-    radius_m: float,
-    include_results: bool = False,
+    primary_radius_m: float,
+    extended_radius_m: float,
     raw_source_count: int | None = None,
-    deduped_source_count: int | None = None,
-    matches: list[MatrixSignMatch] | None = None,
+    include_results: bool = False,
 ) -> dict[str, Any]:
-    gantries = group_matrix_signs(signs)
-    if matches is None:
-        matches = match_matrix_results(signs, candidates_by_uuid)
     distances = [
         match.source_distance_m
         for match in matches
@@ -76,11 +71,11 @@ def build_report(
     method_counts = Counter(match.method for match in matches)
     report: dict[str, Any] = {
         "algorithm_version": ALGORITHM_VERSION,
-        "candidate_radius_m": radius_m,
-        "source_rows": len(signs),
+        "candidate_radius_m": extended_radius_m,
+        "primary_radius_m": primary_radius_m,
+        "source_rows": len(drips),
         "area_raw_source_rows": raw_source_count,
-        "area_deduped_source_rows": deduped_source_count,
-        "gantries": len(gantries),
+        "truncated": raw_source_count is not None and raw_source_count > len(drips),
         "matched_rows": sum(match.status == "matched" for match in matches),
         "status_counts": dict(sorted(status_counts.items())),
         "confidence_counts": dict(sorted(confidence_counts.items())),
@@ -92,8 +87,20 @@ def build_report(
             "p95": _percentile(distances, 0.95),
             "max": round(max(distances), 3) if distances else None,
         },
-        "lane_count_mismatch": sum(
-            match.failure_reason == "lane_count_mismatch" for match in matches
+        "extended_matches": sum(
+            match.status == "matched"
+            and match.source_distance_m is not None
+            and match.source_distance_m > primary_radius_m
+            for match in matches
+        ),
+        "working_status_counts": dict(
+            sorted(
+                (
+                    (status or "unknown", count)
+                    for status, count in Counter(drip.working_status for drip in drips).items()
+                ),
+                key=lambda item: item[0],
+            )
         ),
     }
     if include_results:
@@ -101,20 +108,12 @@ def build_report(
     return report
 
 
-def match_matrix_results(signs, candidates_by_uuid) -> list[MatrixSignMatch]:
-    """Match a loaded snapshot once, returning results in deterministic order."""
-
-    matches: list[MatrixSignMatch] = []
-    for gantry in group_matrix_signs(signs):
-        matches.extend(match_matrix_gantry(gantry, candidates_by_uuid))
-    return sorted(matches, key=lambda match: match.uuid)
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bbox", type=_bbox, required=True, help="min_lon,min_lat,max_lon,max_lat")
-    parser.add_argument("--limit", type=int, default=250, help="bounded physical gantry limit")
-    parser.add_argument("--radius-m", type=float, default=20.0)
+    parser.add_argument("--limit", type=int, default=1000, help="bounded DRIP source-row limit")
+    parser.add_argument("--primary-radius-m", type=float, default=DRIP_PRIMARY_RADIUS_M)
+    parser.add_argument("--extended-radius-m", type=float, default=DRIP_EXTENDED_RADIUS_M)
     parser.add_argument("--candidate-limit", type=int, default=64)
     parser.add_argument("--include-results", action="store_true")
     parser.add_argument(
@@ -126,33 +125,41 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.limit < 1:
         parser.error("--limit must be positive")
+    if args.candidate_limit < 1:
+        parser.error("--candidate-limit must be positive")
+    if args.primary_radius_m <= 0 or args.extended_radius_m < args.primary_radius_m:
+        parser.error("extended radius must be >= a positive primary radius")
     with SessionLocal() as session:
-        snapshot = load_matrix_candidates(
+        snapshot = load_drip_candidates(
             session,
             bbox=args.bbox,
             source_limit=args.limit,
-            radius_m=args.radius_m,
+            radius_m=args.extended_radius_m,
             candidate_limit=args.candidate_limit,
         )
-        matches = match_matrix_results(snapshot.signs, snapshot.candidates_by_uuid)
+        matches = match_drip_results(
+            snapshot.drips,
+            snapshot.candidates_by_key,
+            primary_radius_m=args.primary_radius_m,
+            extended_radius_m=args.extended_radius_m,
+        )
         persisted = False
         if args.persist:
-            persist_matrix_matches(
+            persist_drip_matches(
                 session,
-                snapshot.signs,
+                snapshot.drips,
                 matches,
                 algorithm_version=ALGORITHM_VERSION,
             )
             session.commit()
             persisted = True
         report = build_report(
-            snapshot.signs,
-            snapshot.candidates_by_uuid,
-            radius_m=args.radius_m,
-            include_results=args.include_results,
+            snapshot.drips,
+            matches,
+            primary_radius_m=args.primary_radius_m,
+            extended_radius_m=args.extended_radius_m,
             raw_source_count=snapshot.raw_source_count,
-            deduped_source_count=snapshot.deduped_source_count,
-            matches=matches,
+            include_results=args.include_results,
         )
     report["persisted"] = persisted
     encoded = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)

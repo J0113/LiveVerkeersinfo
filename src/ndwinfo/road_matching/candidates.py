@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ndwinfo.road_matching.types import LaneCandidate, MatrixSign
+from ndwinfo.road_matching.types import DripSign, LaneCandidate, MatrixSign
 
 
 @dataclass(frozen=True)
@@ -17,6 +17,110 @@ class MatrixCandidateSnapshot:
     candidates_by_uuid: dict[str, tuple[LaneCandidate, ...]]
     raw_source_count: int
     deduped_source_count: int
+
+
+@dataclass(frozen=True)
+class DripCandidateSnapshot:
+    drips: tuple[DripSign, ...]
+    candidates_by_key: dict[str, tuple[LaneCandidate, ...]]
+    # DRIPs in the area before --limit truncation, so a bounded run can say
+    # how much of the area it actually covered.
+    raw_source_count: int
+
+
+_DRIP_PROFILE_SQL = text(
+    """
+    SELECT count(*) AS raw_source_count
+    FROM drip d
+    WHERE d.geom IS NOT NULL
+      AND (:min_lon IS NULL OR ST_Intersects(
+          d.geom, ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+      ))
+    """
+)
+
+
+_DRIP_CANDIDATE_SQL = text(
+    """
+    WITH selected_source AS (
+        SELECT
+            d.controller_id,
+            d.vms_index,
+            d.description,
+            d.physical_support,
+            d.bearing,
+            d.display_text,
+            d.message,
+            d.geom
+        FROM drip d
+        WHERE d.geom IS NOT NULL
+          AND (:min_lon IS NULL OR ST_Intersects(
+              d.geom, ST_MakeEnvelope(:min_lon, :min_lat, :max_lon, :max_lat, 4326)
+          ))
+        ORDER BY d.controller_id, d.vms_index
+        LIMIT :source_limit
+    )
+    SELECT
+        s.controller_id,
+        s.vms_index,
+        s.description,
+        s.physical_support,
+        s.bearing,
+        s.display_text,
+        s.message,
+        s.geom,
+        ST_X(s.geom) AS lon,
+        ST_Y(s.geom) AS lat,
+        c.lane_id,
+        c.road_id,
+        c.segment_id,
+        c.direction,
+        c.lane_nr,
+        c.lane_count,
+        c.ref,
+        c.highway,
+        c.name,
+        c.distance_m,
+        c.bearing_deg,
+        c.position_fraction,
+        c.projected_wkt,
+        c.carriageway_ref
+    FROM selected_source s
+    LEFT JOIN LATERAL (
+        SELECT
+            l.id AS lane_id,
+            l.road_id,
+            l.segment_id,
+            l.direction,
+            l.lane_nr,
+            l.lane_count,
+            r.ref,
+            r.highway,
+            r.name,
+            coalesce(r.raw->>'carriageway_ref', r.raw->>'carriageway:ref') AS carriageway_ref,
+            ST_Distance(s.geom::geography, l.geom::geography) AS distance_m,
+            mod((
+                degrees(ST_Azimuth(
+                    ST_LineInterpolatePoint(l.geom, greatest(
+                        ST_LineLocatePoint(l.geom, s.geom) - 0.001, 0
+                    )),
+                    ST_LineInterpolatePoint(l.geom, least(
+                        ST_LineLocatePoint(l.geom, s.geom) + 0.001, 1
+                    ))
+                )) + 360
+            )::numeric, 360)::double precision AS bearing_deg,
+            ST_LineLocatePoint(l.geom, s.geom) AS position_fraction,
+            ST_AsText(ST_ClosestPoint(l.geom, s.geom)) AS projected_wkt
+        FROM osm_lane_centerline l
+        JOIN osm_road r ON r.osm_id = l.road_id
+        WHERE l.direction IN ('fwd', 'bwd')
+          AND ST_DWithin(s.geom::geography, l.geom::geography, :radius_m)
+        ORDER BY l.geom::geography <-> s.geom::geography, l.id
+        LIMIT :candidate_limit
+    ) c ON TRUE
+    ORDER BY s.controller_id, s.vms_index, c.distance_m NULLS LAST, c.lane_id
+    """
+)
 
 
 _MATRIX_CANDIDATE_SQL = text(
@@ -200,4 +304,79 @@ def load_matrix_candidates(
         candidates_by_uuid={key: tuple(value) for key, value in candidates.items()},
         raw_source_count=int(profile["raw_source_count"] or 0),
         deduped_source_count=int(profile["deduped_source_count"] or 0),
+    )
+
+
+def load_drip_candidates(
+    session: Session,
+    *,
+    bbox: tuple[float, float, float, float] | None,
+    source_limit: int = 1000,
+    radius_m: float = 500.0,
+    candidate_limit: int = 64,
+) -> DripCandidateSnapshot:
+    """Load bounded DRIP rows and directed OSM lanes up to the extended radius."""
+
+    if source_limit < 1 or candidate_limit < 1 or radius_m <= 0:
+        raise ValueError(
+            "source_limit/candidate_limit must be positive and radius_m must be positive"
+        )
+    params: dict[str, Any] = {
+        "min_lon": bbox[0] if bbox else None,
+        "min_lat": bbox[1] if bbox else None,
+        "max_lon": bbox[2] if bbox else None,
+        "max_lat": bbox[3] if bbox else None,
+        "source_limit": source_limit,
+        "radius_m": radius_m,
+        "candidate_limit": candidate_limit,
+    }
+    profile = session.execute(_DRIP_PROFILE_SQL, params).mappings().one()
+    rows = session.execute(_DRIP_CANDIDATE_SQL, params).mappings().all()
+    drips_by_key: dict[str, DripSign] = {}
+    candidates: dict[str, list[LaneCandidate]] = {}
+    for row in rows:
+        drip = DripSign(
+            controller_id=row["controller_id"],
+            vms_index=int(row["vms_index"]),
+            description=row["description"],
+            physical_support=row["physical_support"],
+            bearing=float(row["bearing"]) if row["bearing"] is not None else None,
+            working_status=(row["message"] or {}).get("working_status"),
+            display_text=row["display_text"],
+            updated_at=(row["message"] or {}).get("status_update_time"),
+            lon=float(row["lon"]) if row["lon"] is not None else None,
+            lat=float(row["lat"]) if row["lat"] is not None else None,
+        )
+        source_key = drip.source_key
+        drips_by_key.setdefault(source_key, drip)
+        if row["lane_id"] is None:
+            continue
+        candidates.setdefault(source_key, []).append(
+            LaneCandidate(
+                lane_id=row["lane_id"],
+                road_id=int(row["road_id"]),
+                segment_id=row["segment_id"],
+                direction=row["direction"],
+                lane_nr=int(row["lane_nr"]),
+                lane_count=int(row["lane_count"]),
+                ref=row["ref"],
+                highway=row["highway"],
+                distance_m=float(row["distance_m"]),
+                bearing_deg=(
+                    float(row["bearing_deg"]) if row["bearing_deg"] is not None else None
+                ),
+                position_fraction=(
+                    float(row["position_fraction"])
+                    if row["position_fraction"] is not None
+                    else None
+                ),
+                projected=_parse_wkt_point(row["projected_wkt"]),
+                carriageway_ref=row["carriageway_ref"],
+                name=row["name"],
+            )
+        )
+    return DripCandidateSnapshot(
+        drips=tuple(sorted(drips_by_key.values(), key=lambda item: item.source_key)),
+        candidates_by_key={key: tuple(value) for key, value in candidates.items()},
+        raw_source_count=int(profile["raw_source_count"] or 0),
     )

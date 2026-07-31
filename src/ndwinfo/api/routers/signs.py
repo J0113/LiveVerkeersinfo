@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import String, and_, case, cast, func, select
 
 from ndwinfo.api.deps import BBoxDep, DbDep
 from ndwinfo.api.geo import geo_response, make_fc
@@ -216,8 +216,39 @@ def get_drips(
     b: BBoxDep,
     db: DbDep,
     limit: Annotated[int, Query(ge=1, le=settings.api_max_limit)] = settings.api_default_limit,
+    geometry: Annotated[
+        Literal["source", "matched", "best"],
+        Query(description="source point, matched point, or matched point with source fallback"),
+    ] = "source",
 ):
     bbox_geom = func.ST_MakeEnvelope(b.min_lon, b.min_lat, b.max_lon, b.max_lat, 4326)
+    # Rebuild DripSign.source_key: json.dumps(..., separators=(",", ":")).
+    # json_build_array only differs by the ", " element separator, and a quote
+    # inside controller_id is escaped as \", so that sequence cannot occur
+    # inside a value -- unlike a blanket space strip, which would corrupt any
+    # controller_id containing a space and silently drop the join.
+    source_key_expr = func.replace(
+        cast(func.json_build_array(Drip.controller_id, Drip.vms_index), String),
+        '", ',
+        '",',
+    )
+    source_geom = func.ST_AsGeoJSON(Drip.geom, 6)
+    matched_geom = func.ST_AsGeoJSON(RoadPointLink.matched_geom, 6)
+    if geometry == "source":
+        geometry_expr = source_geom
+    elif geometry == "matched":
+        geometry_expr = matched_geom
+    else:
+        geometry_expr = case(
+            (
+                and_(
+                    RoadPointAssignment.status == "matched",
+                    RoadPointLink.matched_geom.isnot(None),
+                ),
+                matched_geom,
+            ),
+            else_=source_geom,
+        )
     rows = db.execute(
         select(
             Drip.controller_id,
@@ -229,9 +260,42 @@ def get_drips(
             Drip.num_display_areas,
             Drip.display_text,
             Drip.message,
-            func.ST_AsGeoJSON(Drip.geom, 6).label("geom_json"),
+            geometry_expr.label("geom_json"),
+            RoadPointAssignment.status.label("match_status"),
+            RoadPointAssignment.confidence.label("match_confidence"),
+            RoadPointAssignment.method.label("match_method"),
+            RoadPointAssignment.failure_reason.label("match_failure_reason"),
+            RoadPointAssignment.candidate_count.label("match_candidate_count"),
+            RoadPointLink.road_id.label("matched_road_id"),
+            OsmRoad.ref.label("matched_road_ref"),
+            OsmRoad.name.label("matched_road_name"),
+            OsmRoad.highway.label("matched_road_highway"),
+            RoadPointLink.segment_id.label("matched_segment_id"),
+            RoadPointLink.direction.label("matched_direction"),
+            RoadPointLink.anchor_lane_id.label("matched_anchor_lane_id"),
+            RoadPointLink.position_fraction.label("matched_position_fraction"),
+            RoadPointLink.source_distance_m.label("match_source_distance_m"),
+            RoadPointLink.bearing_error_deg.label("match_bearing_error_deg"),
+            RoadPointLink.road_ref_quality.label("matched_road_ref_quality"),
         )
         .where(func.ST_Intersects(Drip.geom, bbox_geom))
+        .outerjoin(
+            RoadPointAssignment,
+            and_(
+                RoadPointAssignment.source_kind == "drip",
+                RoadPointAssignment.source_key == source_key_expr,
+            ),
+        )
+        .outerjoin(
+            RoadPointLink,
+            and_(
+                RoadPointLink.source_kind == "drip",
+                RoadPointLink.source_key == source_key_expr,
+                RoadPointLink.link_index == 0,
+            ),
+        )
+        .outerjoin(OsmRoad, OsmRoad.osm_id == RoadPointLink.road_id)
+        .order_by(Drip.controller_id, Drip.vms_index)
         .limit(limit)
     ).all()
 
@@ -250,6 +314,35 @@ def get_drips(
             "image_format": msg.get("image_format"),
             "image_b64": msg.get("image_data"),
             "updated_at": msg.get("status_update_time"),
+            "geometry_mode": geometry,
+            "match_status": r.match_status,
+            "match_confidence": r.match_confidence,
+            "match_method": r.match_method,
+            "match_failure_reason": r.match_failure_reason,
+            "match_candidate_count": r.match_candidate_count,
+            "matched_road_id": r.matched_road_id,
+            "matched_road_ref": r.matched_road_ref,
+            "matched_road_name": r.matched_road_name,
+            "matched_road_highway": r.matched_road_highway,
+            "matched_segment_id": r.matched_segment_id,
+            "matched_direction": r.matched_direction,
+            "matched_anchor_lane_id": r.matched_anchor_lane_id,
+            "matched_position_fraction": (
+                float(r.matched_position_fraction)
+                if r.matched_position_fraction is not None
+                else None
+            ),
+            "match_source_distance_m": (
+                float(r.match_source_distance_m)
+                if r.match_source_distance_m is not None
+                else None
+            ),
+            "match_bearing_error_deg": (
+                float(r.match_bearing_error_deg)
+                if r.match_bearing_error_deg is not None
+                else None
+            ),
+            "matched_road_ref_quality": r.matched_road_ref_quality,
         }
 
     return geo_response(make_fc(rows, "geom_json", props))

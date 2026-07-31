@@ -34,6 +34,21 @@ def normalize_road_ref(value: object) -> str | None:
     return f"{prefix or ''}{normalized_number}"
 
 
+def normalize_road_refs(value: object) -> set[str]:
+    """Split a possibly multi-valued OSM ``ref`` into normalized route refs.
+
+    OSM tags a shared carriageway as ``A7;A8``, which the single-value
+    normalizer compacts to ``A7A8`` -- conflicting with both routes it
+    actually carries.  Splitting first keeps a concurrency legible as the set
+    of routes on that roadway.
+    """
+
+    if value is None:
+        return set()
+    parts = (normalize_road_ref(part) for part in re.split(r"[;,]", str(value)))
+    return {part for part in parts if part}
+
+
 def normalize_carriageway(value: object) -> str | None:
     """Trim a carriageway code without folding its case.
 
@@ -110,8 +125,8 @@ def road_ref_quality(sign: MatrixSign, candidate: LaneCandidate) -> str:
     """
 
     source_ref = normalize_road_ref(sign.road)
-    candidate_ref = normalize_road_ref(candidate.ref)
-    if source_ref and candidate_ref and source_ref != candidate_ref:
+    candidate_refs = normalize_road_refs(candidate.ref)
+    if source_ref and candidate_refs and source_ref not in candidate_refs:
         # At a route transition the physical source point can be on a short
         # OSM connector whose ref still names the route it joins.  Permit
         # that only for a nearby, direction-compatible link; ordinary roads
@@ -126,7 +141,7 @@ def road_ref_quality(sign: MatrixSign, candidate: LaneCandidate) -> str:
         ):
             return "connector"
         return "conflict"
-    if source_ref and candidate_ref:
+    if source_ref and candidate_refs:
         return "exact"
     return "absent"
 
